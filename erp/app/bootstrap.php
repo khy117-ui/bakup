@@ -78,6 +78,14 @@ function db(): PDO
             // 드라이버가 문자열을 조립하므로 인젝션 방어가 약해집니다
             PDO::ATTR_EMULATE_PREPARES   => false,
         ]);
+        // 표는 전부 utf8mb4_unicode_ci 입니다. MySQL 8 은 연결 기본값이 utf8mb4_0900_ai_ci 라서
+        // CAST(... AS CHAR) · CONCAT 결과와 표 컬럼을 비교하면 'Illegal mix of collations' 가 납니다.
+        // 이 문장이 실패해도 화면은 떠야 하니 기록만 남기고 넘어갑니다.
+        try {
+            $pdo->exec('SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci');
+        } catch (PDOException $e) {
+            error_log('SET NAMES 실패(무시): ' . $e->getMessage());
+        }
     } catch (PDOException $e) {
         http_response_code(500);
         error_log('DB 접속 실패: ' . $e->getMessage());

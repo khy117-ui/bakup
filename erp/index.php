@@ -55,6 +55,7 @@ $routes = [
     'search'       => 'search.php',
     'backup'       => 'backup.php',
     'migration'    => 'migration.php',
+    'migration_import' => 'migration_import.php',
 ];
 
 if ($page === 'logout') {

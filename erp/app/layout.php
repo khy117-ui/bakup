@@ -51,6 +51,7 @@ function layout_head(string $title, string $active): void
             ['settings', '환경설정', true],
             ['storage_settings', '저장소 설정', true],
             ['backup', '백업 / 복구', true],
+            ['migration_import', '옛 자료 가져오기', true],
             ['migration', '이관 검수', true],
         ]],
     ];
