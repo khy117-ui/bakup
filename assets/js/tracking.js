@@ -72,8 +72,9 @@
               (it.delivered ? '<span class="tk-badge tk-badge--ok">배송완료</span>'
                 : (latest ? '<span class="tk-badge">배송중</span>' : '')) + '</div>';
       if (r) {
-        html += '<p class="note tk-route">출발지 ' + esc(country(r.from)) + ' → 도착지 ' +
-                esc(country(r.to) + (r.to_city ? ' · ' + r.to_city : '')) +
+        // 이관 자료는 도착 국가가 도시 칸(UNITED STATES)에만 들어 있기도 합니다 — 빈 칸은 건너뜀
+        var dest = [country(r.to), r.to_city].filter(function (x) { return x; }).join(' · ') || '-';
+        html += '<p class="note tk-route">출발지 ' + esc(country(r.from)) + ' → 도착지 ' + esc(dest) +
                 (r.ship_date ? ' · 발송일 ' + esc(r.ship_date) : '') +
                 (r.pcs ? ' · ' + esc(r.pcs) + '개' : '') + '</p>';
       }
