@@ -1,5 +1,5 @@
 <?php
-require APP_DIR . '/layout.php';
+require_once APP_DIR . '/layout.php';
 
 $err = '';
 $cid = (int)query('company_id', '0');

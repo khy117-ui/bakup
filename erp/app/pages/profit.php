@@ -1,5 +1,5 @@
 <?php
-require APP_DIR . '/layout.php';
+require_once APP_DIR . '/layout.php';
 
 $eid  = entity_id();
 $from = query('from', date('Y-01-01'));

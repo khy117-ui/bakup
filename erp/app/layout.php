@@ -46,6 +46,7 @@ function layout_head(string $title, string $active): void
         ['시스템', [
             ['business_entity', '사업자 관리', true],
             ['permissions', '관리자 / 권한', true],
+            ['delete_requests', '삭제 요청 · 승인', true],
             ['boards', '게시판 관리', true],
             ['activity_log', '작업로그', true],
             ['settings', '환경설정', true],
@@ -55,6 +56,8 @@ function layout_head(string $title, string $active): void
             ['migration', '이관 검수', true],
         ]],
     ];
+    // 승인할 수 있는 사람에게만 대기 건수를 보여줍니다
+    $pending = (function_exists('delete_request_pending') && can('sys.delete.approve')) ? delete_request_pending() : 0;
     ?><!doctype html>
 <html lang="ko">
 <head>
@@ -73,11 +76,15 @@ function layout_head(string $title, string $active): void
          style="padding-left:16px">대시보드</a>
       <a class="item<?= $active === 'search' ? ' on' : '' ?>" href="?p=search"
          style="padding-left:16px">통합검색</a>
-      <?php foreach ($menu as [$grp, $items]): ?>
+      <?php foreach ($menu as [$grp, $items]):
+        // 볼 권한이 없는 화면은 메뉴에서 뺍니다. 한 개도 안 남으면 묶음 제목도 숨깁니다
+        $items = array_values(array_filter($items, fn($it) => !function_exists('route_can_view') || route_can_view($it[0])));
+        if (!$items) { continue; } ?>
         <div class="grp"><?= h($grp) ?></div>
         <?php foreach ($items as [$key, $label, $live]): ?>
           <?php if ($live): ?>
-            <a class="item<?= $active === $key ? ' on' : '' ?>" href="?p=<?= h($key) ?>"><?= h($label) ?></a>
+            <a class="item<?= $active === $key ? ' on' : '' ?>" href="?p=<?= h($key) ?>"><?= h($label) ?><?php
+              if ($key === 'delete_requests' && $pending > 0): ?><span class="badge b-warn" style="margin-left:auto;height:18px"><?= $pending ?></span><?php endif; ?></a>
           <?php else: ?>
             <span class="item"><?= h($label) ?></span>
           <?php endif; ?>
@@ -86,10 +93,10 @@ function layout_head(string $title, string $active): void
     </nav>
     <div class="me">
       <div class="av"><?= h(mb_substr((string)($ADMIN['name'] ?? '?'), 0, 1)) ?></div>
-      <div>
+      <a href="?p=my_account" title="내 정보 · 비밀번호 바꾸기" style="text-decoration:none">
         <b><?= h($ADMIN['name'] ?? '') ?></b>
-        <small><?= h($ADMIN['role_code'] ?? '') ?></small>
-      </div>
+        <small><?= h($ADMIN['role_code'] ?? '') ?> · 내 정보</small>
+      </a>
       <a class="btn sm" style="margin-left:auto" href="?p=logout">나가기</a>
     </div>
   </aside>

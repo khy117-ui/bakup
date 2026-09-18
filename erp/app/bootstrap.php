@@ -569,20 +569,37 @@ function fin_resync_invoices(int $txnId): void
  */
 function can(string $code): bool
 {
-    static $cache = [];
+    static $codes = null;
     $role = (string)($_SESSION['role'] ?? '');
     if ($role === '') { return false; }
     if ($role === 'SUPER_ADMIN') { return true; }
-    $key = $role . '|' . $code;
-    if (!isset($cache[$key])) {
-        $st = db()->prepare(
-            'SELECT 1 FROM role_permissions rp
-               JOIN permissions p ON p.id = rp.permission_id
-              WHERE rp.role_code = ? AND p.code = ? LIMIT 1');
-        $st->execute([$role, $code]);
-        $cache[$key] = (bool)$st->fetchColumn();
+    if ($codes === null) {
+        // 계정별 권한(perm_custom = 1)이면 그 계정 것만, 아니면 역할 것을 씁니다.
+        // 한 요청에 한 번만 읽습니다 — 메뉴를 그릴 때 수십 번 물어봅니다.
+        $codes = [];
+        $aid = (int)($_SESSION['admin_id'] ?? 0);
+        $custom = false;
+        try {
+            $st = db()->prepare('SELECT perm_custom FROM admins WHERE id = ?');
+            $st->execute([$aid]);
+            $custom = (int)$st->fetchColumn() === 1;
+        } catch (PDOException $e) {
+            $custom = false;   // 컬럼이 아직 없으면 역할 권한
+        }
+        if ($custom) {
+            $st = db()->prepare('SELECT p.code FROM admin_permissions ap
+                                   JOIN permissions p ON p.id = ap.permission_id
+                                  WHERE ap.admin_id = ?');
+            $st->execute([$aid]);
+        } else {
+            $st = db()->prepare('SELECT p.code FROM role_permissions rp
+                                   JOIN permissions p ON p.id = rp.permission_id
+                                  WHERE rp.role_code = ?');
+            $st->execute([$role]);
+        }
+        foreach ($st->fetchAll(PDO::FETCH_COLUMN) as $c) { $codes[$c] = true; }
     }
-    return $cache[$key];
+    return isset($codes[$code]);
 }
 
 /** 권한이 없으면 화면을 막습니다 */

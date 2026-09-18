@@ -2,7 +2,7 @@
 // 웹에서 직접 열면 실행되지 않게 막습니다 (nginx 면 .htaccess 가 무시됩니다)
 if (!defined('APP_DIR')) { http_response_code(403); exit('Forbidden'); }
 
-require APP_DIR . '/layout.php';
+require_once APP_DIR . '/layout.php';
 
 /**
  * 통합검색 — 하나만 알 때 쓰는 화면.
@@ -106,6 +106,16 @@ if ($kw !== '') {
           ORDER BY f.txn_date DESC LIMIT " . $LIM);
     $st->execute([$eid, $like, $like, $like]);
     $pays = $st->fetchAll();
+
+    // 볼 권한이 없는 화면의 결과는 보여주지 않습니다 (메뉴를 숨겨도 검색으로 보이면 안 되니까)
+    if (!route_can_view('shipments'))    { $ship = []; }
+    if (!route_can_view('companies'))    { $comp = []; }
+    if (!route_can_view('billing'))      { $invs = []; }
+    if (!route_can_view('quotations'))   { $quos = []; }
+    if (!route_can_view('statements'))   { $stmts = []; }
+    if (!route_can_view('tax_invoices')) { $taxs = []; }
+    if (!route_can_view('tracking'))     { $trks = []; }
+    if (!route_can_view('cash_list'))    { $pays = []; }
 
     $hit = count($ship) + count($comp) + count($invs) + count($quos)
          + count($stmts) + count($taxs) + count($trks) + count($pays);

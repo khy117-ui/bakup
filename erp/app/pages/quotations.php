@@ -1,5 +1,5 @@
 <?php
-require APP_DIR . '/layout.php';
+require_once APP_DIR . '/layout.php';
 
 $eid = entity_id();
 $STATUS = ['DRAFT'=>['작성중','b-warn'], 'SENT'=>['발송','b-info'],

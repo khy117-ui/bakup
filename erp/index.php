@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require __DIR__ . '/app/bootstrap.php';
 require APP_DIR . '/auth.php';
+require APP_DIR . '/access.php';
 
 $page = query('p', 'dashboard');
 
@@ -56,6 +57,8 @@ $routes = [
     'backup'       => 'backup.php',
     'migration'    => 'migration.php',
     'migration_import' => 'migration_import.php',
+    'delete_requests'  => 'delete_requests.php',
+    'my_account'       => 'my_account.php',
 ];
 
 if ($page === 'logout') {
@@ -68,8 +71,33 @@ if (!isset($routes[$page])) {
     $page = 'dashboard';
 }
 
+// 계정 · 삭제승인용 표가 없으면 붙입니다 (세션당 한 번 확인)
+schema_upgrade_accounts();
+
 if ($page !== 'login') {
     $ADMIN = require_login();
+
+    // 관리자가 만들어 준 임시 비밀번호는 첫 로그인 때 바꿔야 합니다
+    if ((int)($ADMIN['must_change_pw'] ?? 0) === 1 && $page !== 'my_account') {
+        flash('처음 받은 임시 비밀번호입니다. 새 비밀번호로 바꿔 주세요.');
+        redirect('?p=my_account');
+    }
+
+    // 화면 권한 — 보기는 보기 권한, 저장 · 수정 · 삭제(POST)는 입력 권한
+    if (!route_can_view($page)) {
+        deny_page('이 화면을 볼');
+    }
+    $isPost = $_SERVER['REQUEST_METHOD'] === 'POST';
+    if ($isPost && !route_can_edit($page)) {
+        deny_page('이 화면에서 입력 · 수정할');
+    }
+
+    // 삭제 · 취소 — 바로 실행할 권한이 없으면 삭제 요청으로 남기고 관리자 승인을 기다립니다
+    if ($isPost && ($spec = delete_action($page, (string)($_POST['act'] ?? ''))) !== null
+        && !can('sys.delete.direct')) {
+        csrf_check();
+        delete_request_create($page, (string)$_POST['act'], $spec);
+    }
 }
 
 require APP_DIR . '/pages/' . $routes[$page];

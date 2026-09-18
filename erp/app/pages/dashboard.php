@@ -1,5 +1,5 @@
 <?php
-require APP_DIR . '/layout.php';
+require_once APP_DIR . '/layout.php';
 
 $eid = entity_id();
 $ym  = date('Y-m');
@@ -96,16 +96,24 @@ try {
 $cashReady = $cashReady ?? true;
 
 layout_head('대시보드', 'dashboard');
+// 권한에 맞는 카드만 보여줍니다 — 매출은 매출전표 조회, 입출금은 입출금 조회 권한이 있어야
+$seeSales = route_can_view('shipments');
+$seeComp  = route_can_view('companies');
+$seeCash  = route_can_view('cash_dashboard');
 ?>
 <div class="head">
   <h1>대시보드</h1>
   <div class="crumb"><?= h(date('Y년 n월 j일')) ?> 기준</div>
+  <?php if ($seeSales && route_can_edit('shipment_form')): ?>
   <div class="right">
     <a class="btn pri" href="?p=shipment_form">매출전표 등록</a>
   </div>
+  <?php endif; ?>
 </div>
 
+<?php if ($seeSales || $seeComp): ?>
 <div class="kpis">
+  <?php if ($seeSales): ?>
   <div class="kpi">
     <div class="lab">이번 달 매출 (공급가액)</div>
     <div class="val tnum"><?= money($mon['supply']) ?><span style="font-size:13px;font-weight:600"> 원</span></div>
@@ -116,14 +124,18 @@ layout_head('대시보드', 'dashboard');
     <div class="val tnum"><?= money($unbilled) ?><span style="font-size:13px;font-weight:600"> 건</span></div>
     <div class="sub">청구관리 화면은 준비중입니다</div>
   </div>
+  <?php endif; ?>
+  <?php if ($seeComp): ?>
   <div class="kpi">
     <div class="lab">거래처</div>
     <div class="val tnum"><?= money($compCnt) ?><span style="font-size:13px;font-weight:600"> 곳</span></div>
     <div class="sub"><a href="?p=companies">목록 보기</a></div>
   </div>
+  <?php endif; ?>
 </div>
+<?php endif; ?>
 
-<?php if ($cashReady): ?>
+<?php if ($cashReady && $seeCash): ?>
 <div class="kpis">
   <div class="kpi"><div class="lab">오늘 입금 · 출금</div>
     <div class="val tnum" style="font-size:19px">
@@ -144,6 +156,11 @@ layout_head('대시보드', 'dashboard');
 </div>
 <?php endif; ?>
 
+<?php if (!$seeSales && !$seeComp && !$seeCash): ?>
+  <div class="card"><div class="empty">왼쪽 메뉴에서 맡은 업무 화면으로 들어가세요.</div></div>
+<?php endif; ?>
+
+<?php if ($seeSales): ?>
 <div class="card">
   <div class="ch">최근 매출전표
     <a class="btn sm" style="margin-left:auto" href="?p=shipments">전체 보기</a>
@@ -173,4 +190,5 @@ layout_head('대시보드', 'dashboard');
   </table>
   <?php endif; ?>
 </div>
+<?php endif; ?>
 <?php layout_foot();

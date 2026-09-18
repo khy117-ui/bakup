@@ -1,5 +1,5 @@
 <?php
-require APP_DIR . '/layout.php';
+require_once APP_DIR . '/layout.php';
 
 $err = '';
 $id  = (int)query('id', '0');       // 선택한 단가표
