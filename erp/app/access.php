@@ -231,7 +231,7 @@ function schema_upgrade_dest(): void
 /** 우체국 Open API 인증키 자리 — 환경설정 '연동' 에서 넣습니다 (비밀값: 화면에 다시 안 보임) */
 function schema_upgrade_epost(): void
 {
-    if (!empty($_SESSION['schema_epost_v2'])) { return; }
+    if (!empty($_SESSION['schema_epost_v3'])) { return; }
     try {
         db()->exec("INSERT IGNORE INTO app_settings
                       (setting_key, setting_val, group_ko, label_ko, help_ko, input_type, options_csv, sort_order)
@@ -243,7 +243,14 @@ function schema_upgrade_epost(): void
                     VALUES ('dhl_api_key', NULL, '연동', 'DHL API 키 (Consumer Key)',
                             'developer.dhl.com 에서 Shipment Tracking - Unified 앱을 만들고 받은 API Key. 화물추적의 [DHL에서 이력 가져오기] 에 씁니다.',
                             'secret', NULL, 2)");
-        $_SESSION['schema_epost_v2'] = 1;
+        db()->exec("INSERT IGNORE INTO app_settings
+                      (setting_key, setting_val, group_ko, label_ko, help_ko, input_type, options_csv, sort_order)
+                    VALUES ('fedex_api_key', NULL, '연동', 'FedEx API Key (Client ID)',
+                            'developer.fedex.com 에서 Track API 프로젝트를 만들고 받은 Production API Key. Secret Key 와 같이 있어야 [FedEx에서 이력 가져오기] 가 됩니다.',
+                            'secret', NULL, 3),
+                           ('fedex_secret_key', NULL, '연동', 'FedEx Secret Key',
+                            '같은 프로젝트의 Production Secret Key.', 'secret', NULL, 4)");
+        $_SESSION['schema_epost_v3'] = 1;
     } catch (PDOException $e) {
         error_log('우체국 설정 자리 추가 실패: ' . $e->getMessage());
     }
