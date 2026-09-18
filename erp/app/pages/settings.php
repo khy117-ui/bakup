@@ -41,6 +41,15 @@ if ($hasTable && $_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save'
             if ($k === 'ar_cutover_date') { continue; }
             $r = $map[$k];
             $v = is_string($v) ? trim($v) : '';
+            if ($r['input_type'] === 'secret') {
+                // 비밀값 — 비워 두면 그대로, 새로 적었을 때만 바꿉니다. 이력에도 값은 남기지 않습니다
+                if ($v === '') { continue; }
+                if ($v !== (string)$r['setting_val']) {
+                    $changed[] = $r['label_ko'] . ': (새 값으로 바꿈)';
+                    $upd->execute([$v, $_SESSION['admin_id'] ?? null, $k]);
+                }
+                continue;
+            }
             if ($r['input_type'] === 'number') {
                 if ($v !== '' && !is_numeric(str_replace(',', '', $v))) {
                     throw new RuntimeException($r['label_ko'] . ' 은 숫자여야 합니다.');
@@ -134,6 +143,9 @@ layout_head('환경설정', 'settings');
           <?php if ($s['setting_key'] === 'ar_cutover_date'): ?>
             <b class="tnum"><?= h($s['setting_val'] ?: '설정 안 됨') ?></b>
             <div style="font-size:11px"><a href="?p=opening_balances">기초잔액 관리에서 바꿈</a></div>
+          <?php elseif ($s['input_type'] === 'secret'): $sv = (string)$s['setting_val']; ?>
+            <input type="password" name="s[<?= h($s['setting_key']) ?>]" autocomplete="new-password"
+                   placeholder="<?= $sv !== '' ? '저장됨 ····' . h(mb_substr($sv, -4)) . ' (바꿀 때만 입력)' : '아직 없음' ?>">
           <?php elseif ($s['input_type'] === 'select'): ?>
             <select name="s[<?= h($s['setting_key']) ?>]">
               <?php foreach (array_map('trim', explode(',', (string)$s['options_csv'])) as $o): ?>

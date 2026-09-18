@@ -77,6 +77,7 @@ schema_upgrade_accounts();
 schema_fix_view_collation();
 schema_upgrade_docs();
 schema_upgrade_dest();
+schema_upgrade_epost();
 
 if ($page !== 'login') {
     $ADMIN = require_login();

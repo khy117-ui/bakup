@@ -95,6 +95,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             log_action('물류', 'UPDATE', 'tracking_numbers', $tid, null, null, '배송완료 표시');
             flash('배송완료로 표시했습니다.');
             redirect('?p=tracking&shipment_id=' . (int)post('shipment_id'));
+
+        } elseif ($act === 'epost_fetch') {
+            // 우체국 EMS 행방조회 Open API 에서 이력을 가져와 쌓습니다 (같은 일시 · 상태는 건너뜀)
+            require_once APP_DIR . '/epost.php';
+            $tid = (int)post('tracking_number_id');
+            $st = $pdo->prepare('SELECT t.id, t.tracking_no, t.shipment_id FROM tracking_numbers t
+                                   JOIN shipments s ON s.id = t.shipment_id
+                                  WHERE t.id = ? AND s.business_entity_id = ?');
+            $st->execute([$tid, $eid]);
+            $trk = $st->fetch();
+            if (!$trk) {
+                $err = '추적번호를 찾을 수 없습니다.';
+            } else {
+                $r = epost_ems_trace((string)$trk['tracking_no']);
+                $_SESSION['epost_raw'][$tid] = mb_substr((string)$r['raw'], 0, 4000);
+                if (!$r['ok']) {
+                    $err = $r['error'];
+                } else {
+                    $pdo->beginTransaction();
+                    $ins = $pdo->prepare('INSERT IGNORE INTO tracking_events
+                                            (tracking_number_id, event_at, location, status, description)
+                                          VALUES (?,?,?,?,?)');
+                    $new = 0;
+                    foreach ($r['events'] as $e) {
+                        $ins->execute([$tid, $e['at'], $e['location'], $e['status'], $e['description']]);
+                        $new += $ins->rowCount();
+                    }
+                    $last = $r['events'] ? end($r['events']) : null;
+                    $done = $last && preg_match('/배달완료|delivered/iu', $last['status'] . ' ' . ($last['description'] ?? ''));
+                    $pdo->prepare('UPDATE tracking_numbers
+                                      SET current_status = COALESCE(?, current_status),
+                                          current_location = COALESCE(?, current_location),
+                                          delivered_at = CASE WHEN ? = 1 AND delivered_at IS NULL THEN ? ELSE delivered_at END,
+                                          last_checked_at = NOW(), last_checked_by = ?
+                                    WHERE id = ?')
+                        ->execute([$last['status'] ?? null, $last['location'] ?? null, $done ? 1 : 0,
+                                   $last['at'] ?? null, $_SESSION['admin_id'] ?? null, $tid]);
+                    $pdo->commit();
+                    log_action('물류', 'UPDATE', 'tracking_numbers', $tid, (string)$trk['tracking_no'], null,
+                               '우체국 조회 — 이력 ' . count($r['events']) . '건 중 새 것 ' . $new . '건');
+                    flash($r['events']
+                        ? '우체국에서 이력 ' . count($r['events']) . '건을 받았습니다 (새로 ' . $new . '건).'
+                          . ($done ? ' 배달완료로 표시했습니다.' : '')
+                        : '우체국 응답은 받았지만 이력을 읽지 못했습니다. 아래 "우체국 응답 원문" 을 캡처해 보내 주세요.');
+                    redirect('?p=tracking&shipment_id=' . (int)$trk['shipment_id']);
+                }
+            }
         }
     } catch (PDOException $e) {
         if ($pdo->inTransaction()) { $pdo->rollBack(); }
@@ -245,6 +292,30 @@ layout_head('화물추적', 'tracking');
       <?php else: ?>확인 이력 없음<?php endif; ?>
     </span>
   </div>
+  <?php
+    // EMS · 국제등기 번호 모양이면 우체국 Open API 로 바로 가져올 수 있습니다
+    $isEms = (bool)preg_match('/^[A-Z]{2}\d{9}[A-Z]{2}$/', (string)$t['tracking_no']);
+    $raw = $_SESSION['epost_raw'][(int)$t['id']] ?? '';
+  ?>
+  <?php if ($isEms): ?>
+  <div class="cb" style="border-bottom:1px solid var(--line2);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <?php if (route_can_edit('tracking')): ?>
+    <form method="post" style="display:inline">
+      <?= csrf_field() ?>
+      <input type="hidden" name="act" value="epost_fetch">
+      <input type="hidden" name="tracking_number_id" value="<?= (int)$t['id'] ?>">
+      <button class="btn pri">우체국에서 이력 가져오기</button>
+    </form>
+    <?php endif; ?>
+    <a class="btn" target="_blank" rel="noopener"
+       href="https://service.epost.go.kr/trace.RetrieveEmsRigiTraceList.comm?POST_CODE=<?= h(urlencode((string)$t['tracking_no'])) ?>&amp;displayHeader=N">우체국 사이트에서 보기</a>
+    <span style="font-size:11.5px;color:var(--ink3)">EMS 행방조회 Open API — 같은 이력은 두 번 쌓이지 않습니다</span>
+    <?php if ($raw !== ''): ?>
+      <details style="width:100%;margin-top:6px"><summary style="cursor:pointer;font-size:12px">우체국 응답 원문 (마지막 조회)</summary>
+        <pre style="white-space:pre-wrap;word-break:break-all;font-size:11px;max-height:240px;overflow:auto;background:#F7FAFB;padding:8px;border-radius:6px"><?= h($raw) ?></pre></details>
+    <?php endif; ?>
+  </div>
+  <?php endif; ?>
   <div class="cb">
     <form method="post" class="f" style="align-items:flex-end">
       <?= csrf_field() ?>
