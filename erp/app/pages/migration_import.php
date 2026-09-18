@@ -191,12 +191,16 @@ function mi_table_exists(string $t): bool
 /** 기록 한 줄. RUNNING 인데 그 DB 연결이 이미 끊겼으면 '중단' 으로 고쳐 돌려줍니다 */
 function mi_log_get(string $key): ?array
 {
-    $st = db()->prepare('SELECT * FROM migration_run_log WHERE run_key = ?');
+    // 경과 시간은 DB 시계로 잽니다 (PHP 와 DB 의 시간대가 다를 수 있어서)
+    $st = db()->prepare('SELECT *, TIMESTAMPDIFF(SECOND, started_at, COALESCE(ended_at, NOW())) AS elapsed_sec
+                           FROM migration_run_log WHERE run_key = ?');
     $st->execute([$key]);
     $row = $st->fetch();
     if (!$row) { return null; }
     if ($row['status'] === 'RUNNING' && $row['conn_id'] !== null) {
-        $alive = db()->prepare('SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID = ?');
+        // 연결이 남아 있어도 'Sleep' 이면 문장은 이미 끝난(또는 멈춘) 것입니다
+        $alive = db()->prepare("SELECT COUNT(*) FROM information_schema.PROCESSLIST
+                                 WHERE ID = ? AND COMMAND <> 'Sleep'");
         $alive->execute([(int)$row['conn_id']]);
         if ((int)$alive->fetchColumn() === 0) {
             db()->prepare("UPDATE migration_run_log
@@ -220,6 +224,7 @@ function mi_log_out(?array $row): array
         'error'    => $row['error_msg'],
         'started'  => $row['started_at'],
         'ended'    => $row['ended_at'],
+        'elapsed'  => isset($row['elapsed_sec']) ? (int)$row['elapsed_sec'] : null,
     ];
 }
 
@@ -273,6 +278,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($action === 'counts') {
             mi_json(mi_counts());
+        }
+
+        // 너무 오래 도는 단계 멈추기 — 그 단계를 돌리던 DB 연결만 끊습니다.
+        // InnoDB 가 그 문장이 넣던 것을 전부 되돌리므로 반쯤 들어간 자료는 남지 않습니다
+        if ($action === 'kill_step') {
+            $key = post('key');
+            $row = mi_log_get($key);
+            if (!$row || $row['status'] !== 'RUNNING' || $row['conn_id'] === null) {
+                mi_json(['key' => $key, 'status' => $row['status'] ?? 'NONE',
+                         'error' => '지금 실행 중인 단계가 아닙니다.']);
+            }
+            $cid = (int)$row['conn_id'];
+            // 같은 DB 계정의 우리 연결인지 한 번 더 봅니다 (다른 사람 연결은 끊지 않음)
+            $own = db()->prepare('SELECT COUNT(*) FROM information_schema.PROCESSLIST
+                                   WHERE ID = ? AND USER = SUBSTRING_INDEX(CURRENT_USER(), \'@\', 1)
+                                     AND DB = DATABASE()');
+            $own->execute([$cid]);
+            if ((int)$own->fetchColumn() === 1 && $cid !== (int)db()->query('SELECT CONNECTION_ID()')->fetchColumn()) {
+                db()->exec('KILL ' . $cid);
+            }
+            db()->prepare("UPDATE migration_run_log
+                              SET status = 'FAIL', ended_at = NOW(),
+                                  error_msg = '관리자가 중단했습니다. 넣던 것은 되돌려졌습니다. 다시 실행하세요.'
+                            WHERE run_key = ? AND status = 'RUNNING'")->execute([$key]);
+            log_action('시스템', 'UPDATE', 'migration_run_log', null, $key, null, '이관 단계 중단');
+            mi_json(['key' => $key] + mi_log_out(mi_log_get($key)));
         }
 
         if ($action === 'run_step') {
@@ -436,7 +467,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $logs = [];
 try {
     mi_ensure_log();
-    foreach (db()->query('SELECT run_key, status, affected, result_json, error_msg FROM migration_run_log') as $r) {
+    foreach (db()->query('SELECT run_key, status, affected, result_json, error_msg,
+                                 TIMESTAMPDIFF(SECOND, started_at, COALESCE(ended_at, NOW())) AS elapsed_sec
+                            FROM migration_run_log') as $r) {
         $logs[$r['run_key']] = $r;
     }
 } catch (PDOException $e) {
@@ -454,6 +487,7 @@ foreach (mi_steps() as $s) {
         'affected' => $l ? ($l['affected'] === null ? null : (int)$l['affected']) : null,
         'result' => $l && $l['result_json'] ? json_decode($l['result_json'], true) : null,
         'error'  => $l['error_msg'] ?? null,
+        'elapsed' => $l ? (int)$l['elapsed_sec'] : null,
     ];
 }
 $missing = [];
@@ -643,12 +677,22 @@ function applyResult(s, r) {
 
 // 한 단계 실행. 연결이 끊겨도(프록시 시간초과 등) 서버에서는 계속 도니, 끝날 때까지 상태를 확인합니다
 // 버튼 아래 한 줄 — 지금 무엇을 하고 있는지 (진행 기록 표는 아래에 있어 잘 안 보입니다)
-function runMsg(text, kind) {
+function runMsg(text, kind, stopKey) {
   var el = document.getElementById('run-msg');
   if (!text) { el.style.display = 'none'; return; }
   el.style.display = '';
   el.className = 'msg ' + (kind || 'ok');
-  el.textContent = text;
+  el.innerHTML = esc(text) + (stopKey
+    ? ' <button type="button" class="btn sm" style="margin-left:8px" onclick="stopStep(\'' + esc(stopKey) + '\')">중단</button>'
+    : '');
+}
+
+// 너무 오래 걸리면 그 단계를 멈춥니다. 넣던 것은 DB 가 전부 되돌리고, 다시 실행하면 처음부터 합니다
+function stopStep(key) {
+  if (!confirm(key + ' 단계를 중단할까요?\n넣던 자료는 되돌려지고, 이관 실행을 다시 누르면 이 단계부터 다시 합니다.')) return;
+  post({action: 'kill_step', key: key}).then(function (r) {
+    if (r.error && r.status !== 'FAIL') { alert(r.error); }
+  }).catch(function (e) { alert(e.message); });
 }
 function elapsed(ms) {
   var s = Math.floor(ms / 1000);
@@ -657,11 +701,14 @@ function elapsed(ms) {
 
 function runStep(s) {
   s.status = 'RUNNING'; s.error = null; renderSteps();
-  var started = Date.now(), resent = 0;
+  // 경과 시간은 서버가 이 단계를 시작한 때부터 (창을 새로 열어도 0 부터 다시 세지 않게)
+  var started = Date.now() - ((s.elapsed || 0) * 1000), resent = 0;
   var tick = setInterval(function () {
     runMsg(PHASE_LABEL[s.phase] + ' ' + s.key + ' 실행 중 — ' + elapsed(Date.now() - started)
            + ' 경과. ' + (s.key.indexOf('14b') === 0 ? '전표 49,360건이라 몇 분 걸릴 수 있습니다. ' : '')
-           + '창을 닫아도 서버에서는 계속 돕니다.');
+           + '창을 닫아도 서버에서는 계속 돕니다.'
+           + (Date.now() - started > 5 * 60 * 1000 ? ' 너무 오래 걸리면 중단하고 다시 실행하세요.' : ''),
+           'ok', s.key);
   }, 1000);
   function soft(e) {
     if (e && e.fatal) return {status: 'FAIL', error: e.message};
@@ -675,13 +722,8 @@ function runStep(s) {
         resent++;
         return post({action: 'run_step', key: s.key}).catch(soft).then(poll);
       }
+      if (r.elapsed !== undefined && r.elapsed !== null) { started = Date.now() - r.elapsed * 1000; }
       if (r.status !== 'RUNNING') { clearInterval(tick); applyResult(s, r); renderSteps(); return s.status; }
-      if (Date.now() - started > 40 * 60 * 1000) {
-        clearInterval(tick);
-        applyResult(s, {status: 'FAIL', error: '40분이 지나도 끝나지 않았습니다. 새로고침해서 상태를 확인하세요.'});
-        renderSteps();
-        return 'FAIL';
-      }
       return sleep(5000).then(function () {
         return post({action: 'status', key: s.key}).catch(soft);
       }).then(poll);
