@@ -213,3 +213,11 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-line
   .combo-item { padding: 11px 10px; font-size: 14px; }
   .combo-list { max-height: 50vh; }
 }
+
+/* 대시보드 — 누르면 세부 목록으로 가는 카드 */
+a.kpi-link { display: block; position: relative; color: inherit; text-decoration: none;
+  transition: border-color .15s, box-shadow .15s; }
+a.kpi-link:hover, a.kpi-link:focus-visible { border-color: var(--accent); text-decoration: none;
+  box-shadow: 0 4px 14px rgba(10, 36, 56, .08); }
+.kpi-go { position: absolute; right: 12px; top: 8px; font-size: 20px; line-height: 1; color: var(--ink3); }
+a.kpi-link:hover .kpi-go { color: var(--accent-deep); }

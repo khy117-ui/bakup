@@ -675,6 +675,18 @@ function txn_type_label(string $t): string
 }
 
 /** 미수 상태 뱃지 */
+/** 매출전표 상태 → [한글, 배지색] */
+function shipment_status_badge(string $s): array
+{
+    return [
+        'DRAFT'     => ['임시',        'b-warn'],
+        'CONFIRMED' => ['확정·미청구', 'b-warn'],
+        'BILLED'    => ['청구',        'b-info'],
+        'PAID'      => ['입금',        'b-ok'],
+        'CANCELLED' => ['취소',        'b-err'],
+    ][$s] ?? [$s, 'b-info'];
+}
+
 function pay_status_badge(string $s): array
 {
     return [

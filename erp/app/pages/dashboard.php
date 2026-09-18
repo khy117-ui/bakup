@@ -111,48 +111,67 @@ $seeCash  = route_can_view('cash_dashboard');
   <?php endif; ?>
 </div>
 
+<?php
+// 카드를 누르면 그 숫자의 세부 목록으로 갑니다. 그 화면을 볼 권한이 없으면 링크 없이 숫자만
+$kpi = function (string $route, string $href): string {
+    return route_can_view($route)
+        ? '<a class="kpi kpi-link" href="' . h($href) . '">'
+        : '<div class="kpi">';
+};
+$kpiEnd = function (string $route): string {
+    return route_can_view($route) ? '<span class="kpi-go" aria-hidden="true">›</span></a>' : '</div>';
+};
+$today = date('Y-m-d');
+?>
 <?php if ($seeSales || $seeComp): ?>
 <div class="kpis">
   <?php if ($seeSales): ?>
-  <div class="kpi">
+  <?= $kpi('sales_stats', '?p=sales_stats&view=list&ym=' . date('Y-m')) ?>
     <div class="lab">이번 달 매출 (공급가액)</div>
     <div class="val tnum"><?= money($mon['supply']) ?><span style="font-size:13px;font-weight:600"> 원</span></div>
     <div class="sub tnum">VAT <?= money($mon['tax']) ?> 원 · 전표 <?= money($mon['cnt']) ?> 건</div>
-  </div>
-  <div class="kpi">
+  <?= $kpiEnd('sales_stats') ?>
+  <?= $kpi('shipments', '?p=shipments&status=unbilled') ?>
     <div class="lab">미청구 전표</div>
     <div class="val tnum"><?= money($unbilled) ?><span style="font-size:13px;font-weight:600"> 건</span></div>
-    <div class="sub">청구관리 화면은 준비중입니다</div>
-  </div>
+    <div class="sub">아직 청구서에 안 들어간 전표</div>
+  <?= $kpiEnd('shipments') ?>
   <?php endif; ?>
   <?php if ($seeComp): ?>
-  <div class="kpi">
+  <?= $kpi('companies', '?p=companies') ?>
     <div class="lab">거래처</div>
     <div class="val tnum"><?= money($compCnt) ?><span style="font-size:13px;font-weight:600"> 곳</span></div>
-    <div class="sub"><a href="?p=companies">목록 보기</a></div>
-  </div>
+    <div class="sub">거래처 목록</div>
+  <?= $kpiEnd('companies') ?>
   <?php endif; ?>
 </div>
 <?php endif; ?>
 
 <?php if ($cashReady && $seeCash): ?>
 <div class="kpis">
-  <div class="kpi"><div class="lab">오늘 입금 · 출금</div>
+  <?= $kpi('cash_list', '?p=cash_list&from=' . $today . '&to=' . $today) ?>
+    <div class="lab">오늘 입금 · 출금</div>
     <div class="val tnum" style="font-size:19px">
       <span style="color:#1B7F5A"><?= money($cashToday['in_sum']) ?></span>
       <span style="color:var(--ink3);font-size:14px"> / </span>
       <span style="color:#B3261E"><?= money($cashToday['out_sum']) ?></span></div>
-    <div class="sub">이번달 <?= money($cashMonth['in_sum']) ?> / <?= money($cashMonth['out_sum']) ?></div></div>
-  <div class="kpi"><div class="lab">현재 총 미수금</div>
+    <div class="sub">이번달 <?= money($cashMonth['in_sum']) ?> / <?= money($cashMonth['out_sum']) ?></div>
+  <?= $kpiEnd('cash_list') ?>
+  <?= $kpi('receivables', '?p=receivables') ?>
+    <div class="lab">현재 총 미수금</div>
     <div class="val tnum" style="color:var(--err-fg)"><?= money($arSum['bal']) ?></div>
-    <div class="sub">거래처 <?= money($arSum['comp_cnt']) ?>곳 ·
-      <a href="?p=receivables">미수금 관리</a></div></div>
-  <div class="kpi"><div class="lab">현재 미지급금</div>
+    <div class="sub">거래처 <?= money($arSum['comp_cnt']) ?>곳 · 미수금 관리</div>
+  <?= $kpiEnd('receivables') ?>
+  <?= $kpi('cash_out', '?p=cash_out') ?>
+    <div class="lab">현재 미지급금</div>
     <div class="val tnum"><?= money($apSum['bal']) ?></div>
-    <div class="sub">운송사 등에 줄 돈</div></div>
-  <div class="kpi"><div class="lab">계좌 잔액 합계</div>
+    <div class="sub">운송사 등에 줄 돈 · 출금 등록</div>
+  <?= $kpiEnd('cash_out') ?>
+  <?= $kpi('cash_dashboard', '?p=cash_dashboard') ?>
+    <div class="lab">계좌 잔액 합계</div>
     <div class="val tnum"><?= money($cashBal) ?></div>
-    <div class="sub"><a href="?p=cash_dashboard">입출금 현황</a></div></div>
+    <div class="sub">입출금 현황</div>
+  <?= $kpiEnd('cash_dashboard') ?>
 </div>
 <?php endif; ?>
 
@@ -178,12 +197,12 @@ $seeCash  = route_can_view('cash_dashboard');
     <?php foreach ($recent as $r): ?>
       <tr>
         <td class="tnum"><?= h($r['voucher_date']) ?></td>
-        <td class="tnum" style="font-weight:600"><?= h($r['awb_no']) ?></td>
+        <td class="tnum" style="font-weight:600"><a href="?p=shipment_form&amp;id=<?= (int)$r['id'] ?>"><?= h($r['awb_no']) ?></a></td>
         <td><?= h($r['name_ko']) ?></td>
         <td class="r tnum"><?= money($r['supply']) ?></td>
         <td class="r tnum"><?= money($r['tax']) ?></td>
-        <td class="c"><span class="badge <?= $r['status'] === 'PAID' ? 'b-ok'
-            : ($r['status'] === 'BILLED' ? 'b-info' : 'b-warn') ?>"><?= h($r['status']) ?></span></td>
+        <?php [$sl, $sc] = shipment_status_badge((string)$r['status']); ?>
+        <td class="c"><span class="badge <?= $sc ?>"><?= h($sl) ?></span></td>
       </tr>
     <?php endforeach; ?>
     </tbody>

@@ -5,6 +5,10 @@ $eid  = entity_id();
 $kw   = query('kw');
 $from = query('from');
 $to   = query('to');
+// 상태 — unbilled 는 대시보드 '미청구 전표' 와 같은 조건 (임시 · 확정)
+$STATUS = ['unbilled' => ['DRAFT', 'CONFIRMED'], 'BILLED' => ['BILLED'], 'PAID' => ['PAID'],
+           'CANCELLED' => ['CANCELLED']];
+$status = array_key_exists(query('status'), $STATUS) ? query('status') : '';
 $page = max(1, (int)query('page', '1'));
 $per  = 20;
 $off  = ($page - 1) * $per;
@@ -23,6 +27,10 @@ if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) {
 if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
     $where[] = 's.voucher_date <= ?';
     $params[] = $to;
+}
+if ($status !== '') {
+    $where[] = 's.status IN (' . implode(',', array_fill(0, count($STATUS[$status]), '?')) . ')';
+    array_push($params, ...$STATUS[$status]);
 }
 $w = implode(' AND ', $where);
 
@@ -72,6 +80,14 @@ layout_head('매출전표', 'shipments');
       <input type="date" id="from" name="from" value="<?= h($from) ?>"></div>
     <div class="fw w1"><label for="to">전표일 종료</label>
       <input type="date" id="to" name="to" value="<?= h($to) ?>"></div>
+    <div class="fw w1"><label for="status">상태</label>
+      <select id="status" name="status">
+        <option value="">전체</option>
+        <option value="unbilled"<?= $status==='unbilled'?' selected':'' ?>>미청구</option>
+        <option value="BILLED"<?= $status==='BILLED'?' selected':'' ?>>청구</option>
+        <option value="PAID"<?= $status==='PAID'?' selected':'' ?>>입금</option>
+        <option value="CANCELLED"<?= $status==='CANCELLED'?' selected':'' ?>>취소</option>
+      </select></div>
     <button class="btn">검색</button>
     <a class="btn" href="?p=shipments">초기화</a>
   </form>
@@ -104,7 +120,7 @@ layout_head('매출전표', 'shipments');
     <?php foreach ($rows as $r): ?>
       <tr>
         <td class="tnum"><?= h($r['voucher_date']) ?></td>
-        <td class="tnum" style="font-weight:600"><?= h($r['awb_no']) ?></td>
+        <td class="tnum" style="font-weight:600"><a href="?p=shipment_form&amp;id=<?= (int)$r['id'] ?>"><?= h($r['awb_no']) ?></a></td>
         <td><?= h($r['name_ko']) ?></td>
         <td class="c"><?= h($r['carrier']) ?></td>
         <td class="c"><?= $r['trade_type'] === 'IMPORT' ? '수입' : '수출' ?></td>
@@ -113,8 +129,9 @@ layout_head('매출전표', 'shipments');
         <td class="r tnum"><?= money($r['taxable_supply']) ?></td>
         <td class="r tnum"><?= money($r['tax_total']) ?></td>
         <td class="r tnum" style="font-weight:700"><?= money($r['grand_total']) ?></td>
-        <td class="c"><span class="badge <?= $r['status']==='CANCELLED'?'b-err':($r['status']==='PAID'?'b-ok':($r['status']==='BILLED'?'b-info':'b-warn')) ?>"><?= h($r['status']) ?></span></td>
-        <td class="c"><a class="btn sm" href="?p=shipment_form&amp;id=<?= (int)$r['id'] ?>">수정</a></td>
+        <?php [$sl, $sc] = shipment_status_badge((string)$r['status']); ?>
+        <td class="c"><span class="badge <?= $sc ?>"><?= h($sl) ?></span></td>
+        <td class="c"><a class="btn sm" href="?p=shipment_form&amp;id=<?= (int)$r['id'] ?>">보기</a></td>
       </tr>
     <?php endforeach; ?>
     </tbody>
@@ -123,7 +140,7 @@ layout_head('매출전표', 'shipments');
     <span>전체 <b class="tnum"><?= money($total) ?></b> 건 ·
       <span class="tnum"><?= money($off+1) ?>–<?= money(min($off+$per,$total)) ?></span></span>
     <div class="right">
-      <?php $qs='p=shipments&kw='.urlencode($kw).'&from='.urlencode($from).'&to='.urlencode($to); ?>
+      <?php $qs='p=shipments&kw='.urlencode($kw).'&from='.urlencode($from).'&to='.urlencode($to).'&status='.urlencode($status); ?>
       <?php if ($page>1): ?><a class="btn sm" href="?<?= h($qs) ?>&amp;page=<?= $page-1 ?>">이전</a><?php endif; ?>
       <?php if ($off+$per<$total): ?><a class="btn sm" href="?<?= h($qs) ?>&amp;page=<?= $page+1 ?>">다음</a><?php endif; ?>
     </div>
