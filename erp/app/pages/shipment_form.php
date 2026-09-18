@@ -457,6 +457,9 @@ layout_head($title, 'shipments');
   <div class="right">
     <?php if ($id > 0): ?>
       <span class="badge b-info tnum" style="height:28px"><?= h($cur['awb_no']) ?></span>
+      <?php if (($cur['status'] ?? '') !== 'CANCELLED' && route_can_view('billing')): ?>
+        <a class="btn" href="#bill-card">청구</a>
+      <?php endif; ?>
     <?php endif; ?>
     <a class="btn" href="?p=shipments">목록</a>
   </div>
@@ -792,6 +795,96 @@ layout_head($title, 'shipments');
     <?php endforeach; ?>
     </tbody>
   </table>
+  <?php endif; ?>
+</div>
+<?php endif; ?>
+
+<?php
+// ---------------------------------------------------------------- 청구 — 이 전표에서 바로 청구서 만들기
+if ($id > 0 && ($cur['status'] ?? '') !== 'CANCELLED' && route_can_view('billing')):
+    $st = db()->prepare('SELECT i.id, i.invoice_no, i.invoice_date, i.status, i.due_date, i.balance, i.grand_total
+                           FROM invoice_shipments xs JOIN invoices i ON i.id = xs.invoice_id
+                          WHERE xs.shipment_id = ? LIMIT 1');
+    $st->execute([$id]);
+    $inv = $st->fetch();
+    $others = [];
+    if (!$inv) {
+        // 같은 거래처의 다른 미청구 전표 — 같이 묶어 청구할 수 있게
+        $st = db()->prepare(
+            "SELECT s.id, s.awb_no, s.voucher_date, COALESCE(t.grand_total, 0) AS grand_total
+               FROM shipments s
+               LEFT JOIN v_shipment_totals t  ON t.shipment_id = s.id
+               LEFT JOIN invoice_shipments xs ON xs.shipment_id = s.id
+              WHERE s.business_entity_id = ? AND s.company_id = ? AND s.id <> ?
+                AND s.deleted_at IS NULL AND s.status <> 'CANCELLED' AND xs.id IS NULL
+                AND s.voucher_date >= ? - INTERVAL 62 DAY
+              ORDER BY s.voucher_date DESC, s.id DESC LIMIT 30");
+        $st->execute([$eid, (int)$cur['company_id'], $id, $cur['voucher_date']]);
+        $others = $st->fetchAll();
+        $myTotal = db()->prepare('SELECT COALESCE(grand_total, 0) FROM v_shipment_totals WHERE shipment_id = ?');
+        $myTotal->execute([$id]);
+        $myTotal = (float)$myTotal->fetchColumn();
+    }
+?>
+<div class="card" id="bill-card">
+  <div class="ch">청구
+    <?php if ($inv): [$il, $ic] = invoice_state($inv); ?>
+      <span class="badge <?= $ic ?>"><?= h($il) ?></span>
+    <?php else: ?>
+      <span class="badge b-warn">미청구</span>
+    <?php endif; ?></div>
+  <?php if ($inv): ?>
+  <div class="cb" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+    <span>청구서 <b class="tnum"><?= h($inv['invoice_no']) ?></b> · <span class="tnum"><?= h($inv['invoice_date']) ?></span>
+      · 합계 <b class="tnum"><?= money($inv['grand_total']) ?></b> · 미수 <span class="tnum"><?= money($inv['balance']) ?></span></span>
+    <a class="btn sm pri" style="margin-left:auto" href="?p=invoice_view&amp;id=<?= (int)$inv['id'] ?>">청구서 열기</a>
+  </div>
+  <?php elseif (!route_can_edit('billing')): ?>
+    <div class="empty">아직 청구하지 않은 전표입니다. 청구서는 청구 권한이 있는 사람이 만듭니다.</div>
+  <?php else: ?>
+  <form method="post" action="?p=billing" class="cb">
+    <?= csrf_field() ?>
+    <input type="hidden" name="act" value="create_quick">
+    <input type="hidden" name="back" value="form">
+    <input type="hidden" name="ship[]" value="<?= $id ?>">
+    <?php if ($others): ?>
+    <div style="font-size:12.5px;font-weight:600;margin-bottom:6px">같은 거래처의 다른 미청구 전표도 같이 청구하려면 고르세요
+      <label style="font-weight:400;margin-left:8px"><input type="checkbox" onchange="document.querySelectorAll('.bill-other').forEach(function(c){c.checked=this.checked;c.dispatchEvent(new Event('change'))},this)"> 모두</label></div>
+    <div style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;margin-bottom:10px">
+      <?php foreach ($others as $o): ?>
+      <label style="display:flex;gap:10px;align-items:center;padding:6px 10px;border-bottom:1px solid var(--line2);font-size:12.5px">
+        <input type="checkbox" class="bill-other" name="ship[]" value="<?= (int)$o['id'] ?>" data-amt="<?= (float)$o['grand_total'] ?>">
+        <span class="tnum" style="width:90px"><?= h($o['voucher_date']) ?></span>
+        <span class="tnum" style="flex:1;font-weight:600"><?= h($o['awb_no']) ?></span>
+        <span class="tnum"><?= money($o['grand_total']) ?></span>
+      </label>
+      <?php endforeach; ?>
+    </div>
+    <?php endif; ?>
+    <div class="f" style="align-items:flex-end">
+      <div class="fw w1"><label>청구일</label><input type="date" name="invoice_date" value="<?= h(date('Y-m-d')) ?>"></div>
+      <div class="fw w1"><label>지급기한</label><input type="date" name="due_date" value="<?= h(date('Y-m-d', strtotime('+30 days'))) ?>"></div>
+      <div style="margin-left:auto;text-align:right">
+        <div style="font-size:11.5px;color:var(--ink2)">청구 합계 (<span id="bill-cnt">1</span>건)</div>
+        <div class="tnum" style="font-size:19px;font-weight:700" id="bill-sum" data-base="<?= $myTotal ?>"><?= money($myTotal) ?></div>
+      </div>
+      <button class="btn pri">청구서 만들기</button>
+    </div>
+    <div style="font-size:11.5px;color:var(--ink3);margin-top:8px">
+      작성중(DRAFT) 청구서가 만들어지고 청구서 화면으로 넘어갑니다. 내용을 확인한 뒤 거기서 발행합니다.
+      <?php if ($id > 0): ?>전표 내용을 고쳤다면 먼저 위에서 <b>수정 저장</b> 하세요.<?php endif; ?></div>
+  </form>
+  <script>
+  (function () {
+    var sum = document.getElementById('bill-sum'), cnt = document.getElementById('bill-cnt');
+    function upd() {
+      var t = parseFloat(sum.getAttribute('data-base')) || 0, n = 1;
+      document.querySelectorAll('.bill-other:checked').forEach(function (c) { t += parseFloat(c.getAttribute('data-amt')) || 0; n++; });
+      sum.textContent = Math.round(t).toLocaleString('ko-KR'); cnt.textContent = n;
+    }
+    document.querySelectorAll('.bill-other').forEach(function (c) { c.addEventListener('change', upd); });
+  })();
+  </script>
   <?php endif; ?>
 </div>
 <?php endif; ?>

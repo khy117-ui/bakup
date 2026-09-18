@@ -68,6 +68,17 @@ $st = db()->prepare(
 $st->execute($params);
 $sum = $st->fetch() ?: ['supply'=>0,'tax'=>0];
 
+// 청구 권한이 있으면 목록에서 골라 바로 청구서를 만듭니다 (billing 의 create_quick — 거래처별로 한 장씩)
+$canBill = route_can_edit('billing');
+$billedIds = [];
+if ($rows) {
+    $ids = array_map('intval', array_column($rows, 'id'));
+    $st = db()->prepare('SELECT shipment_id FROM invoice_shipments WHERE shipment_id IN ('
+                        . implode(',', array_fill(0, count($ids), '?')) . ')');
+    $st->execute($ids);
+    $billedIds = array_flip(array_map('intval', $st->fetchAll(PDO::FETCH_COLUMN)));
+}
+
 layout_head('매출전표', 'shipments');
 ?>
 <div class="head">
@@ -113,8 +124,20 @@ layout_head('매출전표', 'shipments');
   <?php if (!$rows): ?>
     <div class="empty">전표가 없습니다.</div>
   <?php else: ?>
+  <?php if ($canBill): ?>
+  <form method="post" action="?p=billing" id="bill-form"
+        onsubmit="var n=this.querySelectorAll('.bill-pick:checked').length; if(!n){alert('청구할 전표를 고르세요.');return false;} return confirm('고른 전표 '+n+'건으로 청구서를 만듭니다 (거래처별로 한 장씩). 계속할까요?');">
+    <?= csrf_field() ?>
+    <input type="hidden" name="act" value="create_quick">
+    <div class="cb" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line)">
+      <span style="font-size:12.5px;color:var(--ink2)">미청구 전표를 골라 바로 청구 —
+        <b id="bill-n">0</b>건 · <b class="tnum" id="bill-s">0</b>원</span>
+      <button class="btn sm pri" style="margin-left:auto">선택 전표 청구서 만들기</button>
+    </div>
+  <?php endif; ?>
   <table>
     <thead><tr>
+      <?php if ($canBill): ?><th class="c" style="width:40px"><input type="checkbox" id="bill-all" title="이 쪽의 미청구 전표 모두"></th><?php endif; ?>
       <th style="width:100px">전표일</th><th style="width:160px">AWB</th>
       <th>거래처</th><th class="c" style="width:70px">운송사</th>
       <th class="c" style="width:60px">구분</th><th class="r" style="width:75px">중량</th>
@@ -126,6 +149,11 @@ layout_head('매출전표', 'shipments');
     <tbody>
     <?php foreach ($rows as $r): ?>
       <tr>
+        <?php if ($canBill): ?>
+        <td class="c"><?php if (!isset($billedIds[(int)$r['id']]) && $r['status'] !== 'CANCELLED'): ?>
+          <input type="checkbox" class="bill-pick" name="ship[]" value="<?= (int)$r['id'] ?>" data-amt="<?= (float)$r['grand_total'] ?>">
+        <?php endif; ?></td>
+        <?php endif; ?>
         <td class="tnum"><?= h($r['voucher_date']) ?></td>
         <td class="tnum" style="font-weight:600"><a href="?p=shipment_form&amp;id=<?= (int)$r['id'] ?>"><?= h($r['awb_no']) ?></a></td>
         <td><?= h($r['name_ko']) ?></td>
@@ -143,6 +171,24 @@ layout_head('매출전표', 'shipments');
     <?php endforeach; ?>
     </tbody>
   </table>
+  <?php if ($canBill): ?>
+  </form>
+  <script>
+  (function () {
+    var picks = document.querySelectorAll('.bill-pick');
+    function upd() {
+      var n = 0, t = 0;
+      picks.forEach(function (c) { if (c.checked) { n++; t += parseFloat(c.getAttribute('data-amt')) || 0; } });
+      document.getElementById('bill-n').textContent = n;
+      document.getElementById('bill-s').textContent = Math.round(t).toLocaleString('ko-KR');
+    }
+    picks.forEach(function (c) { c.addEventListener('change', upd); });
+    document.getElementById('bill-all').addEventListener('change', function () {
+      var on = this.checked; picks.forEach(function (c) { c.checked = on; }); upd();
+    });
+  })();
+  </script>
+  <?php endif; ?>
   <div class="pager">
     <span>전체 <b class="tnum"><?= money($total) ?></b> 건 ·
       <span class="tnum"><?= money($off+1) ?>–<?= money(min($off+$per,$total)) ?></span></span>

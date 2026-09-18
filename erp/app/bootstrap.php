@@ -466,6 +466,75 @@ function invoice_recalc(int $invoiceId): void
                    $status, $invoiceId]);
 }
 
+/**
+ * 전표로 청구서를 만듭니다 (청구관리 · 매출전표 목록 · 전표 화면이 같이 씀).
+ * 한 거래처의 아직 청구 안 된 전표만 받습니다 — 하나라도 어긋나면 만들지 않고 RuntimeException.
+ * 대상기간을 안 주면 고른 전표의 첫 · 마지막 전표일. 돌려주는 값: [청구서 id, 청구번호]
+ */
+function invoice_create(int $eid, int $cid, array $shipIds, string $invoiceDate, ?string $dueDate = null,
+                        ?string $periodFrom = null, ?string $periodTo = null): array
+{
+    $shipIds = array_values(array_unique(array_filter(array_map('intval', $shipIds))));
+    if ($cid <= 0 || !$shipIds) {
+        throw new RuntimeException('청구할 전표를 한 건 이상 선택하세요.');
+    }
+    $pdo = db();
+    $own = !$pdo->inTransaction();
+    if ($own) { $pdo->beginTransaction(); }
+    try {
+        // 고른 전표가 정말 이 거래처의 미청구 건인지 다시 확인합니다. 화면에서 넘어온 id 를 그대로 믿지 않습니다
+        $ph = implode(',', array_fill(0, count($shipIds), '?'));
+        $st = $pdo->prepare(
+            "SELECT s.id, s.voucher_date FROM shipments s
+               LEFT JOIN invoice_shipments xs ON xs.shipment_id = s.id
+              WHERE s.id IN ($ph) AND s.business_entity_id = ? AND s.company_id = ?
+                AND s.deleted_at IS NULL AND s.status <> 'CANCELLED'
+                AND xs.id IS NULL
+              ORDER BY s.voucher_date, s.id
+              FOR UPDATE");
+        $st->execute(array_merge($shipIds, [$eid, $cid]));
+        $rows = $st->fetchAll();
+        if (count($rows) !== count($shipIds)) {
+            throw new RuntimeException('이미 청구됐거나 조건에 맞지 않는 전표가 섞여 있습니다.');
+        }
+        $ok = array_map('intval', array_column($rows, 'id'));
+        $periodFrom = $periodFrom ?: (string)$rows[0]['voucher_date'];
+        $periodTo   = $periodTo ?: (string)end($rows)['voucher_date'];
+
+        $no = next_doc_no('INVOICE', 'GPA-INV-', '-', $eid);
+        $bank = $pdo->prepare('SELECT id FROM business_bank_accounts
+                                WHERE business_entity_id = ? AND is_active = 1 ORDER BY sort_order LIMIT 1');
+        $bank->execute([$eid]);
+        $bankId = $bank->fetchColumn() ?: null;
+
+        $pdo->prepare(
+            'INSERT INTO invoices
+               (business_entity_id, invoice_no, company_id, invoice_date,
+                period_from, period_to, due_date, bank_account_id, status, created_by)
+             VALUES (?,?,?,?,?,?,?,?,\'DRAFT\',?)')
+            ->execute([$eid, $no, $cid, $invoiceDate, $periodFrom, $periodTo,
+                       $dueDate ?: null, $bankId, $_SESSION['admin_id'] ?? null]);
+        $invId = (int)$pdo->lastInsertId();
+
+        $ins = $pdo->prepare('INSERT INTO invoice_shipments (invoice_id, shipment_id, line_no) VALUES (?,?,?)');
+        $n = 0;
+        foreach ($ok as $sid) {
+            $ins->execute([$invId, $sid, ++$n]);
+        }
+        $pdo->prepare("UPDATE shipments SET status = 'BILLED'
+                        WHERE id IN ($ph) AND status NOT IN ('PAID','CANCELLED')")
+            ->execute($ok);
+
+        invoice_recalc($invId);
+        log_action('청구', 'CREATE', 'invoices', $invId, $no, null, '전표 ' . $n . '건');
+        if ($own) { $pdo->commit(); }
+        return [$invId, $no];
+    } catch (Throwable $e) {
+        if ($own && $pdo->inTransaction()) { $pdo->rollBack(); }
+        throw $e;
+    }
+}
+
 /** 연체 여부는 저장하지 않고 볼 때 계산합니다 (날짜가 지나면 저절로 바뀌므로) */
 function invoice_state(array $inv): array
 {

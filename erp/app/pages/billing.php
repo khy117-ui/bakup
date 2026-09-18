@@ -25,70 +25,62 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'create') {
     }
 
     if ($err === '') {
-        $pdo = db();
         try {
-            $pdo->beginTransaction();
-
-            // 고른 전표가 정말 이 거래처의 미청구 건인지 다시 확인합니다.
-            // 화면에서 넘어온 id 를 그대로 믿지 않습니다
-            $ph = implode(',', array_fill(0, count($picked), '?'));
-            $st = $pdo->prepare(
-                "SELECT s.id FROM shipments s
-                   LEFT JOIN invoice_shipments xs ON xs.shipment_id = s.id
-                  WHERE s.id IN ($ph) AND s.business_entity_id = ? AND s.company_id = ?
-                    AND s.deleted_at IS NULL AND s.status <> 'CANCELLED'
-                    AND xs.id IS NULL");
-            $st->execute(array_merge($picked, [$eid, $cid]));
-            $ok = array_column($st->fetchAll(), 'id');
-
-            if (count($ok) !== count($picked)) {
-                throw new RuntimeException('이미 청구됐거나 조건에 맞지 않는 전표가 섞여 있습니다.');
-            }
-
-            $no = next_doc_no('INVOICE', 'GPA-INV-', '-');
-            $bank = $pdo->prepare(
-                'SELECT id FROM business_bank_accounts
-                  WHERE business_entity_id = ? AND is_active = 1
-                  ORDER BY sort_order LIMIT 1');
-            $bank->execute([$eid]);
-            $bankId = $bank->fetchColumn() ?: null;
-
-            $pdo->prepare(
-                'INSERT INTO invoices
-                   (business_entity_id, invoice_no, company_id, invoice_date,
-                    period_from, period_to, due_date, bank_account_id, status, created_by)
-                 VALUES (?,?,?,?,?,?,?,?,\'DRAFT\',?)')
-                ->execute([$eid, $no, $cid, $idate, $pfrom, $pto,
-                           $due !== '' ? $due : null, $bankId,
-                           $_SESSION['admin_id'] ?? null]);
-            $invId = (int)$pdo->lastInsertId();
-
-            $ins = $pdo->prepare(
-                'INSERT INTO invoice_shipments (invoice_id, shipment_id, line_no)
-                 VALUES (?,?,?)');
-            $n = 0;
-            foreach ($ok as $sid) {
-                $ins->execute([$invId, $sid, ++$n]);
-            }
-            $pdo->prepare(
-                "UPDATE shipments SET status = 'BILLED'
-                  WHERE id IN ($ph) AND status NOT IN ('PAID','CANCELLED')")
-                ->execute($ok);
-
-            invoice_recalc($invId);
-            log_action('청구', 'CREATE', 'invoices', $invId, $no, null,
-                       '전표 ' . $n . '건');
-            $pdo->commit();
+            [$invId, $no] = invoice_create($eid, $cid, $picked, $idate, $due !== '' ? $due : null, $pfrom, $pto);
             flash('청구서 ' . $no . ' 를 만들었습니다. 내용을 확인하고 발행하세요.');
             redirect('?p=invoice_view&id=' . $invId);
         } catch (Throwable $e) {
-            $pdo->rollBack();
             error_log('청구서 생성 실패: ' . $e->getMessage());
             $err = $e instanceof RuntimeException
                  ? $e->getMessage()
                  : '청구서를 만들지 못했습니다.';
         }
     }
+}
+
+// ---------------------------------------------------------------- 매출전표에서 바로 청구
+// 매출전표 목록에서 고른 전표 · 전표 화면의 [청구서 만들기] 가 여기로 옵니다.
+// 거래처가 여러 곳이면 거래처마다 청구서를 하나씩 만듭니다. 이미 청구된 전표는 건너뜁니다.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'create_quick') {
+    csrf_check();
+    $picked = $_POST['ship'] ?? [];
+    $picked = is_array($picked) ? array_values(array_unique(array_filter(array_map('intval', $picked)))) : [];
+    $back   = post('back') === 'form' && count($picked) === 1 ? '?p=shipment_form&id=' . $picked[0] : '?p=shipments';
+    $idate  = preg_match('/^\d{4}-\d{2}-\d{2}$/', post('invoice_date')) ? post('invoice_date') : date('Y-m-d');
+    $due    = preg_match('/^\d{4}-\d{2}-\d{2}$/', post('due_date')) ? post('due_date')
+            : date('Y-m-d', strtotime($idate . ' +30 days'));
+    if (!$picked) {
+        flash('청구할 전표를 한 건 이상 선택하세요.');
+        redirect($back);
+    }
+    // 이 사업자의 아직 청구 안 된 전표만, 거래처별로 묶습니다
+    $ph = implode(',', array_fill(0, count($picked), '?'));
+    $st = db()->prepare(
+        "SELECT s.id, s.company_id FROM shipments s
+           LEFT JOIN invoice_shipments xs ON xs.shipment_id = s.id
+          WHERE s.id IN ($ph) AND s.business_entity_id = ?
+            AND s.deleted_at IS NULL AND s.status <> 'CANCELLED' AND xs.id IS NULL
+          ORDER BY s.company_id, s.voucher_date, s.id");
+    $st->execute(array_merge($picked, [$eid]));
+    $groups = [];
+    foreach ($st->fetchAll() as $r) { $groups[(int)$r['company_id']][] = (int)$r['id']; }
+    $skipped = count($picked) - array_sum(array_map('count', $groups));
+    $made = [];
+    $fail = [];
+    foreach ($groups as $cid => $ids) {
+        try {
+            $made[] = invoice_create($eid, $cid, $ids, $idate, $due);
+        } catch (Throwable $e) {
+            error_log('청구서 생성 실패: ' . $e->getMessage());
+            $fail[] = $e instanceof RuntimeException ? $e->getMessage() : '청구서를 만들지 못했습니다.';
+        }
+    }
+    $msg = $made ? '청구서 ' . count($made) . '장을 만들었습니다 (' . implode(', ', array_column($made, 1)) . ').'
+                   . ' 내용을 확인하고 발행하세요.' : '만든 청구서가 없습니다.';
+    if ($skipped > 0) { $msg .= ' 이미 청구됐거나 취소된 전표 ' . $skipped . '건은 뺐습니다.'; }
+    if ($fail) { $msg .= ' 실패: ' . implode(' / ', array_unique($fail)); }
+    flash($msg);
+    redirect(count($made) === 1 ? '?p=invoice_view&id=' . $made[0][0] : ($made ? '?p=billing' : $back));
 }
 
 // ---------------------------------------------------------------- 미청구 조회
