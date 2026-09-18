@@ -77,3 +77,18 @@ CREATE TABLE IF NOT EXISTS backup_keys (
 INSERT INTO document_types (code, name, sort_order)
 SELECT 'ETC', '기타 서류', 99 FROM DUAL
  WHERE NOT EXISTS (SELECT 1 FROM document_types WHERE code = 'ETC');
+
+-- 도착지 목록 — 운영 DB 에는 schema_upgrade_dest() 가 붙임. 처음 도착지 관리를 열면 전표에서 불러옴
+CREATE TABLE IF NOT EXISTS destinations (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name         VARCHAR(50)  NOT NULL COMMENT '전표에 적히는 표기 (옛 ARRIVAL_N) — shipments.dest_city',
+  name_ko      VARCHAR(50)  NULL,
+  country_code CHAR(2)      NULL     COMMENT 'ISO 2자리 — 운송사 Zone 과 맞춤',
+  memo         VARCHAR(200) NULL,
+  is_active    TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_dest_name (name),
+  KEY ix_dest_country (country_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='도착지 목록';

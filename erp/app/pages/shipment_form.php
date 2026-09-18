@@ -22,6 +22,23 @@ $carriers = db()->query(
     'SELECT id, code, name, default_tax_type FROM carriers
       WHERE is_active = 1 ORDER BY sort_order, code')->fetchAll();
 
+// 도착지 — 도착지 관리 목록에서 고릅니다. 목록이 아직 비어 있으면 예전처럼 직접 적습니다
+$dests = [];
+try {
+    $dests = db()->query('SELECT name, name_ko, country_code FROM destinations WHERE is_active = 1 ORDER BY name')
+                 ->fetchAll();
+} catch (PDOException $e) {
+    $dests = [];
+}
+/** 도착지 이름 → 국가코드 (대소문자 무시) */
+function dest_country_of(array $dests, string $name): ?string
+{
+    foreach ($dests as $d) {
+        if (strcasecmp((string)$d['name'], $name) === 0) { return $d['country_code'] ?: null; }
+    }
+    return null;
+}
+
 // 관련서류 — 문서보관함(documents)에 전표 번호를 달아 둡니다
 $canDoc   = route_can_edit('documents');
 $seeDoc   = route_can_view('documents');
@@ -113,7 +130,7 @@ if ($id > 0) {
 function snapshot(int $sid): string
 {
     $st = db()->prepare(
-        'SELECT s.voucher_date, s.trade_type, s.status, s.charge_weight, s.awb_no,
+        'SELECT s.voucher_date, s.trade_type, s.status, s.charge_weight, s.awb_no, s.dest_city,
                 c.name_ko, ca.code AS carrier
            FROM shipments s
            JOIN companies c  ON c.id = s.company_id
@@ -136,9 +153,9 @@ function snapshot(int $sid): string
                           WHERE shipment_id = ? AND deleted_at IS NULL');
     $st->execute([$sid]);
     $parts[] = '매입원가=' . number_format((float)$st->fetchColumn());
-    return sprintf('AWB=%s %s %s %s 중량%s 거래처=%s 운송사=%s 합계=%s [%s]',
+    return sprintf('AWB=%s %s %s %s 중량%s 거래처=%s 운송사=%s 도착지=%s 합계=%s [%s]',
         $h['awb_no'] ?? '', $h['voucher_date'] ?? '', $h['trade_type'] ?? '', $h['status'] ?? '',
-        $h['charge_weight'] ?? '-', $h['name_ko'] ?? '', $h['carrier'] ?? '',
+        $h['charge_weight'] ?? '-', $h['name_ko'] ?? '', $h['carrier'] ?? '', $h['dest_city'] ?? '-',
         number_format($sum), implode(' | ', $parts));
 }
 
@@ -277,7 +294,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
                 $st = $pdo->prepare(
                     'UPDATE shipments
                         SET company_id = ?, carrier_id = ?, voucher_date = ?, ship_date = ?,
-                            trade_type = ?, dest_city = ?, actual_weight = ?, volume_weight = ?,
+                            trade_type = ?, dest_city = ?, dest_country = ?, actual_weight = ?, volume_weight = ?,
                             charge_weight = ?, package_count = ?, sales_team = ?, sales_rep = ?,
                             remark = ?, updated_by = ?
                       WHERE id = ? AND business_entity_id = ?');
@@ -285,6 +302,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
                     (int)$in['company_id'], (int)$in['carrier_id'], $in['voucher_date'],
                     $in['ship_date'] !== '' ? $in['ship_date'] : null, $trade,
                     $in['dest_city'] !== '' ? $in['dest_city'] : null,
+                    $in['dest_city'] !== '' ? dest_country_of($dests, $in['dest_city']) : null,
                     $aw > 0 ? $aw : null, $vw > 0 ? $vw : null, $cw > 0 ? $cw : null,
                     $in['package_count'] !== '' ? (int)$in['package_count'] : null,
                     $in['sales_team'] !== '' ? $in['sales_team'] : null,
@@ -311,15 +329,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
                 $st = $pdo->prepare(
                     'INSERT INTO shipments
                        (business_entity_id, company_id, awb_no, awb_source, voucher_date,
-                        ship_date, trade_type, carrier_id, dest_city,
+                        ship_date, trade_type, carrier_id, dest_city, dest_country,
                         actual_weight, volume_weight, charge_weight, package_count,
                         status, sales_team, sales_rep, remark, created_by)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,\'CONFIRMED\',?,?,?,?)');
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,\'CONFIRMED\',?,?,?,?)');
                 $st->execute([
                     $eid, (int)$in['company_id'], $awb, $manual ? 'MANUAL' : 'HOUSE', $in['voucher_date'],
                     $in['ship_date'] !== '' ? $in['ship_date'] : null, $trade,
                     (int)$in['carrier_id'],
                     $in['dest_city'] !== '' ? $in['dest_city'] : null,
+                    $in['dest_city'] !== '' ? dest_country_of($dests, $in['dest_city']) : null,
                     $aw > 0 ? $aw : null, $vw > 0 ? $vw : null, $cw > 0 ? $cw : null,
                     $in['package_count'] !== '' ? (int)$in['package_count'] : null,
                     $in['sales_team'] !== '' ? $in['sales_team'] : null,
@@ -511,7 +530,29 @@ layout_head($title, 'shipments');
     <div class="fw w1"><label>발송일</label>
       <input type="date" name="ship_date" value="<?= h($in['ship_date']) ?>"></div>
     <div class="fw w2"><label>도착지</label>
-      <input type="text" name="dest_city" value="<?= h($in['dest_city']) ?>" placeholder="LOS ANGELES"></div>
+      <?php if ($dests): ?>
+        <?php
+        // 지금 값이 목록에 없으면(예전에 직접 적은 것) 그대로 보이게 끼워 둡니다
+        $destKnown = $in['dest_city'] === '' || dest_country_of($dests, $in['dest_city']) !== null
+                   || count(array_filter($dests, fn($d) => strcasecmp((string)$d['name'], $in['dest_city']) === 0)) > 0;
+        ?>
+        <select name="dest_city" data-search="도착지 · 한글 이름 · 국가코드">
+          <option value="">선택 안 함</option>
+          <?php if (!$destKnown): ?>
+            <option value="<?= h($in['dest_city']) ?>" selected><?= h($in['dest_city']) ?> (목록에 없음)</option>
+          <?php endif; ?>
+          <?php foreach ($dests as $d): ?>
+            <option value="<?= h($d['name']) ?>"<?= strcasecmp((string)$d['name'], $in['dest_city']) === 0 ? ' selected' : '' ?>>
+              <?= h($d['name'] . ($d['name_ko'] ? ' · ' . $d['name_ko'] : '')) ?><?= $d['country_code'] ? ' (' . h($d['country_code']) . ')' : '' ?></option>
+          <?php endforeach; ?>
+        </select>
+        <?php if (route_can_edit('destinations')): ?>
+          <small><a href="?p=destinations" target="_blank" rel="noopener">목록에 없으면 도착지 관리에서 추가</a></small>
+        <?php endif; ?>
+      <?php else: ?>
+        <input type="text" name="dest_city" value="<?= h($in['dest_city']) ?>" placeholder="LOS ANGELES">
+        <small style="color:var(--ink3)">기준정보 &gt; 도착지 관리를 한 번 열면 목록에서 고를 수 있습니다.</small>
+      <?php endif; ?></div>
   </div>
   <div class="cb f" style="border-top:1px solid var(--line2)">
     <div class="fw w1"><label>실중량 (kg)</label>

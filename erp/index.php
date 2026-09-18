@@ -59,6 +59,7 @@ $routes = [
     'migration_import' => 'migration_import.php',
     'delete_requests'  => 'delete_requests.php',
     'my_account'       => 'my_account.php',
+    'destinations'     => 'destinations.php',
 ];
 
 if ($page === 'logout') {
@@ -75,6 +76,7 @@ if (!isset($routes[$page])) {
 schema_upgrade_accounts();
 schema_fix_view_collation();
 schema_upgrade_docs();
+schema_upgrade_dest();
 
 if ($page !== 'login') {
     $ADMIN = require_login();

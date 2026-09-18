@@ -9,6 +9,7 @@ $to   = query('to');
 $STATUS = ['unbilled' => ['DRAFT', 'CONFIRMED'], 'BILLED' => ['BILLED'], 'PAID' => ['PAID'],
            'CANCELLED' => ['CANCELLED']];
 $status = array_key_exists(query('status'), $STATUS) ? query('status') : '';
+$dest   = trim(query('dest'));   // 도착지 관리에서 '전표 수' 를 누르면
 $page = max(1, (int)query('page', '1'));
 $per  = 20;
 $off  = ($page - 1) * $per;
@@ -27,6 +28,10 @@ if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) {
 if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
     $where[] = 's.voucher_date <= ?';
     $params[] = $to;
+}
+if ($dest !== '') {
+    $where[] = 's.dest_city = ?';
+    $params[] = $dest;
 }
 if ($status !== '') {
     $where[] = 's.status IN (' . implode(',', array_fill(0, count($STATUS[$status]), '?')) . ')';
@@ -88,6 +93,8 @@ layout_head('매출전표', 'shipments');
         <option value="PAID"<?= $status==='PAID'?' selected':'' ?>>입금</option>
         <option value="CANCELLED"<?= $status==='CANCELLED'?' selected':'' ?>>취소</option>
       </select></div>
+    <?php if ($dest !== ''): ?><input type="hidden" name="dest" value="<?= h($dest) ?>">
+      <span class="badge b-info" style="height:34px">도착지: <?= h($dest) ?></span><?php endif; ?>
     <button class="btn">검색</button>
     <a class="btn" href="?p=shipments">초기화</a>
   </form>
@@ -140,7 +147,7 @@ layout_head('매출전표', 'shipments');
     <span>전체 <b class="tnum"><?= money($total) ?></b> 건 ·
       <span class="tnum"><?= money($off+1) ?>–<?= money(min($off+$per,$total)) ?></span></span>
     <div class="right">
-      <?php $qs='p=shipments&kw='.urlencode($kw).'&from='.urlencode($from).'&to='.urlencode($to).'&status='.urlencode($status); ?>
+      <?php $qs='p=shipments&kw='.urlencode($kw).'&from='.urlencode($from).'&to='.urlencode($to).'&status='.urlencode($status).'&dest='.urlencode($dest); ?>
       <?php if ($page>1): ?><a class="btn sm" href="?<?= h($qs) ?>&amp;page=<?= $page-1 ?>">이전</a><?php endif; ?>
       <?php if ($off+$per<$total): ?><a class="btn sm" href="?<?= h($qs) ?>&amp;page=<?= $page+1 ?>">다음</a><?php endif; ?>
     </div>

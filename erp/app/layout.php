@@ -10,6 +10,7 @@ function layout_head(string $title, string $active): void
             ['companies', '거래처 관리', true],
             ['company_contacts', '업체 담당자', true],
             ['carriers', '운송사 관리', true],
+            ['destinations', '도착지 관리', true],
             ['rate_table', '특송 기본가격표', true],
             ['company_terms', '업체별 할인율', true],
         ]],

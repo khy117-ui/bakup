@@ -23,6 +23,8 @@ const ROUTE_PERMS = [
     'company_form'     => ['master.company.read', 'master.company.write'],
     'company_contacts' => ['master.company.read', 'master.company.write'],
     'carriers'         => ['master.carrier.read', 'master.carrier.write'],
+    // 도착지는 전표를 쓰는 사람이 늘리고 고칩니다
+    'destinations'     => ['sales.voucher.read', 'sales.voucher.write'],
     'rate_table'       => ['master.rate.read', 'master.rate.write'],
     'company_terms'    => ['master.rate.read', 'master.discount.write'],
 
@@ -196,6 +198,31 @@ function delete_request_pending(): int
         return (int)db()->query("SELECT COUNT(*) FROM delete_requests WHERE status = 'PENDING'")->fetchColumn();
     } catch (PDOException $e) {
         return 0;
+    }
+}
+
+/** 도착지 마스터 — 매출전표 도착지를 목록에서 고르게 (shipments.dest_city 표기와 이름으로 맞춤) */
+function schema_upgrade_dest(): void
+{
+    if (!empty($_SESSION['schema_dest_v1'])) { return; }
+    try {
+        db()->exec("CREATE TABLE IF NOT EXISTS destinations (
+                      id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                      name         VARCHAR(50)  NOT NULL COMMENT '전표에 적히는 표기 (옛 ARRIVAL_N) — shipments.dest_city',
+                      name_ko      VARCHAR(50)  NULL,
+                      country_code CHAR(2)      NULL     COMMENT 'ISO 2자리 — 운송사 Zone 과 맞춤',
+                      memo         VARCHAR(200) NULL,
+                      is_active    TINYINT(1)   NOT NULL DEFAULT 1,
+                      created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      updated_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                      PRIMARY KEY (id),
+                      UNIQUE KEY uq_dest_name (name),
+                      KEY ix_dest_country (country_code)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                      COMMENT='도착지 목록'");
+        $_SESSION['schema_dest_v1'] = 1;
+    } catch (PDOException $e) {
+        error_log('도착지 표 준비 실패: ' . $e->getMessage());
     }
 }
 
