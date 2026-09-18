@@ -1,0 +1,13 @@
+# 디렉터리 목록 노출 방지
+Options -Indexes
+
+# 소스·업로드 폴더 차단 (Apache 일 때. nginx 면 무시되므로 PHP 가드가 따로 있습니다)
+# 앞에 ^ 를 붙이지 않습니다 — /erp/ 같은 하위 폴더에 올려도 /erp/sql/… 이 막혀야 합니다.
+# (^/ 로 쓰면 사이트 맨 위에 올렸을 때만 막히고, 하위 폴더에서는 전부 열립니다)
+RedirectMatch 404 /(app|tools|storage|sql)(/|$)
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "SAMEORIGIN"
+  Header always set Referrer-Policy "same-origin"
+</IfModule>
