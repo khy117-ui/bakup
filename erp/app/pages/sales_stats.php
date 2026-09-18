@@ -384,7 +384,9 @@ layout_head('매출통계', 'sales_stats');
 <?php if ($cutover === null): ?>
   <div class="msg" style="background:var(--warn-bg);color:var(--warn-fg)">
     <b>전환일(기초잔액 기준일)이 아직 정해지지 않아</b> 옛 시스템 전표도 모두 미입금으로 보입니다.
-    옛 전표의 입금 여부는 <b>옛 시스템</b> 칸(입금Y)을 참고하세요. 전환일을 정하면 그 이전 전표는 '기초잔액' 으로 닫힙니다.</div>
+    옛 전표의 입금 여부는 <b>옛 시스템</b> 칸(입금Y)을 참고하세요.
+    <a href="?p=opening_balances">입출금관리 &gt; 기초잔액 관리</a>에서 전환일을 정하면 그 이전 전표는
+    '입금처리(전환 전)' 로 닫힙니다.</div>
 <?php endif; ?>
 
 <form method="post" id="payform">

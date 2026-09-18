@@ -591,7 +591,8 @@ function pay_status_badge(string $s): array
         'PAID'      => ['입금완료', 'b-ok'],
         'CANCELLED' => ['취소',     'b-err'],
         'NONE'      => ['금액없음', 'b-info'],
-        'OPENING'   => ['기초잔액', 'b-info'],
+        // 전환일 이전 전표 — 미수에서 닫힘(입금처리로 봄). 남은 미수가 있으면 기초잔액으로 따로 관리
+        'OPENING'   => ['입금처리(전환 전)', 'b-ok'],
     ][$s] ?? [$s, 'b-info'];
 }
 
