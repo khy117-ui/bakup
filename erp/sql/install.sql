@@ -1476,7 +1476,7 @@ INSERT INTO expense_categories (code, name, is_cogs, default_tax, sort_order) VA
   ('LABOR',     '인건비',        0, 'EXEMPT',   9),
   ('TAX',       '세금/공과금',   0, 'EXEMPT',  10),
   ('ETC',       '기타',          0, 'TAXABLE', 99)
-ON DUPLICATE KEY UPDATE name_ko = VALUES(name_ko);
+ON DUPLICATE KEY UPDATE name = VALUES(name);
 
 
 -- ============================================================================

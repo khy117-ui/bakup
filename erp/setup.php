@@ -177,10 +177,12 @@ if ($step === 'schema') {
     $pdo = db();
     $ok = 0; $fail = 0;
     // 중간에 끊겼을 때 &from=번호 로 그 문장부터 이어서 실행한다 (앞 문장은 CREATE TABLE 이라 다시 돌리면 실패)
+    // &to=번호 를 주면 거기까지만 (실패한 문장 하나만 다시 돌릴 때 from=to=번호)
     $from = max(1, (int)($_GET['from'] ?? 1));
-    echo "문장 " . count($stmts) . "개 중 {$from}번부터 실행합니다.\n\n";
+    $to   = (int)($_GET['to'] ?? 0) ?: count($stmts);
+    echo "문장 " . count($stmts) . "개 중 {$from}~{$to}번을 실행합니다.\n\n";
     foreach ($stmts as $n => $st) {
-        if ($n + 1 < $from) { continue; }
+        if ($n + 1 < $from || $n + 1 > $to) { continue; }
         try {
             // exec() 는 SELECT 결과를 읽지 않고 남겨서 다음 문장이 전부 2014 오류로 막힌다.
             // query() 로 돌리고 결과를 끝까지 읽은 뒤 닫는다. SELECT 는 확인용이라 결과도 보여준다.
