@@ -5,10 +5,7 @@ $eid = entity_id();
 $err = '';
 $sid = (int)query('shipment_id', '0');
 
-// 올릴 수 있는 확장자. 실행 가능한 형식은 넣지 않습니다
-const DOC_EXT = ['pdf','jpg','jpeg','png','gif','webp','xlsx','xls','csv',
-                 'docx','doc','pptx','ppt','hwp','hwpx','txt','zip'];
-const DOC_MAX = 20 * 1024 * 1024;   // 20MB
+// 올릴 수 있는 형식 · 크기(DOC_EXT · DOC_MAX)와 저장은 bootstrap 의 doc_store_upload()
 
 $types = db()->query('SELECT * FROM document_types WHERE is_active = 1 ORDER BY sort_order')
              ->fetchAll();
@@ -39,67 +36,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'upload') {
     $title = post('title');
     $f     = $_FILES['file'] ?? null;
 
-    if (!$f || !is_array($f) || ($f['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+    // 여러 개(files[]) — 매출전표 화면의 관련서류에서 한 번에 올립니다
+    $many = uploaded_files('files');
+    if ($many) {
+        if ($shId > 0) {
+            // 전표의 사업자 · 거래처를 그대로 따릅니다 (다른 사업자 전표에는 못 붙임)
+            $st = db()->prepare('SELECT company_id FROM shipments
+                                  WHERE id = ? AND business_entity_id = ? AND deleted_at IS NULL');
+            $st->execute([$shId, $eid]);
+            if (($cid = (int)$st->fetchColumn()) === 0) { exit('전표를 찾을 수 없습니다.'); }
+        }
+        $ok = 0;
+        $bad = [];
+        foreach ($many as $one) {
+            $e = doc_store_upload($one, $eid, $tid, $shId ?: null, $cid ?: null);
+            if ($e === '') { $ok++; } else { $bad[] = $e; }
+        }
+        flash(($ok ? '서류 ' . $ok . '개를 올렸습니다.' : '올린 서류가 없습니다.')
+              . ($bad ? ' 못 올린 것: ' . implode(' / ', $bad) : ''));
+        redirect(query('back') === 'sf' && $shId > 0
+                 ? '?p=shipment_form&id=' . $shId
+                 : '?p=documents' . ($shId ? '&shipment_id=' . $shId : ''));
+    } elseif (!$f || !is_array($f) || ($f['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
         $err = '파일을 고르세요.';
-    } elseif ($f['error'] !== UPLOAD_ERR_OK) {
-        $err = ($f['error'] === UPLOAD_ERR_INI_SIZE || $f['error'] === UPLOAD_ERR_FORM_SIZE)
-             ? '파일이 서버 허용 크기를 넘습니다. php.ini 의 upload_max_filesize 를 확인하세요.'
-             : '업로드에 실패했습니다 (오류 ' . (int)$f['error'] . ').';
-    } elseif (!is_uploaded_file($f['tmp_name'])) {
-        $err = '정상적인 업로드가 아닙니다.';
-    } elseif ($f['size'] > DOC_MAX) {
-        $err = '파일이 20MB 를 넘습니다.';
+        if (query('back') === 'sf' && $shId > 0) {
+            flash('올릴 파일을 고르세요.');
+            redirect('?p=shipment_form&id=' . $shId);
+        }
     } else {
-        $ext = strtolower(pathinfo((string)$f['name'], PATHINFO_EXTENSION));
-        if (!in_array($ext, DOC_EXT, true)) {
-            $err = '올릴 수 없는 형식입니다. 허용: ' . implode(', ', DOC_EXT);
-        } elseif ($tid <= 0) {
-            $err = '문서 종류를 고르세요.';
-        }
-    }
-
-    if ($err === '') {
-        $dir = doc_root() . DIRECTORY_SEPARATOR . date('Y') . DIRECTORY_SEPARATOR . date('m');
-        if (!is_dir($dir) && !@mkdir($dir, 0750, true) && !is_dir($dir)) {
-            $err = '저장 폴더를 만들지 못했습니다: ' . h($dir);
-        }
-    }
-
-    if ($err === '') {
-        // 저장 이름은 원본과 무관하게 새로 만듭니다.
-        // 원본 이름을 그대로 쓰면 경로 조작·덮어쓰기·실행 위험이 생깁니다
-        $stored = bin2hex(random_bytes(16)) . '.' . $ext;
-        $full   = $dir . DIRECTORY_SEPARATOR . $stored;
-        $rel    = date('Y') . '/' . date('m') . '/' . $stored;
-
-        if (!@move_uploaded_file($f['tmp_name'], $full)) {
-            $err = '파일을 저장하지 못했습니다. 폴더 쓰기 권한을 확인하세요.';
-        } else {
-            @chmod($full, 0640);
-            $hash = hash_file('sha256', $full) ?: null;
-            $mime = function_exists('mime_content_type')
-                  ? (mime_content_type($full) ?: null) : null;
-            try {
-                db()->prepare(
-                    'INSERT INTO documents
-                       (business_entity_id, document_type_id, shipment_id, company_id,
-                        doc_date, title, original_name, stored_path, mime_type,
-                        size_bytes, checksum_sha256, backup_status, uploaded_by)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?,\'PENDING\',?)')
-                    ->execute([$eid, $tid, $shId ?: null, $cid ?: null,
-                               post('doc_date') ?: null,
-                               $title !== '' ? $title : (string)$f['name'],
-                               (string)$f['name'], $rel, $mime, (int)$f['size'], $hash,
-                               $_SESSION['admin_id'] ?? null]);
-                log_action('문서', 'CREATE', 'documents', (int)db()->lastInsertId(),
-                           (string)$f['name'], null, number_format((int)$f['size']) . ' bytes');
-                flash('문서를 올렸습니다.');
-                redirect('?p=documents' . ($shId ? '&shipment_id=' . $shId : ''));
-            } catch (PDOException $e) {
-                @unlink($full);
-                error_log('문서 저장 실패: ' . $e->getMessage());
-                $err = '기록을 남기지 못해 업로드를 취소했습니다.';
-            }
+        $err = doc_store_upload($f, $eid, $tid, $shId ?: null, $cid ?: null, $title, post('doc_date') ?: null);
+        if ($err === '') {
+            flash('문서를 올렸습니다.');
+            redirect('?p=documents' . ($shId ? '&shipment_id=' . $shId : ''));
         }
     }
 }
@@ -113,6 +81,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'remove') {
                     WHERE id = ? AND business_entity_id = ?')->execute([$did, $eid]);
     log_action('문서', 'DELETE', 'documents', $did, null, null, '목록에서 내림 (파일은 보존)');
     flash('문서를 목록에서 내렸습니다. 파일 자체는 서버에 남아 있습니다.');
+    // 매출전표 화면의 관련서류 목록에서 내린 경우 그 전표로 돌아갑니다
+    if (query('back') === 'sf' && $sid > 0) {
+        redirect('?p=shipment_form&id=' . $sid);
+    }
     redirect('?p=documents' . ($sid ? '&shipment_id=' . $sid : ''));
 }
 

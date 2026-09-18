@@ -117,6 +117,98 @@ function storage_root(): string
                  . DIRECTORY_SEPARATOR . 'documents';
 }
 
+// ---------------------------------------------------------------- 서류 파일
+// 올릴 수 있는 확장자. 실행 가능한 형식은 넣지 않습니다
+const DOC_EXT = ['pdf', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'xlsx', 'xls', 'csv',
+                 'docx', 'doc', 'pptx', 'ppt', 'hwp', 'hwpx', 'txt', 'zip'];
+const DOC_MAX = 20 * 1024 * 1024;   // 20MB
+
+/**
+ * 보관 폴더를 웹에서 바로 못 열게 막습니다.
+ * AISpace 에서는 /app/user_data 가 웹 폴더 안에 있어서, 파일 이름을 알면 주소로 열릴 수 있습니다.
+ * 파일은 로그인한 사람만 file_download 화면으로 받게 합니다.
+ */
+function doc_protect_root(string $root): void
+{
+    $ht = $root . DIRECTORY_SEPARATOR . '.htaccess';
+    if (is_dir($root) && !is_file($ht)) {
+        @file_put_contents($ht, "# 서류 보관 폴더 — 웹에서 직접 열지 못하게 (ERP 의 file_download 로만)\n"
+                              . "<IfModule mod_authz_core.c>\n  Require all denied\n</IfModule>\n"
+                              . "<IfModule !mod_authz_core.c>\n  Order deny,allow\n  Deny from all\n</IfModule>\n");
+    }
+}
+
+/** <input type=file name=x[] multiple> 를 파일 하나씩의 배열로 */
+function uploaded_files(string $field): array
+{
+    $f = $_FILES[$field] ?? null;
+    if (!$f || !isset($f['name'])) { return []; }
+    if (!is_array($f['name'])) { return [$f]; }
+    $out = [];
+    foreach ($f['name'] as $i => $name) {
+        if (($f['error'][$i] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) { continue; }
+        $out[] = ['name' => $name, 'type' => $f['type'][$i] ?? '', 'tmp_name' => $f['tmp_name'][$i] ?? '',
+                  'error' => $f['error'][$i] ?? UPLOAD_ERR_NO_FILE, 'size' => $f['size'][$i] ?? 0];
+    }
+    return $out;
+}
+
+/**
+ * 올린 파일 하나를 보관하고 documents 에 한 줄 남깁니다. 성공이면 '' , 실패면 이유.
+ * 저장 이름은 원본과 무관하게 새로 만듭니다 — 원본 이름을 쓰면 경로 조작 · 덮어쓰기 · 실행 위험.
+ * backup_status = PENDING 으로 두면 NAS 백업이 가져갑니다.
+ */
+function doc_store_upload(array $f, int $eid, int $typeId, ?int $shipmentId = null, ?int $companyId = null,
+                          string $title = '', ?string $docDate = null): string
+{
+    $name = (string)($f['name'] ?? '');
+    if (($f['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        return $name . ': ' . (in_array($f['error'] ?? 0, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true)
+            ? '서버가 받을 수 있는 크기를 넘습니다'
+            : '업로드 실패 (오류 ' . (int)($f['error'] ?? 0) . ')');
+    }
+    if (!is_uploaded_file((string)$f['tmp_name'])) { return $name . ': 정상적인 업로드가 아닙니다'; }
+    if ((int)$f['size'] > DOC_MAX) { return $name . ': 20MB 를 넘습니다'; }
+    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+    if (!in_array($ext, DOC_EXT, true)) { return $name . ': 올릴 수 없는 형식 (허용: ' . implode(', ', DOC_EXT) . ')'; }
+    if ($typeId <= 0) { return $name . ': 문서 종류를 고르세요'; }
+
+    $root = storage_root();
+    $dir  = $root . DIRECTORY_SEPARATOR . date('Y') . DIRECTORY_SEPARATOR . date('m');
+    if (!is_dir($dir) && !@mkdir($dir, 0750, true) && !is_dir($dir)) {
+        return $name . ': 저장 폴더를 만들지 못했습니다';
+    }
+    doc_protect_root($root);
+
+    $stored = bin2hex(random_bytes(16)) . '.' . $ext;
+    $full   = $dir . DIRECTORY_SEPARATOR . $stored;
+    $rel    = date('Y') . '/' . date('m') . '/' . $stored;
+    if (!@move_uploaded_file((string)$f['tmp_name'], $full)) {
+        return $name . ': 파일을 저장하지 못했습니다 (폴더 쓰기 권한)';
+    }
+    @chmod($full, 0640);
+    $hash = hash_file('sha256', $full) ?: null;
+    $mime = function_exists('mime_content_type') ? (mime_content_type($full) ?: null) : null;
+    try {
+        db()->prepare(
+            'INSERT INTO documents
+               (business_entity_id, document_type_id, shipment_id, company_id,
+                doc_date, title, original_name, stored_path, mime_type,
+                size_bytes, checksum_sha256, backup_status, uploaded_by)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,\'PENDING\',?)')
+            ->execute([$eid, $typeId, $shipmentId ?: null, $companyId ?: null, $docDate ?: null,
+                       $title !== '' ? $title : $name, $name, $rel, $mime, (int)$f['size'], $hash,
+                       $_SESSION['admin_id'] ?? null]);
+        log_action('문서', 'CREATE', 'documents', (int)db()->lastInsertId(), $name, null,
+                   number_format((int)$f['size']) . ' bytes' . ($shipmentId ? ' · 전표 #' . $shipmentId : ''));
+    } catch (PDOException $e) {
+        @unlink($full);
+        error_log('문서 저장 실패: ' . $e->getMessage());
+        return $name . ': 기록을 남기지 못해 올리지 않았습니다';
+    }
+    return '';
+}
+
 /** SQL 파일을 문장으로 나눕니다. 따옴표 안 · 주석 · DELIMITER 를 압니다 (서버의 sql/ 파일 전용) */
 function sql_split(string $sql): array
 {

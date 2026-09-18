@@ -199,6 +199,20 @@ function delete_request_pending(): int
     }
 }
 
+/** 매출전표 관련서류용 '기타 서류' 종류 (없으면 추가) */
+function schema_upgrade_docs(): void
+{
+    if (!empty($_SESSION['schema_docs_v1'])) { return; }
+    try {
+        db()->exec("INSERT INTO document_types (code, name, sort_order)
+                    SELECT 'ETC', '기타 서류', 99 FROM DUAL
+                     WHERE NOT EXISTS (SELECT 1 FROM document_types WHERE code = 'ETC')");
+        $_SESSION['schema_docs_v1'] = 1;
+    } catch (PDOException $e) {
+        error_log('문서 종류 추가 실패: ' . $e->getMessage());
+    }
+}
+
 /**
  * 뷰(미수금 · 원장 등) 를 올바른 collation 으로 다시 만듭니다.
  *

@@ -22,6 +22,14 @@ $carriers = db()->query(
     'SELECT id, code, name, default_tax_type FROM carriers
       WHERE is_active = 1 ORDER BY sort_order, code')->fetchAll();
 
+// 관련서류 — 문서보관함(documents)에 전표 번호를 달아 둡니다
+$canDoc   = route_can_edit('documents');
+$seeDoc   = route_can_view('documents');
+$docTypes = db()->query('SELECT id, code, name FROM document_types WHERE is_active = 1 ORDER BY sort_order')
+                ->fetchAll();
+$docDefault = 0;
+foreach ($docTypes as $t) { if ($t['code'] === 'ETC') { $docDefault = (int)$t['id']; } }
+
 $in = [
     'company_id' => '', 'carrier_id' => '', 'voucher_date' => date('Y-m-d'),
     'ship_date' => '', 'trade_type' => 'EXPORT', 'dest_city' => '',
@@ -288,8 +296,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
             log_action('매출전표', $id > 0 ? 'UPDATE' : 'CREATE', 'shipments', $sid, $awb,
                        $before, $after, $id > 0 ? $reason : null);
             $pdo->commit();
-            flash('매출전표 ' . $awb . ' 을 ' . ($id > 0 ? '수정' : '등록') . '했습니다.');
-            redirect('?p=shipments');
+
+            // 새 전표와 같이 고른 관련서류 — 전표가 저장된 뒤에 올립니다
+            $files = uploaded_files('docs');
+            $docMsg = '';
+            if ($files) {
+                if (!$canDoc) {
+                    $docMsg = ' 서류는 올리지 않았습니다 (문서 입력 권한 없음).';
+                } else {
+                    $ok = 0;
+                    $bad = [];
+                    foreach ($files as $f) {
+                        $e = doc_store_upload($f, $eid, (int)post('doc_type_id'), $sid, (int)$in['company_id']);
+                        if ($e === '') { $ok++; } else { $bad[] = $e; }
+                    }
+                    $docMsg = ($ok ? ' 서류 ' . $ok . '개를 올렸습니다.' : '')
+                            . ($bad ? ' 못 올린 서류: ' . implode(' / ', $bad) : '');
+                }
+            }
+            flash('매출전표 ' . $awb . ' 을 ' . ($id > 0 ? '수정' : '등록') . '했습니다.' . $docMsg);
+            // 서류를 같이 올렸으면 그 전표로 가서 목록을 보여줍니다
+            redirect($files ? '?p=shipment_form&id=' . $sid : '?p=shipments');
         } catch (PDOException $e) {
             $pdo->rollBack();
             error_log('전표 저장 실패: ' . $e->getMessage());
@@ -322,7 +349,7 @@ layout_head($title, 'shipments');
     항목을 0 으로 고치거나 회계 담당과 상의하세요.</div>
 <?php endif; ?>
 
-<form method="post">
+<form method="post" enctype="multipart/form-data">
 <?= csrf_field() ?>
 <input type="hidden" name="act" value="save">
 
@@ -408,8 +435,11 @@ layout_head($title, 'shipments');
       <input type="text" name="sales_team" value="<?= h($in['sales_team']) ?>"></div>
     <div class="fw w1"><label>영업담당자</label>
       <input type="text" name="sales_rep" value="<?= h($in['sales_rep']) ?>"></div>
-    <div class="fw gr" style="min-width:260px"><label>비고</label>
-      <input type="text" name="remark" value="<?= h($in['remark']) ?>"></div>
+  </div>
+  <div class="cb" style="border-top:1px solid var(--line2)">
+    <div class="fw" style="width:100%"><label for="remark">비고</label>
+      <textarea id="remark" name="remark" rows="3"
+                placeholder="특이사항 · 고객 요청 · 통관 메모 등"><?= h($in['remark']) ?></textarea></div>
   </div>
   <div class="cb" style="border-top:1px solid var(--line2);font-size:11.5px;color:var(--ink3)">
     청구중량은 실중량과 부피중량 중 큰 값이 자동으로 들어갑니다.
@@ -467,11 +497,108 @@ layout_head($title, 'shipments');
 </div>
 <?php endif; ?>
 
+<?php if ($id === 0 && $canDoc): ?>
+<div class="card">
+  <div class="ch">관련서류 <span style="font-weight:400;color:var(--ink3)">인보이스 · 패킹리스트 · 신고필증 등 — 여러 개 한 번에</span></div>
+  <div class="cb f" style="align-items:flex-end">
+    <div class="fw w2"><label for="dtype">서류 종류</label>
+      <select id="dtype" name="doc_type_id">
+        <?php foreach ($docTypes as $t): ?>
+          <option value="<?= (int)$t['id'] ?>"<?= (int)$t['id'] === $docDefault ? ' selected' : '' ?>><?= h($t['name']) ?></option>
+        <?php endforeach; ?>
+      </select></div>
+    <div class="fw gr" style="min-width:240px"><label for="docs">파일 찾아보기</label>
+      <input type="file" id="docs" name="docs[]" multiple
+             accept=".<?= h(implode(',.', DOC_EXT)) ?>"></div>
+  </div>
+  <div class="cb" style="padding-top:0;font-size:11.5px;color:var(--ink3)">
+    전표를 저장할 때 같이 올라갑니다 (파일 하나 20MB 까지). 저장이 안 되면(입력 오류) 파일을 다시 골라 주세요.
+    올린 서류는 매일 밤 회사 NAS 로 백업됩니다.</div>
+</div>
+<?php endif; ?>
+
 <div style="display:flex;gap:8px">
   <button class="btn pri"><?= $id > 0 ? '수정 저장' : '저장' ?></button>
   <a class="btn" href="?p=shipments">취소</a>
 </div>
 </form>
+
+<?php if ($id > 0 && $seeDoc):
+  $st = db()->prepare(
+      'SELECT d.id, d.title, d.original_name, d.size_bytes, d.created_at, d.backup_status,
+              t.name AS type_name, a.name AS uploader
+         FROM documents d
+         LEFT JOIN document_types t ON t.id = d.document_type_id
+         LEFT JOIN admins a ON a.id = d.uploaded_by
+        WHERE d.shipment_id = ? AND d.business_entity_id = ? AND d.deleted_at IS NULL
+        ORDER BY d.id DESC');
+  $st->execute([$id, $eid]);
+  $docs = $st->fetchAll(); ?>
+<div class="card" id="docs-card">
+  <div class="ch">관련서류 <span class="badge b-info"><?= count($docs) ?>개</span>
+    <a class="btn sm" style="margin-left:auto" href="?p=documents&amp;shipment_id=<?= $id ?>">문서보관함에서 보기</a></div>
+  <?php if ($canDoc): ?>
+  <div class="cb" style="border-bottom:1px solid var(--line)">
+    <form method="post" enctype="multipart/form-data" class="f" style="align-items:flex-end"
+          action="?p=documents&amp;shipment_id=<?= $id ?>&amp;back=sf">
+      <?= csrf_field() ?>
+      <input type="hidden" name="act" value="upload">
+      <input type="hidden" name="shipment_id" value="<?= $id ?>">
+      <div class="fw w2"><label for="dtype2">서류 종류</label>
+        <select id="dtype2" name="document_type_id">
+          <?php foreach ($docTypes as $t): ?>
+            <option value="<?= (int)$t['id'] ?>"<?= (int)$t['id'] === $docDefault ? ' selected' : '' ?>><?= h($t['name']) ?></option>
+          <?php endforeach; ?>
+        </select></div>
+      <div class="fw gr" style="min-width:240px"><label for="files">파일 찾아보기 (여러 개)</label>
+        <input type="file" id="files" name="files[]" multiple required
+               accept=".<?= h(implode(',.', DOC_EXT)) ?>"></div>
+      <button class="btn pri">올리기</button>
+    </form>
+  </div>
+  <?php endif; ?>
+  <?php if (!$docs): ?>
+    <div class="empty">아직 올린 서류가 없습니다.</div>
+  <?php else: ?>
+  <table>
+    <thead><tr>
+      <th style="width:110px">종류</th><th>파일</th><th class="r" style="width:80px">크기</th>
+      <th style="width:140px">올린 때</th><th style="width:80px">올린 사람</th>
+      <th class="c" style="width:80px">NAS 백업</th><th class="c" style="width:120px"></th>
+    </tr></thead>
+    <tbody>
+    <?php foreach ($docs as $d):
+      $kb = (int)$d['size_bytes'];
+      $size = $kb >= 1048576 ? number_format($kb / 1048576, 1) . 'MB' : number_format(max(1, $kb / 1024)) . 'KB'; ?>
+      <tr>
+        <td><?= h($d['type_name'] ?? '-') ?></td>
+        <td style="white-space:normal"><a href="?p=file_download&amp;id=<?= (int)$d['id'] ?>"><?= h($d['original_name'] ?: $d['title']) ?></a>
+          <?php if ($d['title'] && $d['title'] !== $d['original_name']): ?>
+            <div style="font-size:11.5px;color:var(--ink3)"><?= h($d['title']) ?></div><?php endif; ?></td>
+        <td class="r tnum"><?= h($size) ?></td>
+        <td class="tnum" style="font-size:12px"><?= h($d['created_at']) ?></td>
+        <td><?= h($d['uploader'] ?? '-') ?></td>
+        <td class="c"><?= $d['backup_status'] === 'DONE'
+              ? '<span class="badge b-ok">완료</span>' : '<span class="badge b-warn">대기</span>' ?></td>
+        <td class="c">
+          <a class="btn sm" href="?p=file_download&amp;id=<?= (int)$d['id'] ?>">받기</a>
+          <?php if ($canDoc): ?>
+          <form method="post" style="display:inline" action="?p=documents&amp;shipment_id=<?= $id ?>&amp;back=sf"
+                onsubmit="return confirm('이 서류를 목록에서 내릴까요? 파일은 서버에 남습니다.');">
+            <?= csrf_field() ?>
+            <input type="hidden" name="act" value="remove">
+            <input type="hidden" name="id" value="<?= (int)$d['id'] ?>">
+            <button class="btn sm">내리기</button>
+          </form>
+          <?php endif; ?>
+        </td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  <?php endif; ?>
+</div>
+<?php endif; ?>
 
 <?php if ($id > 0 && ($cur['status'] ?? '') !== 'CANCELLED'): ?>
 <div class="card" style="border-color:#F0D9AE;background:#FFFCF6">

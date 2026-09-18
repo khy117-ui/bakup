@@ -11,3 +11,10 @@ RedirectMatch 404 /(app|tools|storage|sql)(/|$)
   Header always set X-Frame-Options "SAMEORIGIN"
   Header always set Referrer-Policy "same-origin"
 </IfModule>
+
+# PHP 설정 파일은 웹에서 안 보이게
+<Files ".user.ini">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+</Files>
