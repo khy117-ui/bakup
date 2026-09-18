@@ -675,6 +675,46 @@ function txn_type_label(string $t): string
 }
 
 /** 미수 상태 뱃지 */
+/**
+ * 거래처 코드의 머리글자 — 옛 시스템 규칙(팀-머리글자+번호, 예 01-D045)을 따릅니다.
+ * 업체명 첫 글자의 소리를 로마자로: ㄷ→D, ㅎ→H … ㅇ 으로 시작하면 모음으로 (아→A, 이→I, 와·워→W, 야·유→Y).
+ * (주) · 주식회사 · ㈜ 같은 앞붙이는 건너뜁니다. 영문 이름이면 그 첫 글자.
+ */
+function company_code_letter(string $name): string
+{
+    $n = (string)preg_replace('/^\s*(\(주\)|㈜|주식회사|\(유\)|유한회사|\(합\)|\(사\))\s*/u', '', $name);
+    // ㄱ→K · ㄹ→L 은 옛 코드에서 더 많이 쓴 쪽입니다 (885곳 중 옛 규칙과 약 60% 일치, 나머지는 사람이 고른 것)
+    $cho  = ['K','K','N','D','D','L','M','B','P','S','S','','J','J','C','K','T','P','H'];
+    // ㅇ 뒤 모음: ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ
+    $vow  = ['A','A','Y','Y','E','E','Y','Y','O','W','W','O','Y','U','W','W','W','Y','E','E','I'];
+    foreach (preg_split('//u', $n, -1, PREG_SPLIT_NO_EMPTY) as $ch) {
+        $o = mb_ord($ch, 'UTF-8');
+        if ($o >= 0xAC00 && $o <= 0xD7A3) {
+            $idx = $o - 0xAC00;
+            $c = $cho[intdiv($idx, 588)];
+            return $c !== '' ? $c : $vow[intdiv($idx % 588, 28)];
+        }
+        if (preg_match('/[A-Za-z]/', $ch)) { return strtoupper($ch); }
+    }
+    return 'X';
+}
+
+/** 다음 거래처 코드 — 같은 팀 · 같은 머리글자에서 가장 큰 번호 + 1 (세 자리) */
+function company_code_suggest(string $team, string $name): string
+{
+    $team = preg_match('/^\d{1,2}$/', trim($team)) ? str_pad(trim($team), 2, '0', STR_PAD_LEFT) : '01';
+    $prefix = $team . '-' . company_code_letter($name);
+    $st = db()->prepare('SELECT company_code FROM companies WHERE company_code LIKE ?');
+    $st->execute([$prefix . '%']);
+    $max = 0;
+    foreach ($st->fetchAll(PDO::FETCH_COLUMN) as $c) {
+        if (preg_match('/^' . preg_quote($prefix, '/') . '(\d+)$/i', (string)$c, $m)) {
+            $max = max($max, (int)$m[1]);
+        }
+    }
+    return $prefix . str_pad((string)($max + 1), 3, '0', STR_PAD_LEFT);
+}
+
 /** 매출전표 상태 → [한글, 배지색] */
 function shipment_status_badge(string $s): array
 {

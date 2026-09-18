@@ -81,6 +81,8 @@ const ROUTE_PERMS = [
 const DELETE_ACTIONS = [
     'boards'           => ['hide'   => ['label' => '게시글 숨기기', 'id_from' => 'post:post_id', 'reason' => 'reason',
                                         'name_sql' => 'SELECT title FROM posts WHERE id = ?']],
+    'companies'        => ['delete' => ['label' => '거래처 삭제', 'id_from' => 'post:id', 'reason' => 'reason',
+                                        'name_sql' => "SELECT CONCAT(name_ko, ' (', company_code, ')') FROM companies WHERE id = ?"]],
     'company_contacts' => ['remove' => ['label' => '업체 담당자 내리기', 'id_from' => 'post:id', 'reason' => '',
                                         'name_sql' => 'SELECT name FROM company_contacts WHERE id = ?']],
     'documents'        => ['remove' => ['label' => '문서 내리기', 'id_from' => 'post:id', 'reason' => '',

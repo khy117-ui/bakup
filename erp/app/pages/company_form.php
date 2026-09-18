@@ -3,6 +3,13 @@ require_once APP_DIR . '/layout.php';
 
 $id  = (int)query('id', '0');
 $err = '';
+
+// 코드 제안 — [자동 만들기] 버튼이 부릅니다 (?p=company_form&suggest=1&team=01&name=…)
+if (query('suggest') === '1') {
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['code' => company_code_suggest(query('team'), query('name'))], JSON_UNESCAPED_UNICODE);
+    exit;
+}
 $row = [
     'company_code' => '', 'name_ko' => '', 'name_en' => '', 'representative' => '',
     'business_number' => '', 'corp_number' => '', 'business_type' => '',
@@ -29,8 +36,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $row[$k] = post($k);
         }
     }
-    if ($row['company_code'] === '' || $row['name_ko'] === '') {
-        $err = '거래처 코드와 업체명은 필수입니다.';
+    $row['company_code'] = strtoupper(trim($row['company_code']));
+    if ($row['name_ko'] === '') {
+        $err = '업체명은 필수입니다.';
+    } elseif ($row['company_code'] === '') {
+        // 비워 두면 팀-머리글자+번호 로 자동 (예 01-H049)
+        $row['company_code'] = company_code_suggest($row['sales_team'], $row['name_ko']);
     }
     // 선택값은 화이트리스트로 제한합니다. POST 를 그대로 넣으면
     // 아무 문자열이나 들어가 상태 배지와 통계 집계가 깨집니다
@@ -73,7 +84,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 db()->prepare("INSERT INTO companies ($names) VALUES ($ph)")->execute($vals);
                 $id = (int)db()->lastInsertId();
                 log_action('거래처', 'CREATE', 'companies', $id, $row['name_ko']);
-                flash('거래처를 등록했습니다.');
+                flash('거래처를 등록했습니다. 코드 ' . $row['company_code']);
             }
             redirect('?p=companies');
         } catch (PDOException $e) {
@@ -98,8 +109,13 @@ layout_head($id ? '거래처 수정' : '거래처 등록', 'companies');
 <div class="card">
   <div class="ch">기본 정보</div>
   <div class="cb f">
-    <div class="fw w1"><label>거래처 코드 *</label>
-      <input type="text" name="company_code" required value="<?= h($row['company_code']) ?>"></div>
+    <div class="fw w2"><label for="ccode">거래처 코드 <small style="font-weight:400">(비우면 자동)</small></label>
+      <div style="display:flex;gap:6px">
+        <input type="text" id="ccode" name="company_code" class="tnum" maxlength="30"
+               value="<?= h($row['company_code']) ?>" placeholder="예) 01-H049" style="text-transform:uppercase">
+        <button type="button" class="btn" id="ccode-auto" title="영업팀 · 업체명으로 다음 코드를 만듭니다">자동 만들기</button>
+      </div>
+      <small style="color:var(--ink3)">영업팀-업체명 머리글자+번호 (옛 규칙과 같음). 바꿔 적어도 됩니다.</small></div>
     <div class="fw w3"><label>업체명 (국문) *</label>
       <input type="text" name="name_ko" required value="<?= h($row['name_ko']) ?>"></div>
     <div class="fw w3"><label>업체명 (영문)</label>
@@ -165,4 +181,19 @@ layout_head($id ? '거래처 수정' : '거래처 등록', 'companies');
   <a class="btn" href="?p=companies">취소</a>
 </div>
 </form>
+<script>
+document.getElementById('ccode-auto').addEventListener('click', function () {
+  var name = document.querySelector('input[name=name_ko]').value.trim();
+  var team = document.querySelector('input[name=sales_team]').value.trim();
+  if (!name) { alert('업체명(국문)을 먼저 적어 주세요.'); return; }
+  var b = this;
+  b.disabled = true;
+  fetch('?p=company_form&suggest=1&team=' + encodeURIComponent(team) + '&name=' + encodeURIComponent(name),
+        {credentials: 'same-origin'})
+    .then(function (r) { return r.json(); })
+    .then(function (d) { document.getElementById('ccode').value = d.code || ''; })
+    .catch(function () { alert('코드를 만들지 못했습니다. 비워 두고 저장하면 자동으로 붙습니다.'); })
+    .then(function () { b.disabled = false; });
+});
+</script>
 <?php layout_foot();
