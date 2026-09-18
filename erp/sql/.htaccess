@@ -1,0 +1,9 @@
+# 설치 · 이관 SQL 과 설명 문서는 웹에서 열리지 않게 합니다.
+# setup.php 는 서버 안에서 파일로 직접 읽으므로 이 차단과 상관없이 설치됩니다.
+<IfModule mod_authz_core.c>
+  Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+  Order deny,allow
+  Deny from all
+</IfModule>
