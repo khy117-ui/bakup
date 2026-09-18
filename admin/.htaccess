@@ -9,18 +9,24 @@
 #      이 제한 대상이 아니므로 그대로 공개되어야 합니다.
 # ------------------------------------------------------------------
 
-# 허용 IP 목록: 사무실 고정 IP로 교체하세요. (기존 관리자 시스템의 허용 IP를 옮겨 둔 값)
-<RequireAll>
-    <RequireAny>
-        Require ip 127.0.0.1
-        Require ip 61.43.120.209
-        Require ip 117.110.98.252
-        Require ip 175.209.40.226
-        Require ip 211.206.111.242
-        Require ip 221.151.149.0/24
-    </RequireAny>
-    Require valid-user
-</RequireAll>
+<RequireAny>
+    # [미리보기 전용] AI SPACE 미리보기 주소(*.mycafe24.ai)에서는 제한 없이 열람합니다.
+    #   ※ 실서버(postgood.co.kr)에 올릴 때는 아래 한 줄을 반드시 삭제하세요.
+    Require expr "%{HTTP_HOST} =~ /\.mycafe24\.ai$/"
+
+    # [실서버] 허용 IP 목록: 사무실 고정 IP로 교체하세요. (기존 관리자 시스템의 허용 IP를 옮겨 둔 값)
+    <RequireAll>
+        <RequireAny>
+            Require ip 127.0.0.1
+            Require ip 61.43.120.209
+            Require ip 117.110.98.252
+            Require ip 175.209.40.226
+            Require ip 211.206.111.242
+            Require ip 221.151.149.0/24
+        </RequireAny>
+        Require valid-user
+    </RequireAll>
+</RequireAny>
 
 # 관리자 계정: 서버에서 아래 명령으로 웹 루트 밖에 비밀번호 파일을 만든 뒤 경로를 맞추세요.
 #   htpasswd -c /etc/apache2/goodpost.htpasswd admin

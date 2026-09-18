@@ -45,6 +45,7 @@ assets/img/                로고 · 사진 자산 (백업 사이트 이미지�
 | nginx | `deploy/nginx-admin.conf` | server 블록에 붙여 넣고 허용 IP 교체, `htpasswd -c /etc/nginx/goodpost.htpasswd admin` |
 
 - 허용 IP 기본값은 기존 관리자 시스템(ADM)에 등록돼 있던 사무실 IP를 옮겨 둔 것이므로 현재 값으로 확인 후 교체하세요.
+- `admin/.htaccess` 맨 위의 `Require expr "%{HTTP_HOST} =~ /\.mycafe24\.ai$/"` 한 줄은 AI SPACE 미리보기(`*.mycafe24.ai`)에서만 관리 페이지를 열어 두기 위한 예외입니다. **실서버에 올릴 때는 이 줄을 삭제**해야 IP · 인증 제한이 온전히 적용됩니다.
 - 공개 페이지가 읽는 `assets/data/rates.xlsx` 는 제한 대상이 아닙니다. 요금표 **관리 화면과 업로드 경로만** 막습니다.
 - PHP 호스팅이면 `admin/upload.php` 로 관리 페이지에서 바로 엑셀을 교체할 수 있습니다. 파일 안 `ADMIN_TOKEN` 에 긴 무작위 문자열을 넣으면 IP·인증에 더해 토큰까지 3중으로 확인하고, 교체 전 파일은 `assets/data/backup/` 에 날짜별로 보관됩니다. PHP가 없는 정적 호스팅에서는 이 폼 대신 FTP로 덮어쓰면 됩니다.
 
