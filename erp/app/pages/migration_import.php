@@ -528,6 +528,7 @@ layout_head('옛 자료 가져오기', 'migration_import');
       원본 지문을 채우고(15), 거래처(13b) → 매출전표·매입(14b) 순서로 옮깁니다.
       전표가 많아 몇 분 걸릴 수 있습니다. 창을 닫아도 서버에서는 계속 돌고, 다시 열면 이어서 봅니다.</p>
     <button class="btn pri" type="button" onclick="runPhases(['finish','migrate'])">이관 실행</button>
+    <div id="run-msg" class="msg" style="display:none;margin-top:10px"></div>
   </div>
 </div>
 
@@ -641,9 +642,27 @@ function applyResult(s, r) {
 }
 
 // 한 단계 실행. 연결이 끊겨도(프록시 시간초과 등) 서버에서는 계속 도니, 끝날 때까지 상태를 확인합니다
+// 버튼 아래 한 줄 — 지금 무엇을 하고 있는지 (진행 기록 표는 아래에 있어 잘 안 보입니다)
+function runMsg(text, kind) {
+  var el = document.getElementById('run-msg');
+  if (!text) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.className = 'msg ' + (kind || 'ok');
+  el.textContent = text;
+}
+function elapsed(ms) {
+  var s = Math.floor(ms / 1000);
+  return (s >= 60 ? Math.floor(s / 60) + '분 ' : '') + (s % 60) + '초';
+}
+
 function runStep(s) {
   s.status = 'RUNNING'; s.error = null; renderSteps();
   var started = Date.now(), resent = 0;
+  var tick = setInterval(function () {
+    runMsg(PHASE_LABEL[s.phase] + ' ' + s.key + ' 실행 중 — ' + elapsed(Date.now() - started)
+           + ' 경과. ' + (s.key.indexOf('14b') === 0 ? '전표 49,360건이라 몇 분 걸릴 수 있습니다. ' : '')
+           + '창을 닫아도 서버에서는 계속 돕니다.');
+  }, 1000);
   function soft(e) {
     if (e && e.fatal) return {status: 'FAIL', error: e.message};
     return {status: 'RUNNING'};
@@ -656,8 +675,9 @@ function runStep(s) {
         resent++;
         return post({action: 'run_step', key: s.key}).catch(soft).then(poll);
       }
-      if (r.status !== 'RUNNING') { applyResult(s, r); renderSteps(); return s.status; }
+      if (r.status !== 'RUNNING') { clearInterval(tick); applyResult(s, r); renderSteps(); return s.status; }
       if (Date.now() - started > 40 * 60 * 1000) {
+        clearInterval(tick);
         applyResult(s, {status: 'FAIL', error: '40분이 지나도 끝나지 않았습니다. 새로고침해서 상태를 확인하세요.'});
         renderSteps();
         return 'FAIL';
@@ -669,7 +689,10 @@ function runStep(s) {
 }
 
 async function runPhases(phases) {
-  if (BUSY) return;
+  if (BUSY) {
+    alert('이미 실행 중입니다. 버튼 아래 안내에 경과 시간이 나옵니다. 끝날 때까지 기다려 주세요.');
+    return;
+  }
   if (phases.indexOf('migrate') >= 0 && !(Number(COUNTS.stage_comp) > 0 && Number(COUNTS.stage_ship) > 0)) {
     alert('원본(staging)이 비어 있습니다. 2단계에서 거래처 · 매출전표 CSV 를 먼저 올리세요.');
     return;
@@ -682,11 +705,13 @@ async function runPhases(phases) {
         if (['OK', 'SKIP', 'WARN'].indexOf(list[i].status) >= 0) continue;
         var st = await runStep(list[i]);
         if (st === 'FAIL') {
+          runMsg(PHASE_LABEL[phases[p]] + ' 단계 ' + list[i].key + ' 에서 멈췄습니다: ' + (list[i].error || ''), 'err');
           alert(PHASE_LABEL[phases[p]] + ' 단계 ' + list[i].key + ' 에서 멈췄습니다.\n' + (list[i].error || ''));
           return;
         }
       }
     }
+    runMsg(phases.map(function (x) { return PHASE_LABEL[x]; }).join(' · ') + ' 끝났습니다. 위 "지금 상태" 숫자를 확인하세요.', 'ok');
   } finally {
     BUSY = false;
     refreshCounts();
@@ -813,10 +838,12 @@ async function resetAll() {
 
 renderCounts(COUNTS);
 renderSteps();
-// 다른 창에서 돌리던 단계가 있으면 이어서 지켜봅니다
-STEPS.filter(function (s) { return s.status === 'RUNNING'; }).forEach(function (s) {
-  post({action: 'status', key: s.key}).then(function (r) { applyResult(s, r); renderSteps(); });
-});
+// 서버에서 돌고 있는 단계가 있으면(창을 닫았다 다시 연 경우) 이어서 지켜보고, 끝나면 다음 단계로 갑니다
+(function () {
+  var running = STEPS.filter(function (s) { return s.status === 'RUNNING'; })[0];
+  if (!running) return;
+  runPhases(running.phase === 'prep' ? ['prep'] : ['finish', 'migrate']);
+})();
 </script>
 <?php
 layout_foot();

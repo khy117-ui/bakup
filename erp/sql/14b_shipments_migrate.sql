@@ -113,9 +113,7 @@ SELECT
   CASE
     WHEN COALESCE(TRIM(s.BLNUM), '') = ''
          THEN CONCAT('NOAWB-', s.staging_id)
-    WHEN EXISTS (SELECT 1 FROM shipments_staging p
-                  WHERE TRIM(COALESCE(p.BLNUM, '')) = TRIM(s.BLNUM)
-                    AND p.staging_id < s.staging_id)
+    WHEN dup.awb_rn > 1
          THEN CONCAT(TRIM(s.BLNUM), '-D', s.staging_id)
     ELSE TRIM(s.BLNUM)
   END,
@@ -159,10 +157,7 @@ SELECT
     CASE WHEN ca.id IS NOT NULL AND COALESCE(TRIM(s.TRANSIT_A), '') = ''
          THEN '운송사추정' END,
     CASE WHEN COALESCE(TRIM(s.BLNUM), '') = '' THEN 'AWB번호없음' END,
-    CASE WHEN COALESCE(TRIM(s.BLNUM), '') <> ''
-          AND EXISTS (SELECT 1 FROM shipments_staging p
-                       WHERE TRIM(COALESCE(p.BLNUM, '')) = TRIM(s.BLNUM)
-                         AND p.staging_id < s.staging_id) THEN 'AWB중복' END,
+    CASE WHEN COALESCE(TRIM(s.BLNUM), '') <> '' AND dup.awb_rn > 1 THEN 'AWB중복' END,
     CASE WHEN UPPER(TRIM(COALESCE(s.INOUT, ''))) NOT IN
               ('1','2','I','IN','IMPORT','수입','O','OUT','E','EXPORT','수출')
          THEN 'INOUT미상' END,
@@ -176,6 +171,14 @@ SELECT
          THEN '금액변환실패' END
   ), '')
 FROM shipments_staging s
+-- AWB 중복 순번 — 같은 AWB 의 두 번째부터 -D 를 붙입니다.
+-- 예전에는 행마다 앞의 전표를 전부 훑는 EXISTS 였습니다 (49,360건이면 약 12억 번 비교 → 수십 분).
+-- MySQL 8 의 ROW_NUMBER 로 한 번만 읽습니다. 비교 기준(TRIM, collation)은 예전과 같습니다
+JOIN (
+  SELECT staging_id,
+         ROW_NUMBER() OVER (PARTITION BY TRIM(COALESCE(BLNUM, '')) ORDER BY staging_id) AS awb_rn
+  FROM shipments_staging
+) dup ON dup.staging_id = s.staging_id
 -- 거래처 매칭 : 스테이징 1행당 정확히 1행. 동명 거래처가 있어도 행이 불어나지 않습니다
 LEFT JOIN (
   -- 거래처 찾는 순서 : ① 상호 정확일치 → ② 사람이 확인한 별칭 → ③ 공백만 다른 상호
@@ -278,7 +281,10 @@ LEFT JOIN carriers ca ON ca.id = COALESCE(
              WHEN TRIM(COALESCE(s.BLNUM, '')) REGEXP '^[0-9]{10}$'                       THEN 'DHL'
              WHEN TRIM(COALESCE(s.BLNUM, '')) REGEXP '^[0-9]{12}$'                       THEN 'FEDEX'
         END
-    LIMIT 1));
+    LIMIT 1))
+-- 다시 돌려도 안전하게 — 이미 들어간 전표는 건너뜁니다 (연결이 끊겨 '실패' 로 보여도 실제로는 들어갔을 수 있음)
+WHERE NOT EXISTS (SELECT 1 FROM shipments done_sh
+                   WHERE done_sh.legacy_idx = CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED));
 
 -- 미해석 컬럼 보관
 INSERT INTO shipments_legacy_extra (
@@ -296,7 +302,8 @@ SELECT sh.id,
        NULLIF(TRIM(s.BILL),''),     NULLIF(TRIM(s.DEPOSIT),''),
        NULLIF(TRIM(s.UPTUSER),'')
 FROM shipments_staging s
-JOIN shipments sh ON sh.legacy_idx = CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED);
+JOIN shipments sh ON sh.legacy_idx = CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED)
+WHERE NOT EXISTS (SELECT 1 FROM shipments_legacy_extra e WHERE e.shipment_id = sh.id);
 
 
 -- ============================================================================
@@ -330,7 +337,8 @@ JOIN (SELECT staging_id,
                   REGEXP '^-?[0-9]+(\\.[0-9]+)?$'
              THEN CAST(REPLACE(REPLACE(COALESCE(AMOUNT,''),',',''),' ','') AS DECIMAL(15,2))
              ELSE NULL END AS amount_d
-      FROM shipments_staging) n ON n.staging_id = s.staging_id;
+      FROM shipments_staging) n ON n.staging_id = s.staging_id
+WHERE NOT EXISTS (SELECT 1 FROM shipment_charges c0 WHERE c0.shipment_id = sh.id);
 
 -- ★ 매출은 AMOUNT 한 줄뿐입니다.
 --   예전에는 TSAMOUNT 를 '추가운임' 매출 2행으로 넣었으나, 2026-09-17 사용자 확인 결과
@@ -373,7 +381,8 @@ JOIN (SELECT staging_id,
              THEN CAST(REPLACE(REPLACE(COALESCE(TSAMOUNT,''),',',''),' ','') AS DECIMAL(15,2))
              ELSE NULL END AS tsamount_d
       FROM shipments_staging) n ON n.staging_id = s.staging_id
-WHERE n.tsamount_d IS NOT NULL AND n.tsamount_d <> 0;
+WHERE n.tsamount_d IS NOT NULL AND n.tsamount_d <> 0
+  AND NOT EXISTS (SELECT 1 FROM purchases p0 WHERE p0.shipment_id = sh.id);
 
 -- 변환에 실패한 TSAMOUNT 는 버리지 않고 남깁니다
 INSERT INTO migration_errors (source_table, source_idx, column_name, raw_value, reason)
@@ -385,7 +394,10 @@ JOIN (SELECT staging_id,
              THEN CAST(REPLACE(REPLACE(COALESCE(TSAMOUNT,''),',',''),' ','') AS DECIMAL(15,2))
              ELSE NULL END AS tsamount_d
       FROM shipments_staging) n ON n.staging_id = s.staging_id
-WHERE COALESCE(TRIM(s.TSAMOUNT), '') <> '' AND n.tsamount_d IS NULL;
+WHERE COALESCE(TRIM(s.TSAMOUNT), '') <> '' AND n.tsamount_d IS NULL
+  AND NOT EXISTS (SELECT 1 FROM migration_errors me
+                   WHERE me.source_table = 'IS_SALES' AND me.source_idx = TRIM(s.IDX)
+                     AND me.column_name = 'TSAMOUNT' AND me.reason = '매입금액 숫자 변환 실패');
 
 
 -- ============================================================================
@@ -398,7 +410,8 @@ SELECT sh.id, 'SHIPPER', NULLIF(TRIM(s.COMPANY),''), NULLIF(TRIM(s.EADDRESS),'')
        NULLIF(TRIM(s.PHONE),''), NULLIF(TRIM(s.FAX),'')
 FROM shipments_staging s
 JOIN shipments sh ON sh.legacy_idx = CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED)
-WHERE COALESCE(TRIM(s.COMPANY),'') <> '' OR COALESCE(TRIM(s.EADDRESS),'') <> '';
+WHERE (COALESCE(TRIM(s.COMPANY),'') <> '' OR COALESCE(TRIM(s.EADDRESS),'') <> '')
+  AND NOT EXISTS (SELECT 1 FROM shipment_parties p0 WHERE p0.shipment_id = sh.id AND p0.party_type = 'SHIPPER');
 
 INSERT INTO shipment_parties
   (shipment_id, party_type, company_name, contact_name, address, phone, fax)
@@ -406,7 +419,8 @@ SELECT sh.id, 'CONSIGNEE', NULLIF(TRIM(s.BUYERCODE),''), NULLIF(TRIM(s.CONTACTNA
        NULLIF(TRIM(s.BEADDRESS),''), NULLIF(TRIM(s.BPHONE),''), NULLIF(TRIM(s.BFAX),'')
 FROM shipments_staging s
 JOIN shipments sh ON sh.legacy_idx = CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED)
-WHERE COALESCE(TRIM(s.BUYERCODE),'') <> '' OR COALESCE(TRIM(s.BEADDRESS),'') <> '';
+WHERE (COALESCE(TRIM(s.BUYERCODE),'') <> '' OR COALESCE(TRIM(s.BEADDRESS),'') <> '')
+  AND NOT EXISTS (SELECT 1 FROM shipment_parties p0 WHERE p0.shipment_id = sh.id AND p0.party_type = 'CONSIGNEE');
 
 INSERT INTO shipment_items (shipment_id, line_no, item_name, qty, unit)
 SELECT sh.id, 1, TRIM(s.DESCRIPTION),
@@ -415,7 +429,8 @@ SELECT sh.id, 1, TRIM(s.DESCRIPTION),
        NULLIF(TRIM(s.UNIT),'')
 FROM shipments_staging s
 JOIN shipments sh ON sh.legacy_idx = CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED)
-WHERE COALESCE(TRIM(s.DESCRIPTION),'') <> '';
+WHERE COALESCE(TRIM(s.DESCRIPTION),'') <> ''
+  AND NOT EXISTS (SELECT 1 FROM shipment_items i0 WHERE i0.shipment_id = sh.id);
 
 -- 첨부파일 : 경로만 옮깁니다. 실제 파일은 별도 복사
 INSERT INTO documents
@@ -426,7 +441,8 @@ SELECT sh.business_entity_id, dt.id, sh.id, sh.voucher_date,
 FROM shipments_staging s
 JOIN shipments sh ON sh.legacy_idx = CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED)
 JOIN document_types dt ON dt.code = 'AWB'
-WHERE COALESCE(TRIM(s.file1),'') <> '';
+WHERE COALESCE(TRIM(s.file1),'') <> ''
+  AND NOT EXISTS (SELECT 1 FROM documents d0 WHERE d0.shipment_id = sh.id AND d0.stored_path = TRIM(s.file1));
 
 
 -- ============================================================================
@@ -444,14 +460,20 @@ JOIN (
   SELECT staging_id, 'PRICE',         PRICE    FROM shipments_staging
 ) v ON v.staging_id = s.staging_id
 WHERE COALESCE(TRIM(v.val), '') <> ''
-  AND REPLACE(REPLACE(v.val, ',', ''), ' ', '') NOT REGEXP '^-?[0-9]+(\\.[0-9]+)?$';
+  AND REPLACE(REPLACE(v.val, ',', ''), ' ', '') NOT REGEXP '^-?[0-9]+(\\.[0-9]+)?$'
+  AND NOT EXISTS (SELECT 1 FROM migration_errors me
+                   WHERE me.source_table = 'IS_SALES' AND me.column_name = v.col
+                     AND me.source_idx = s.IDX AND me.reason = '숫자로 변환할 수 없음');
 
 INSERT INTO migration_errors (source_table, source_idx, column_name, raw_value, reason)
 SELECT 'IS_SALES', IDX, 'SALEDATE', SALEDATE, '날짜로 변환할 수 없음'
 FROM shipments_staging
 WHERE COALESCE(TRIM(SALEDATE), '') <> ''
   AND SALEDATE NOT REGEXP '^[0-9]{4}[-/.][0-9]{1,2}[-/.][0-9]{1,2}'
-  AND SALEDATE NOT REGEXP '^[0-9]{8}$';
+  AND SALEDATE NOT REGEXP '^[0-9]{8}$'
+  AND NOT EXISTS (SELECT 1 FROM migration_errors me
+                   WHERE me.source_table = 'IS_SALES' AND me.column_name = 'SALEDATE'
+                     AND me.source_idx = shipments_staging.IDX);
 
 
 -- ============================================================================
