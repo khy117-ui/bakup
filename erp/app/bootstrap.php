@@ -591,6 +591,7 @@ function pay_status_badge(string $s): array
         'PAID'      => ['입금완료', 'b-ok'],
         'CANCELLED' => ['취소',     'b-err'],
         'NONE'      => ['금액없음', 'b-info'],
+        'OPENING'   => ['기초잔액', 'b-info'],
     ][$s] ?? [$s, 'b-info'];
 }
 
