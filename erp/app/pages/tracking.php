@@ -433,8 +433,35 @@ if (route_can_edit('settings')): ?>
     <?php endif; ?>
   </div>
   <?php endif; ?>
-  <div class="cb">
-    <form method="post" class="f" style="align-items:flex-end">
+  <?php if (!$t['events']): ?>
+    <div class="empty">배송 이력이 없습니다.<?= $src !== '' ? ' 위 [' . $srcName . '에서 이력 가져오기] 를 누르면 여기에 추적 세부사항이 뜹니다.' : '' ?></div>
+  <?php else: ?>
+  <!-- 추적 세부사항 — 운송사 사이트처럼 날짜별로 묶고, 최신이 위 -->
+  <div class="ch" style="border-top:0;font-size:13px">추적 세부사항
+    <span style="font-weight:400;font-size:12px;color:var(--ink3)"><?= count($t['events']) ?>건 · 최신순</span></div>
+  <table>
+    <thead><tr><th style="width:70px">시각</th><th style="width:170px">상태</th>
+      <th style="width:170px">위치</th><th>설명</th></tr></thead>
+    <tbody>
+    <?php $prevDay = ''; foreach ($t['events'] as $i => $e):
+          $day = substr((string)$e['event_at'], 0, 10);
+          if ($day !== $prevDay): $prevDay = $day; ?>
+      <tr><td colspan="4" style="background:var(--line2,#F1F4F6);font-weight:700;font-size:12px">
+        <?= h($day) ?> (<?= ['일','월','화','수','목','금','토'][(int)date('w', strtotime($day))] ?>)</td></tr>
+    <?php endif; ?>
+      <tr<?= $i === 0 ? ' style="background:#F3FAF6"' : '' ?>>
+        <td class="tnum"><?= h(substr((string)$e['event_at'], 11, 5)) ?></td>
+        <td style="font-weight:600"><?= h($e['status']) ?></td>
+        <td><?= h($e['location'] ?: '-') ?></td>
+        <td style="color:var(--ink2)"><?= h($e['description'] ?: '') ?></td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  <?php endif; ?>
+  <details class="cb" style="border-top:1px solid var(--line2)"<?= $src === '' && !$t['events'] ? ' open' : '' ?>>
+    <summary style="cursor:pointer;font-size:12.5px;font-weight:600">직접 이력 추가 · 배송완료 표시</summary>
+    <form method="post" class="f" style="align-items:flex-end;margin-top:8px">
       <?= csrf_field() ?>
       <input type="hidden" name="act" value="add_event">
       <input type="hidden" name="shipment_id" value="<?= $sid ?>">
@@ -461,25 +488,7 @@ if (route_can_edit('settings')): ?>
         <button class="btn">배송완료 표시</button>
       </form>
     <?php endif; ?>
-  </div>
-  <?php if (!$t['events']): ?>
-    <div class="empty">배송 이력이 없습니다.</div>
-  <?php else: ?>
-  <table>
-    <thead><tr><th style="width:160px">일시</th><th style="width:130px">위치</th>
-      <th style="width:160px">상태</th><th>설명</th></tr></thead>
-    <tbody>
-    <?php foreach ($t['events'] as $e): ?>
-      <tr>
-        <td class="tnum"><?= h($e['event_at']) ?></td>
-        <td><?= h($e['location'] ?: '-') ?></td>
-        <td style="font-weight:600"><?= h($e['status']) ?></td>
-        <td style="color:var(--ink2)"><?= h($e['description'] ?: '') ?></td>
-      </tr>
-    <?php endforeach; ?>
-    </tbody>
-  </table>
-  <?php endif; ?>
+  </details>
 </div>
 <?php endforeach; ?>
 <?php endif; ?>
