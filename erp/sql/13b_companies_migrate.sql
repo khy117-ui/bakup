@@ -146,7 +146,7 @@ WHERE COALESCE(TRIM(s.file1), '') <> '';
 INSERT INTO company_carrier_terms
   (company_id, carrier_id, trade_type, discount_rate, effective_from, memo)
 SELECT c.id, ca.id, m.trade_type,
-       CAST(REPLACE(REPLACE(REPLACE(m.val, ',', ''), '%', ''), ' ', '') AS DECIMAL(5,2)),
+       CAST(REPLACE(REPLACE(REPLACE(v.val, ',', ''), '%', ''), ' ', '') AS DECIMAL(5,2)),
        '2000-01-01',
        CONCAT('기존 CUSTOMERS.', m.src, ' 이관')
 FROM companies_staging s
