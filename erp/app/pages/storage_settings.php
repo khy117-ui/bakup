@@ -296,6 +296,55 @@ done
 echo "$(date '+%F %T') 끝 — 받음 $got · 실패 $bad" >> "$LOG"
 SH;
 $nasScript = strtr($nasScript, ['__URL__' => $nasUrl, '__KEY__' => $nasOnce ?? '(열쇠를 새로 만들면 여기에 들어갑니다)']);
+
+// ipTIME 처럼 NAS 안에서 예약 스크립트를 못 돌리는 NAS — 사무실 Windows PC 가 받아서 NAS 공유폴더에 저장.
+// Windows PowerShell 5.1 이 BOM 없는 파일의 한글을 깨뜨리므로 코드 안에는 영문만 씁니다 (한글 경로는 $Dest 만)
+$pcScript = <<<'PS'
+# GOODPOST ERP documents -> NAS backup (Windows PC pulls, saves to NAS share: ipTIME NAS etc.)
+# Task Scheduler: daily / Program: powershell.exe
+#   Arguments: -NoProfile -ExecutionPolicy Bypass -File "C:\GOODPOST\erp_backup.ps1"
+$Url  = '__URL__'
+$Key  = '__KEY__'
+$Dest = '\\192.168.0.10\GOODPOST\ERP'   # NAS shared folder path (as shown in Explorer)
+
+$ErrorActionPreference = 'Stop'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$H   = @{ 'X-Backup-Key' = $Key }
+$Log = Join-Path $Dest '_backup_log.txt'
+function Say([string]$m) { Add-Content -Path $Log -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' ' + $m) -Encoding UTF8 }
+
+try { New-Item -ItemType Directory -Force -Path $Dest | Out-Null } catch { exit 1 }
+Say 'start'
+$after = 0; $got = 0; $bad = 0
+while ($true) {
+  try {
+    $r = Invoke-WebRequest -UseBasicParsing -Headers $H -TimeoutSec 60 -Uri ($Url + '?do=list&after=' + $after)
+    $list = [Text.Encoding]::UTF8.GetString($r.RawContentStream.ToArray())
+  } catch { Say ('list failed (internet or key): ' + $_.Exception.Message); exit 1 }
+  if ([string]::IsNullOrWhiteSpace($list)) { break }
+  foreach ($line in ($list -split "`n")) {
+    $f = $line.TrimEnd("`r").Split("`t")
+    if ($f.Count -lt 4 -or $f[0] -eq '') { continue }
+    $id = $f[0]; $sha = $f[1]; $path = $f[3]; $after = $id
+    $target = Join-Path $Dest ($path -replace '/', '\')
+    $part = $target + '.part'
+    try {
+      New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null
+      Invoke-WebRequest -UseBasicParsing -Headers $H -TimeoutSec 900 -Uri ($Url + '?do=get&id=' + $id) -OutFile $part
+      if ((Get-FileHash -Algorithm SHA256 -Path $part).Hash.ToLower() -ne $sha) { throw 'checksum mismatch' }
+      Move-Item -Force -Path $part -Destination $target
+      $body = 'id=' + $id + '&sha=' + $sha + '&path=' + [Uri]::EscapeDataString($path)
+      Invoke-WebRequest -UseBasicParsing -Method Post -Headers $H -TimeoutSec 60 -ContentType 'application/x-www-form-urlencoded' -Body $body -Uri ($Url + '?do=ack') | Out-Null
+      $got++
+    } catch {
+      if (Test-Path $part) { Remove-Item -Force $part }
+      $bad++; Say ('failed #' + $id + ' ' + $path + ' : ' + $_.Exception.Message)
+    }
+  }
+}
+Say ('done - saved ' + $got + ', failed ' + $bad)
+PS;
+$pcScript = strtr($pcScript, ['__URL__' => $nasUrl, '__KEY__' => $nasOnce ?? '(key)']);
 ?>
 <div class="card" id="nas">
   <div class="ch">NAS 자동 백업
@@ -325,11 +374,27 @@ $nasScript = strtr($nasScript, ['__URL__' => $nasUrl, '__KEY__' => $nasOnce ?? '
   <div class="cb" style="border-top:1px solid var(--line)">
     <div class="msg err" style="margin-bottom:10px">열쇠가 들어간 스크립트입니다. <b>지금 복사해 NAS 에 넣으세요 — 이 화면을 벗어나면 다시 볼 수 없습니다.</b>
       남에게 보내지 마세요 (서류를 받을 수 있는 열쇠입니다).</div>
-    <textarea id="nas-script" rows="14" readonly style="font-family:ui-monospace,Consolas,monospace;font-size:12px;white-space:pre"><?= h($nasScript) ?></textarea>
+    <div style="font-weight:600;margin-bottom:4px">① 시놀로지 NAS 용 (NAS 가 직접 가져감)</div>
+    <textarea id="nas-script" rows="10" readonly style="font-family:ui-monospace,Consolas,monospace;font-size:12px;white-space:pre"><?= h($nasScript) ?></textarea>
     <div style="margin-top:8px"><button type="button" class="btn sm" onclick="var t=document.getElementById('nas-script');t.select();navigator.clipboard&&navigator.clipboard.writeText(t.value);this.textContent='복사했습니다'">스크립트 복사</button></div>
+    <div style="font-weight:600;margin:16px 0 4px">② ipTIME NAS 등 — 사무실 Windows PC 가 가져와 NAS 공유폴더에 저장</div>
+    <textarea id="pc-script" rows="10" readonly style="font-family:ui-monospace,Consolas,monospace;font-size:12px;white-space:pre"><?= h($pcScript) ?></textarea>
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+      <!-- 한글 Windows 의 PowerShell 5.1 은 BOM 이 있어야 UTF-8 로 읽으므로 BOM 을 붙여 파일로 내려받습니다 -->
+      <button type="button" class="btn sm pri" onclick="var a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\ufeff'+document.getElementById('pc-script').value.replace(/\n/g,'\r\n')],{type:'text/plain'}));a.download='erp_backup.ps1';document.body.appendChild(a);a.click();a.remove();this.textContent='받았습니다 (erp_backup.ps1)'">파일로 받기 (erp_backup.ps1)</button>
+      <button type="button" class="btn sm" onclick="var t=document.getElementById('pc-script');t.select();navigator.clipboard&&navigator.clipboard.writeText(t.value);this.textContent='복사했습니다'">스크립트 복사</button>
+    </div>
   </div>
   <?php endif; ?>
   <div class="cb" style="border-top:1px solid var(--line2);font-size:12px;color:var(--ink2);line-height:1.9">
+    <b>ipTIME NAS 에 받는 법 (사무실 Windows PC, 한 번만)</b> — ipTIME NAS 는 NAS 안에서 예약 스크립트를 돌릴 수 없어, 늘 켜 두는 PC 가 대신 받습니다<br>
+    1. 위 <b>백업 열쇠 만들기</b> → ② 의 <b>파일로 받기</b> → 받은 <code>erp_backup.ps1</code> 을 <code>C:\GOODPOST\</code> 폴더로 옮김<br>
+    2. 메모장으로 열어 <code>$Dest =</code> 를 NAS 공유폴더 주소로 (탐색기 주소창에 보이는 그대로, 예: <code>\\192.168.0.10\GOODPOST\ERP</code>). 저장할 때 인코딩은 그대로 둡니다<br>
+    3. 그 PC 에서 NAS 공유폴더를 한 번 열어 <b>자격 증명 저장</b>에 체크하고 로그인해 둠<br>
+    4. 시작 메뉴 → <b>작업 스케줄러</b> → <b>기본 작업 만들기</b>: 매일 (점심·퇴근 전 등 PC 가 켜진 시각) · 동작 <b>프로그램 시작</b><br>
+    &nbsp;&nbsp;&nbsp;프로그램 <code>powershell.exe</code> · 인수 <code>-NoProfile -ExecutionPolicy Bypass -File "C:\GOODPOST\erp_backup.ps1"</code><br>
+    5. 만든 작업 속성 → 설정 탭 → <b>예약된 시작 시간을 놓친 경우 가능한 대로 빨리 작업 시작</b> 체크 (그 시각에 PC 가 꺼져 있었을 때)<br>
+    6. 작업을 오른쪽 클릭 → <b>실행</b> 한 번 → 이 화면의 "NAS 가 마지막으로 온 때" · 완료 수가 바뀌고, NAS 폴더에 <code>_backup_log.txt</code> 가 생깁니다<br>
     <b>NAS 에 넣는 법 (시놀로지, 한 번만)</b><br>
     1. 위 <b>백업 열쇠 만들기</b> → 나온 스크립트 복사<br>
     2. DSM <b>제어판 → 작업 스케줄러 → 생성 → 예약된 작업 → 사용자 정의 스크립트</b><br>
