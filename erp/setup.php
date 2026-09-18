@@ -176,10 +176,23 @@ if ($step === 'schema') {
 
     $pdo = db();
     $ok = 0; $fail = 0;
-    echo "문장 " . count($stmts) . "개를 실행합니다.\n\n";
+    // 중간에 끊겼을 때 &from=번호 로 그 문장부터 이어서 실행한다 (앞 문장은 CREATE TABLE 이라 다시 돌리면 실패)
+    $from = max(1, (int)($_GET['from'] ?? 1));
+    echo "문장 " . count($stmts) . "개 중 {$from}번부터 실행합니다.\n\n";
     foreach ($stmts as $n => $st) {
+        if ($n + 1 < $from) { continue; }
         try {
-            $pdo->exec($st);
+            // exec() 는 SELECT 결과를 읽지 않고 남겨서 다음 문장이 전부 2014 오류로 막힌다.
+            // query() 로 돌리고 결과를 끝까지 읽은 뒤 닫는다. SELECT 는 확인용이라 결과도 보여준다.
+            $res = $pdo->query($st);
+            if ($res->columnCount() > 0) {
+                foreach ($res->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                    $pairs = [];
+                    foreach ($row as $k => $v) { $pairs[] = "$k=" . ($v ?? 'NULL'); }
+                    echo "  [" . ($n + 1) . "] " . implode('  ', $pairs) . "\n";
+                }
+            }
+            $res->closeCursor();
             $ok++;
         } catch (PDOException $e) {
             $fail++;
@@ -199,20 +212,20 @@ if ($step === 'schema') {
         echo "DB        : " . $q('SELECT DATABASE()') . "\n";
         echo "테이블    : " . $q("SELECT COUNT(*) FROM information_schema.TABLES
                                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE='BASE TABLE'")
-             . " (기대 40)\n";
+             . " (기대 49)\n";
         echo "뷰        : " . $q('SELECT COUNT(*) FROM information_schema.VIEWS
-                                   WHERE TABLE_SCHEMA = DATABASE()') . " (기대 3)\n";
+                                   WHERE TABLE_SCHEMA = DATABASE()') . " (기대 9)\n";
         echo "외래키    : " . $q("SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
                                    WHERE TABLE_SCHEMA = DATABASE()
-                                     AND CONSTRAINT_TYPE='FOREIGN KEY'") . " (기대 54)\n";
+                                     AND CONSTRAINT_TYPE='FOREIGN KEY'") . "\n";
         echo "collation : " . $q("SELECT GROUP_CONCAT(DISTINCT COLLATION_NAME)
                                    FROM information_schema.COLUMNS
                                   WHERE TABLE_SCHEMA = DATABASE()
                                     AND COLLATION_NAME IS NOT NULL") . "\n";
         echo "사업자    : " . $q('SELECT COUNT(*) FROM business_entities') . " (기대 2)\n";
         echo "운송사    : " . $q('SELECT COUNT(*) FROM carriers') . " (기대 4)\n";
-        echo "권한항목  : " . $q('SELECT COUNT(*) FROM permissions') . " (기대 43)\n";
-        echo "역할권한  : " . $q('SELECT COUNT(*) FROM role_permissions') . " (기대 140)\n";
+        echo "권한항목  : " . $q('SELECT COUNT(*) FROM permissions') . " (기대 52)\n";
+        echo "역할권한  : " . $q('SELECT COUNT(*) FROM role_permissions') . "\n";
         echo "문서종류  : " . $q('SELECT COUNT(*) FROM document_types') . " (기대 9)\n";
     } catch (PDOException $e) {
         echo "확인 쿼리 실패: " . $e->getMessage() . "\n";

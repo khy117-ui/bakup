@@ -1975,7 +1975,7 @@ ALTER TABLE payments COMMENT = '[폐기] financial_transactions 로 이전됨. �
 -- ============================================================================
 
 SELECT COUNT(*) AS 비용분류수   FROM expense_categories;
-SELECT COUNT(*) AS 입출금권한수 FROM permissions WHERE category = '입출금';
+SELECT COUNT(*) AS 입출금권한수 FROM permissions WHERE group_ko = '입출금';
 SELECT COUNT(*) AS 입출금건수   FROM financial_transactions;
 SELECT COUNT(*) AS 배분행수     FROM payment_allocations;
 
