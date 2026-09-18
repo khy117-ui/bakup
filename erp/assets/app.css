@@ -221,3 +221,10 @@ a.kpi-link:hover, a.kpi-link:focus-visible { border-color: var(--accent); text-d
   box-shadow: 0 4px 14px rgba(10, 36, 56, .08); }
 .kpi-go { position: absolute; right: 12px; top: 8px; font-size: 20px; line-height: 1; color: var(--ink3); }
 a.kpi-link:hover .kpi-go { color: var(--accent-deep); }
+
+/* 표 안의 입력칸 — 휴대폰에서 표가 좁아지면 입력칸이 손톱만큼 줄어 붙여넣기도 안 됐습니다 (환경설정 등) */
+@media (max-width: 900px) {
+  .tscroll td input[type=text], .tscroll td input[type=password], .tscroll td input[type=number],
+  .tscroll td input[type=date], .tscroll td select { min-width: 170px; }
+  .tscroll td input[type=checkbox], .tscroll td input[type=radio] { min-width: 0; }
+}
