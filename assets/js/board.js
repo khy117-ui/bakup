@@ -27,7 +27,7 @@
   var size = cfg.pageSize || 15;
   var detailBox = null;
 
-  if (writeBtn && cfg.write) writeBtn.href = cfg.write;
+  if (writeBtn && cfg.write) { writeBtn.href = cfg.write; if (!/^https?:/.test(cfg.write)) { writeBtn.removeAttribute('target'); } }
   if (input) input.value = q;
   if (form) form.addEventListener('submit', function (e) {
     e.preventDefault();
@@ -77,7 +77,9 @@
       a.className = 'board__row' + (it.pinned ? ' is-pinned' : '');
       a.href = link(page, { id: it.id });
       var no = it.pinned ? '공지' : (it.no != null ? it.no : total - (page - 1) * size - (n++));
-      var title = esc(it.title) + (isNew(it.date) ? '<span class="badge">NEW</span>' : '');
+      var title = (it.secret ? '<span class="lock" aria-label="비밀글">🔒</span> ' : '') + esc(it.title)
+        + (it.answered ? '<span class="badge badge--done">답변완료</span>' : '')
+        + (isNew(it.date) ? '<span class="badge">NEW</span>' : '');
       a.innerHTML = four
         ? '<span class="no">' + esc(no) + '</span><span class="title">' + title + '</span><span class="writer">' + esc(it.writer || '-') + '</span><span class="date">' + esc(it.date || '') + '</span>'
         : '<span class="no">' + esc(no) + '</span><span class="title">' + title + '</span><span class="date">' + esc(it.date || '') + '</span><span class="hit">' + num(it.views) + '</span>';
@@ -123,6 +125,7 @@
     var files = (it.files || []).map(function (f) { return '<li><a href="' + esc(f.url) + '" target="_blank" rel="noopener">' + esc(f.name || f.url) + '</a></li>'; }).join('');
     detailBox.innerHTML = '<header class="post__head"><h3>' + esc(it.title) + '</h3><div class="post__meta">' + meta + '</div></header>'
       + '<div class="post__body">' + body + '</div>'
+      + (it.answer ? '<div class="post__answer"><strong>답변</strong>' + (it.answered_at ? '<span class="post__meta">' + esc(it.answered_at) + '</span>' : '') + '<div>' + String(it.answer).replace(/<script[\s\S]*?<\/script>/gi, '') + '</div></div>' : '')
       + (files ? '<ul class="post__files">' + files + '</ul>' : '')
       + '<div class="form-actions" style="justify-content:flex-start;margin-top:24px"><a class="btn btn--outline btn--sm btn--square" href="' + link(page) + '">목록</a></div>';
     box.parentNode.insertBefore(detailBox, box);
@@ -134,7 +137,33 @@
         renderDetail(all.filter(function (it) { return String(it.id) === String(id); })[0]);
       });
     }
-    return fetchJson(api + (api.indexOf('?') >= 0 ? '&' : '?') + 'id=' + encodeURIComponent(id)).then(function (d) { renderDetail(d.item || d); });
+    var pw = params.get('pw') || '';
+    return fetch(api + (api.indexOf('?') >= 0 ? '&' : '?') + 'id=' + encodeURIComponent(id) + (pw ? '&pw=' + encodeURIComponent(pw) : ''), { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
+      .then(function (res) {
+        if (res.status === 403 && res.data && res.data.error === 'secret') return renderSecret(res.data, !!pw);
+        if (res.status >= 400) throw new Error(res.data && res.data.error || 'HTTP ' + res.status);
+        renderDetail(res.data.item || res.data);
+      });
+  }
+  function renderSecret(d, wrong) {
+    box.style.display = 'none';
+    if (tools) tools.style.display = 'none';
+    if (pager) pager.style.display = 'none';
+    var it = d.item || {};
+    var f = document.createElement('form');
+    f.className = 'post';
+    f.innerHTML = '<header class="post__head"><h3>🔒 ' + esc(it.title || '비밀글') + '</h3><div class="post__meta"><span>' + esc(it.date || '') + '</span><span>' + esc(it.writer || '') + '</span></div></header>'
+      + '<div class="post__body"><p>' + esc(d.message || '비밀글입니다. 비밀번호를 입력해 주세요.') + '</p>'
+      + (wrong ? '<p class="warn" style="margin-top:8px">비밀번호가 맞지 않습니다.</p>' : '')
+      + '<div class="search-row" style="margin-top:14px;max-width:360px"><input class="search-input" type="password" name="pw" placeholder="비밀번호" required autocomplete="off"><button class="btn btn--navy btn--sm btn--square" type="submit">확인</button></div></div>'
+      + '<div class="form-actions" style="justify-content:flex-start;padding:0 24px 24px"><a class="btn btn--outline btn--sm btn--square" href="' + link(page) + '">목록</a></div>';
+    f.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var sp = new URLSearchParams(location.search); sp.set('pw', f.elements.pw.value);
+      location.search = '?' + sp.toString();
+    });
+    box.parentNode.insertBefore(f, box);
   }
 
   message('불러오는 중…');

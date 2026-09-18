@@ -212,6 +212,19 @@ ul, ol { padding: 0; list-style: none; }
 .post__files { padding: 0 24px 20px; list-style: none; font-size: 14px; }
 .post__files a { color: var(--blue); text-decoration: underline; }
 .post .form-actions { padding: 0 24px 24px; }
+.board__row .lock { font-size: 12px; }
+.badge--done { background: #E7F7EE; color: #1B7F4A; }
+.post__answer { margin: 0 24px 24px; padding: 20px 22px; background: var(--tint); border-radius: 12px; font-size: 15px; line-height: 1.8; color: var(--body); }
+.post__answer > strong { display: inline-block; color: var(--navy); margin-right: 10px; }
+.post__answer .post__meta { display: inline-flex; }
+.post__answer > div { margin-top: 8px; }
+.write-form .field { margin-bottom: 14px; }
+.write-form label { display: block; font-size: 13px; font-weight: 700; color: var(--navy); margin-bottom: 6px; }
+.write-form input[type=text], .write-form input[type=password], .write-form textarea { width: 100%; padding: 11px 12px; border: 1px solid var(--line-2); border-radius: 10px; font: inherit; font-size: 14px; }
+.write-form textarea { min-height: 220px; line-height: 1.6; }
+.write-form .row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.write-form .agree { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+@media (max-width: 720px) { .write-form .row { grid-template-columns: 1fr; } }
 .pager { display: flex; justify-content: center; gap: 4px; margin-top: 20px; }
 .pager a { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-family: var(--font-en); font-size: 13px; font-weight: 700; color: var(--muted); }
 .pager a.is-active { background: var(--navy); color: #fff; }

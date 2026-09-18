@@ -17,16 +17,21 @@ member/                    온라인접수 · 픽업예약 / 회원가입 / 로�
 assets/css/style.css       공통 스타일 (디자인 토큰, 컴포넌트, 반응형 미디어쿼리)
 assets/js/main.js          모바일 메뉴, 홈 조회 탭, 부피계산기, 해외운송비 합계, 지역표 검색, 운송사 선택
 assets/js/rates.js         요금표 엑셀 로더 (rates.xlsx → 표 렌더링, 관리자 미리보기)
-assets/js/site-config.js   게시판(ERP) API 주소 설정 (미리보기에서는 예시 JSON 사용)
-assets/js/board.js         공지사항 · Q&A 목록/본문 로더 (ERP API → 표 렌더링, 검색 · 페이징)
-assets/data/board/         게시판 예시 JSON (API 응답 형식 견본, 미리보기 전용)
+assets/js/site-config.js   게시판 API 주소 설정
+assets/js/board.js         공지사항 · Q&A 목록/본문 로더 (API → 표 렌더링, 검색 · 페이징 · 비밀글 · 답변)
+api/board.php              게시판 공개 API (목록 · 본문 · Q&A 등록) — DB 에서 읽음
+includes/db.php            DB 연결 (MySQL 환경변수 → MySQL, 없으면 영속 폴더 SQLite) · 테이블 자동 생성 · 예시 글 시드
+db/schema.sql              board_post 테이블 정의 (ERP 등 다른 프로그램이 같은 테이블을 쓸 때 참고)
+db/seed/                   테이블이 비어 있을 때 넣는 예시 글
+admin/posts.php            게시판 관리 (작성 · 수정 · 삭제 · Q&A 답변)
+helpdesk/qna-write.html    고객 Q&A 글쓰기
 assets/data/rates.xlsx     요금표 원본 엑셀 (이 파일만 교체하면 요금 반영)
-admin/rates.html           관리자 페이지 · 게시판(ERP) 관리 링크 / 요금표 교체 안내 · 미리보기
+admin/rates.html           관리자 페이지 · 게시판 관리 / 요금표 교체 안내 · 미리보기
 admin/config.js            ERP 게시판(공지사항 · Q&A) 링크 주소 설정
 assets/img/                로고 · 사진 자산 (백업 사이트 이미지에서 추출)
 ```
 
-정적 HTML이므로 별도 빌드 없이 웹서버에 그대로 올리면 됩니다. 로컬 확인은 `python3 -m http.server` 로 가능합니다.
+게시판(api/, admin/posts.php)만 PHP 8 + PDO 를 쓰고 나머지는 정적 HTML 입니다. 별도 빌드 없이 PHP 가 되는 웹서버에 그대로 올리면 됩니다. 로컬 확인은 `php -S 127.0.0.1:8000` 으로 가능합니다.
 
 ## 요금표 관리 (엑셀 파일 교체)
 
@@ -55,25 +60,28 @@ assets/img/                로고 · 사진 자산 (백업 사이트 이미지�
 
 ## 연동이 필요한 부분
 
-- **게시판 관리(ERP)**: 관리자 페이지의 공지사항 · Q&A 버튼은 `admin/config.js` 의 주소로 새 창을 엽니다. 공지사항은 `https://postgood.co.kr/erp/notice`, Q&A는 `https://postgood.co.kr/erp/qna` 로 연결되어 있으며, 주소가 바뀌면 이 파일만 수정하면 됩니다.
-- **게시판(공지사항 · Q&A)**: 목록과 본문은 ERP 게시판 API에서 읽어옵니다(아래 "게시판 API 형식"). 미리보기 서버에서는 `assets/data/board/*.json` 예시를 대신 읽습니다.
+- **게시판(공지사항 · Q&A)**: 이 서버의 DB(`board_post`)에 저장되며 `admin/posts.php` 에서 관리합니다. ERP(/erp/)가 같은 DB 를 쓰면 같은 테이블을 읽고 쓰면 됩니다(아래 "게시판 DB · API").
 - **견적문의**: 목록은 예시 데이터입니다.
 - **폼(픽업예약 · 로그인 · 회원가입 · 화물추적 · 결제)**: 마크업과 프론트 동작만 구현되어 있고 전송 대상 API는 비어 있습니다.
 - **개인정보취급방침**의 주민등록번호 수집 항목은 현행법 검토가 필요합니다.
 
-## 게시판 API 형식 (ERP 서버가 제공)
+## 게시판 DB · API
 
-홈페이지의 공지사항 · Q&A 페이지는 `assets/js/site-config.js` 에 적힌 주소에서 JSON을 읽어 목록과 본문을 그립니다. 기본 주소는 공지사항 `https://postgood.co.kr/erp/api/notice`, Q&A `https://postgood.co.kr/erp/api/qna` 이며, ERP 쪽 실제 주소에 맞게 이 파일만 바꾸면 됩니다. 홈페이지와 ERP가 같은 도메인(postgood.co.kr)이라 CORS 설정은 필요 없습니다.
+공지사항 · Q&A 글은 DB 테이블 `board_post` 한 곳에 저장됩니다(`db/schema.sql`).
+
+- **DB 연결**: `includes/db.php` 가 서버 환경변수 `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` 를 읽어 MySQL 에 접속합니다(AI SPACE · 호스팅이 자동 주입). 환경변수가 없으면 영속 폴더(`/app/user_data`, 없으면 `data/`)에 SQLite 파일을 만들어 동작하므로 DB 를 붙이기 전에도 게시판이 작동하고, MySQL 이 연결되면 자동으로 전환됩니다. 관리 화면 우측 상단에 현재 저장소(MySQL / SQLite)가 표시됩니다.
+- **테이블 · 예시 글**: 첫 요청 때 테이블이 없으면 만들고, 비어 있으면 `db/seed/*.json` 의 예시 글을 넣습니다. 실제 글을 등록하기 전에 관리 화면에서 예시 글을 지우면 됩니다.
+- **관리**: `admin/posts.php` (공지사항 · Q&A 탭, 작성 · 수정 · 삭제 · 공지 고정 · 비밀글 · Q&A 답변). `/admin/` 접근 제한(허용 IP + 관리자 인증)이 그대로 적용됩니다.
+- **고객 Q&A 등록**: `helpdesk/qna-write.html` → `api/board.php`(POST). 비밀글은 비밀번호(해시 저장)를 아는 사람과 관리자만 본문을 볼 수 있습니다. 공지사항은 공개 등록이 막혀 있습니다.
+- **ERP 연동**: ERP 가 같은 DB 의 `board_post` 에 INSERT / UPDATE / DELETE 하면 홈페이지에 즉시 반영됩니다. 컬럼 의미는 `db/schema.sql` 주석 참고. 관리자 페이지의 ERP 링크 주소는 `admin/config.js` 에서 바꿉니다.
+
+공개 API (`api/board.php`, 홈페이지 JS 가 사용 · 다른 서버 API 로 바꾸려면 `assets/js/site-config.js` 의 `api` 값을 교체):
 
 | 요청 | 응답(JSON) |
 |---|---|
-| 목록 `GET {api}?page=1&size=15&q=검색어` | `{"total":46,"page":1,"size":15,"items":[{"id":46,"title":"제목","date":"2025-06-10","views":2982,"writer":"관리자","pinned":true}]}` |
-| 본문 `GET {api}?id=46` | `{"id":46,"title":"제목","date":"2025-06-10","views":2982,"writer":"관리자","content":"<p>본문 HTML 또는 텍스트</p>","files":[{"name":"안내문.pdf","url":"https://…"}]}` |
-
-- `pinned: true` 인 글은 번호 대신 "공지"로 표시되고 1페이지 맨 위에 옵니다. `q` 는 제목 · 내용 검색어이며 비어 있으면 전체 목록입니다.
-- `date` 가 최근 7일 이내이면 NEW 배지가 붙습니다. `content` 는 HTML을 그대로 표시하되 `<script>` 와 인라인 이벤트 속성은 제거됩니다.
-- 응답 형식 견본은 `assets/data/board/notice.json`, `qna.json` 에 있습니다(예시 JSON은 페이징 · 검색을 브라우저에서 처리).
-- API 호출이 실패하면 표에 "게시글을 불러오지 못했습니다"와 ERP 게시판 링크가 표시됩니다. Q&A의 **글쓰기** 버튼은 `site-config.js` 의 `write` 주소(기본 `https://postgood.co.kr/erp/qna`)로 새 창을 엽니다.
+| 목록 `GET api/board.php?board=notice&page=1&size=15&q=검색어` | `{"total":46,"page":1,"size":15,"items":[{"id":46,"title":"제목","date":"2025-06-10","views":2982,"writer":"관리자","pinned":true,"secret":false,"answered":false}]}` |
+| 본문 `GET api/board.php?board=qna&id=46[&pw=비밀번호]` | `{"id":46,"title":"…","date":"…","views":…,"writer":"…","content":"<p>본문</p>","answer":"<p>답변</p>","answered_at":"2026-09-18"}` — 비밀글에 비밀번호가 없거나 틀리면 `403 {"error":"secret"}` |
+| 등록 `POST api/board.php` (`board=qna&title&writer&content&secret=1&password`) | `201 {"ok":true,"id":47}` |
 
 ## 브랜드 · 콘텐츠 기준
 
