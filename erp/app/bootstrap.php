@@ -3,6 +3,13 @@ declare(strict_types=1);
 
 define('APP_DIR', __DIR__);
 
+/** assets/ 파일 주소에 수정시각을 붙인다 — 휴대폰이 예전 CSS 를 계속 쓰지 않게 */
+function asset_v(string $path): string
+{
+    $t = @filemtime(dirname(APP_DIR) . '/' . $path);
+    return $path . ($t ? '?v=' . $t : '');
+}
+
 /**
  * 설정 읽기.
  *   1순위  app/config.local.php   (직접 올린 서버)

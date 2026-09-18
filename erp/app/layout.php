@@ -60,11 +60,12 @@ function layout_head(string $title, string $active): void
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title><?= h($title) ?> · <?= h($CFG['app_name']) ?></title>
-<link rel="stylesheet" href="assets/app.css">
+<link rel="stylesheet" href="<?= h(asset_v('assets/app.css')) ?>">
 </head>
 <body>
 <div class="wrap">
-  <aside class="side">
+  <div class="scrim" onclick="document.body.classList.remove('nav-open')"></div>
+  <aside class="side" id="sidenav">
     <div class="logo"><img src="assets/logo.png" alt="GOODPOST"></div>
     <nav>
       <a class="item<?= $active === 'dashboard' ? ' on' : '' ?>" href="?p=dashboard"
@@ -93,13 +94,15 @@ function layout_head(string $title, string $active): void
   </aside>
   <div class="main">
     <div class="top">
+      <button type="button" class="menu-btn" aria-label="메뉴 열기" aria-controls="sidenav"
+              onclick="document.body.classList.toggle('nav-open')">&#9776;</button>
       <div class="ent"><?= h(entity_label()) ?></div>
-      <form method="get" style="margin-left:auto;display:flex;gap:6px;align-items:center">
+      <form method="get" class="entform">
         <?php foreach ($_GET as $qk => $qv): if ($qk === 'ent' || !is_string($qv)) continue; ?>
           <input type="hidden" name="<?= h($qk) ?>" value="<?= h($qv) ?>">
         <?php endforeach; ?>
         <label for="entsel" style="font-size:11.5px;color:var(--ink2)">사업자</label>
-        <select id="entsel" name="ent" onchange="this.form.submit()" style="width:180px">
+        <select id="entsel" name="ent" onchange="this.form.submit()">
           <option value="all"<?= entity_filter() === null ? ' selected' : '' ?>>전체</option>
           <?php foreach (entity_list() as $e): ?>
             <option value="<?= (int)$e['id'] ?>"<?= entity_filter() === (int)$e['id'] ? ' selected' : '' ?>>
@@ -120,6 +123,20 @@ function layout_foot(): void
     ?>    </div>
   </div>
 </div>
+<script>
+// 넓은 표는 감싸서 표만 좌우로 밀리게 한다 (휴대폰에서 화면 전체가 옆으로 밀리지 않게)
+document.querySelectorAll('.body table').forEach(function (t) {
+  var p = t.parentNode;
+  if (p.classList && p.classList.contains('tscroll')) return;
+  var w = document.createElement('div');
+  w.className = 'tscroll';
+  p.insertBefore(w, t);
+  w.appendChild(t);
+});
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape') document.body.classList.remove('nav-open');
+});
+</script>
 </body>
 </html>
 <?php

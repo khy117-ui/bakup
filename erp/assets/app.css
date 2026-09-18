@@ -139,3 +139,57 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-line
 .pager { display: flex; align-items: center; gap: 8px; padding: 12px 16px;
   border-top: 1px solid var(--line); font-size: 12px; color: var(--ink2); }
 .pager .right { margin-left: auto; display: flex; gap: 6px; }
+
+/* 상단 사업자 선택 · 메뉴 버튼 · 표 감싸개 */
+.entform { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.entform select { width: 180px; }
+.menu-btn, .scrim { display: none; }
+.tscroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.login .box { max-width: calc(100vw - 32px); }
+
+/* ---------------------------------------------------------------- 휴대폰 · 태블릿
+   왼쪽 메뉴는 숨기고 ☰ 로 여는 서랍으로. 표는 표만 좌우로 밀리고, 입력칸·카드는 화면 폭에 맞춘다. */
+@media (max-width: 900px) {
+  .side { position: fixed; top: 0; left: 0; bottom: 0; z-index: 50; width: 264px;
+    max-width: 82vw; transform: translateX(-100%); transition: transform .2s ease;
+    overflow-y: auto; }
+  body.nav-open { overflow: hidden; }
+  body.nav-open .side { transform: none; box-shadow: 0 0 24px rgba(0, 0, 0, .35); }
+  body.nav-open .scrim { display: block; position: fixed; inset: 0; z-index: 40;
+    background: rgba(10, 36, 56, .45); }
+  .side a.item, .side span.item { height: 42px; }
+  .side > * { flex-shrink: 0; }  /* 메뉴가 길어도 로고·내 정보 칸이 눌리지 않게 */
+
+  .menu-btn { display: inline-flex; align-items: center; justify-content: center;
+    flex-shrink: 0; width: 40px; height: 40px; border: 1px solid var(--line);
+    border-radius: 6px; background: #fff; color: var(--ink); font-size: 20px;
+    cursor: pointer; }
+  .top { position: sticky; top: 0; z-index: 30; height: 56px; padding: 0 12px; gap: 8px; }
+  .top .ent, .entform label { display: none; }
+  .entform select { width: auto; max-width: 62vw; }
+
+  .body { padding: 12px; gap: 12px; }
+  h1 { font-size: 18px; }
+  .head { flex-wrap: wrap; gap: 6px 10px; }
+  .head .right { flex-wrap: wrap; }
+
+  .kpis { gap: 10px; }
+  .kpi { flex: 1 1 calc(50% - 5px); min-width: 0; padding: 11px 12px; }
+  .kpi .val { font-size: 18px; }
+
+  .card .ch { height: auto; min-height: 44px; flex-wrap: wrap; padding: 8px 12px; }
+  .card .cb { padding: 12px; }
+  .tscroll th, .tscroll td { white-space: nowrap; }
+
+  .fw.w1 { width: calc(50% - 6px); }
+  .fw.w2, .fw.w3 { width: 100%; }
+  .fw[style*="min-width"] { min-width: 0 !important; width: 100%; }
+  .body div[style*="display:flex"] { flex-wrap: wrap; }
+  /* 16px 미만이면 아이폰이 입력칸을 누를 때마다 화면을 확대한다 */
+  input[type=text], input[type=date], input[type=number], input[type=password],
+  select, textarea { font-size: 16px; height: 40px; }
+  textarea { height: auto; }
+  .btn { height: 38px; }
+  .btn.sm { height: 32px; }
+  .pager { flex-wrap: wrap; }
+}
