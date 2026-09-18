@@ -5,7 +5,7 @@ $eid = entity_id();
 $err = '';
 $sid = (int)query('shipment_id', '0');
 
-$carriers = db()->query('SELECT id, code, tracking_enabled FROM carriers
+$carriers = db()->query('SELECT id, code, name, tracking_enabled FROM carriers
                           WHERE is_active = 1 ORDER BY sort_order, code')->fetchAll();
 
 $sh = null;
@@ -96,24 +96,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             flash('배송완료로 표시했습니다.');
             redirect('?p=tracking&shipment_id=' . (int)post('shipment_id'));
 
-        } elseif ($act === 'epost_key') {
-            // 화물추적 화면에서 바로 인증키 넣기 — 최고관리자 · 환경설정 권한만
+        } elseif ($act === 'api_key') {
+            // 화물추적 화면에서 바로 조회 인증키 넣기 — 환경설정 권한자만. which = epost(우체국) / dhl
             require_once APP_DIR . '/epost.php';
-            $k = (string)preg_replace('/\s+/u', '', post('epost_key'));
+            require_once APP_DIR . '/dhl.php';
+            $which = post('which') === 'dhl' ? 'dhl' : 'epost';
+            $k = (string)preg_replace('/\s+/u', '', post('api_key'));
+            $label = $which === 'dhl' ? 'DHL API 키' : '우체국 Open API 인증키';
             if (!route_can_edit('settings')) {
                 $err = '인증키는 환경설정 권한이 있는 관리자만 넣을 수 있습니다.';
-            } elseif (!preg_match('/^[A-Za-z0-9%+\/=_-]{20,300}$/', $k)) {
-                $err = '인증키 모양이 아닙니다. 공공데이터포털 마이페이지의 "일반 인증키" 를 그대로 붙여넣어 주세요.';
+            } elseif (!preg_match('/^[A-Za-z0-9%+\/=_-]{16,300}$/', $k)) {
+                $err = $label . ' 모양이 아닙니다. 발급 화면의 키를 그대로 붙여넣어 주세요.';
             } else {
-                epost_save_key($k);
-                log_action('시스템', 'UPDATE', 'app_settings', null, '우체국 Open API 인증키', null, '(새 값으로 바꿈)');
-                flash('우체국 인증키를 저장했습니다 (끝 4자리 ' . substr($k, -4) . '). 이제 [우체국에서 이력 가져오기] 를 눌러 보세요.');
+                $which === 'dhl' ? dhl_save_key($k) : epost_save_key($k);
+                log_action('시스템', 'UPDATE', 'app_settings', null, $label, null, '(새 값으로 바꿈)');
+                flash($label . '를 저장했습니다 (끝 4자리 ' . substr($k, -4) . ').');
                 redirect('?p=tracking' . ((int)post('shipment_id') > 0 ? '&shipment_id=' . (int)post('shipment_id') : ''));
             }
 
-        } elseif ($act === 'epost_fetch') {
-            // 우체국 EMS 행방조회 Open API 에서 이력을 가져와 쌓습니다 (같은 일시 · 상태는 건너뜀)
-            require_once APP_DIR . '/epost.php';
+        } elseif ($act === 'track_fetch') {
+            // 운송사 조회 API 에서 이력을 가져와 쌓습니다 (같은 일시 · 상태는 건너뜀). src = epost(우체국 EMS) / dhl
+            $src = post('src') === 'dhl' ? 'dhl' : 'epost';
+            $who = $src === 'dhl' ? 'DHL' : '우체국';
             $tid = (int)post('tracking_number_id');
             $st = $pdo->prepare('SELECT t.id, t.tracking_no, t.shipment_id FROM tracking_numbers t
                                    JOIN shipments s ON s.id = t.shipment_id
@@ -123,8 +127,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!$trk) {
                 $err = '추적번호를 찾을 수 없습니다.';
             } else {
-                $r = epost_ems_trace((string)$trk['tracking_no']);
-                $_SESSION['epost_raw'][$tid] = mb_substr((string)$r['raw'], 0, 4000);
+                if ($src === 'dhl') {
+                    require_once APP_DIR . '/dhl.php';
+                    $r = dhl_trace((string)$trk['tracking_no']);
+                } else {
+                    require_once APP_DIR . '/epost.php';
+                    $r = epost_ems_trace((string)$trk['tracking_no']);
+                }
+                $_SESSION['track_raw'][$tid] = [$who, mb_substr((string)$r['raw'], 0, 4000)];
                 if (!$r['ok']) {
                     $err = $r['error'];
                 } else {
@@ -138,7 +148,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $new += $ins->rowCount();
                     }
                     $last = $r['events'] ? end($r['events']) : null;
-                    $done = $last && preg_match('/배달완료|delivered/iu', $last['status'] . ' ' . ($last['description'] ?? ''));
+                    // 배달완료 — 우체국은 '배달완료', DHL 은 statusCode 'delivered'
+                    $done = $last && (($last['code'] ?? '') === 'delivered'
+                             || preg_match('/배달완료|delivered/iu', $last['status'] . ' ' . ($last['description'] ?? '')));
                     $pdo->prepare('UPDATE tracking_numbers
                                       SET current_status = COALESCE(?, current_status),
                                           current_location = COALESCE(?, current_location),
@@ -149,11 +161,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                    $last['at'] ?? null, $_SESSION['admin_id'] ?? null, $tid]);
                     $pdo->commit();
                     log_action('물류', 'UPDATE', 'tracking_numbers', $tid, (string)$trk['tracking_no'], null,
-                               '우체국 조회 — 이력 ' . count($r['events']) . '건 중 새 것 ' . $new . '건');
+                               $who . ' 조회 — 이력 ' . count($r['events']) . '건 중 새 것 ' . $new . '건');
                     flash($r['events']
-                        ? '우체국에서 이력 ' . count($r['events']) . '건을 받았습니다 (새로 ' . $new . '건).'
+                        ? $who . '에서 이력 ' . count($r['events']) . '건을 받았습니다 (새로 ' . $new . '건).'
                           . ($done ? ' 배달완료로 표시했습니다.' : '')
-                        : '우체국 응답은 받았지만 이력을 읽지 못했습니다. 아래 "우체국 응답 원문" 을 캡처해 보내 주세요.');
+                        : $who . ' 응답은 받았지만 이력을 읽지 못했습니다. 아래 "응답 원문" 을 캡처해 보내 주세요.');
                     redirect('?p=tracking&shipment_id=' . (int)$trk['shipment_id']);
                 }
             }
@@ -188,7 +200,7 @@ if ($sid === 0 && $kw !== '') {
 $trks = [];
 if ($sid > 0) {
     $st = db()->prepare(
-        'SELECT t.*, ca.code AS carrier FROM tracking_numbers t
+        'SELECT t.*, ca.code AS carrier, ca.name AS carrier_name FROM tracking_numbers t
            JOIN carriers ca ON ca.id = t.carrier_id
           WHERE t.shipment_id = ? ORDER BY t.id');
     $st->execute([$sid]);
@@ -215,33 +227,40 @@ layout_head('화물추적', 'tracking');
 <?php if ($err !== ''): ?><div class="msg err"><?= h($err) ?></div><?php endif; ?>
 
 <?php
-// 우체국 Open API 인증키 — 여기서 바로 넣을 수 있게 (환경설정 권한자만)
+// 운송사 조회 인증키 — 여기서 바로 넣을 수 있게 (환경설정 권한자만)
 require_once APP_DIR . '/epost.php';
-$epKey = epost_key();
+require_once APP_DIR . '/dhl.php';
+$epKey  = epost_key();
+$dhlKey = dhl_key();
+$keyBadge = fn(string $k) => $k !== '' ? '<span class="badge b-ok">저장됨 ····' . h(substr($k, -4)) . '</span>'
+                                       : '<span class="badge b-warn">없음</span>';
 if (route_can_edit('settings')): ?>
-<details class="card"<?= $epKey === '' ? ' open' : '' ?>>
-  <summary class="ch" style="cursor:pointer">우체국 EMS 조회 인증키
-    <?= $epKey !== '' ? '<span class="badge b-ok">저장됨 ····' . h(substr($epKey, -4)) . '</span>'
-                      : '<span class="badge b-warn">아직 없음</span>' ?></summary>
-  <div class="cb">
+<details class="card"<?= $epKey === '' || $dhlKey === '' ? ' open' : '' ?>>
+  <summary class="ch" style="cursor:pointer">배송조회 인증키
+    <span style="font-weight:400;font-size:12px">우체국 EMS <?= $keyBadge($epKey) ?> · DHL <?= $keyBadge($dhlKey) ?></span></summary>
+  <?php foreach ([['epost', '우체국 EMS — 공공데이터포털 일반 인증키', '마이페이지의 일반 인증키 붙여넣기'],
+                  ['dhl', 'DHL — developer.dhl.com 앱의 API Key (Consumer Key)', 'MyApps > 앱 > Credentials 의 API Key 붙여넣기']] as [$w, $lab, $ph]): ?>
+  <div class="cb" style="border-top:1px solid var(--line2)">
     <form method="post" class="f" style="align-items:flex-end" autocomplete="off">
       <?= csrf_field() ?>
-      <input type="hidden" name="act" value="epost_key">
+      <input type="hidden" name="act" value="api_key">
+      <input type="hidden" name="which" value="<?= $w ?>">
       <input type="hidden" name="shipment_id" value="<?= $sid ?>">
-      <div class="fw gr" style="min-width:260px"><label for="epk">공공데이터포털 일반 인증키</label>
-        <input type="text" id="epk" name="epost_key" class="tnum" required spellcheck="false"
-               placeholder="마이페이지의 일반 인증키를 붙여넣기 (공백은 자동으로 뺍니다)"></div>
+      <div class="fw gr" style="min-width:260px"><label for="k-<?= $w ?>"><?= h($lab) ?></label>
+        <input type="text" id="k-<?= $w ?>" name="api_key" class="tnum" required spellcheck="false"
+               placeholder="<?= h($ph) ?> (공백은 자동으로 뺍니다)"></div>
       <button class="btn pri">저장</button>
     </form>
-    <div style="font-size:11.5px;color:var(--ink3);margin-top:6px">
-      두 줄로 보이는 키를 복사해 가운데 공백이 들어가도 괜찮습니다. 저장 후에는 끝 4자리만 보입니다.</div>
   </div>
+  <?php endforeach; ?>
+  <div class="cb" style="padding-top:0;font-size:11.5px;color:var(--ink3)">
+    저장 후에는 끝 4자리만 보입니다. DHL 은 처음 한도가 하루 250건 · 5초에 1건입니다.</div>
 </details>
 <?php endif; ?>
 
 <div class="msg" style="background:var(--info-bg);color:var(--info-fg)">
-  운송사 API 연동은 아직 없습니다. <b>지금은 사람이 조회해서 넣는 방식</b>입니다.
-  기존 시스템은 추적 이력을 아예 저장하지 않았는데, 여기서는 넣는 만큼 쌓입니다.
+  <b>우체국 EMS</b>(영문2+숫자9+영문2) · <b>DHL</b>(숫자 10자리) 번호는 버튼 한 번으로 이력을 가져옵니다
+  (위 인증키 필요). 다른 운송사는 사람이 조회해서 넣습니다. 넣은 이력은 전부 쌓입니다.
 </div>
 
 <?php if (!$sh): ?>
@@ -296,7 +315,7 @@ if (route_can_edit('settings')): ?>
         <select name="carrier_id" required>
           <?php foreach ($carriers as $c): ?>
             <option value="<?= (int)$c['id'] ?>"<?= $c['code']===$sh['carrier']?' selected':'' ?>>
-              <?= h($c['code']) ?></option>
+              <?= h($c['name'] . ' (' . $c['code'] . ')') ?></option>
           <?php endforeach; ?>
         </select></div>
       <div class="fw w2"><label>추적번호 *</label>
@@ -333,25 +352,36 @@ if (route_can_edit('settings')): ?>
     </span>
   </div>
   <?php
-    // EMS · 국제등기 번호 모양이면 우체국 Open API 로 바로 가져올 수 있습니다
-    $isEms = (bool)preg_match('/^[A-Z]{2}\d{9}[A-Z]{2}$/', (string)$t['tracking_no']);
-    $raw = $_SESSION['epost_raw'][(int)$t['id']] ?? '';
+    // 번호 모양 · 운송사로 어디에 물어볼지 정합니다
+    //   우체국 EMS : 영문2 + 숫자9 + 영문2 (EG230930844KR, UP900994725KR)
+    //   DHL        : 운송사 이름에 DHL 이 있거나 숫자 10자리
+    $no    = (string)$t['tracking_no'];
+    $isEms = (bool)preg_match('/^[A-Z]{2}\d{9}[A-Z]{2}$/', $no);
+    $isDhl = !$isEms && (stripos($t['carrier'] . ' ' . ($t['carrier_name'] ?? ''), 'DHL') !== false
+                         || preg_match('/^\d{10}$/', $no));
+    [$rawWho, $raw] = $_SESSION['track_raw'][(int)$t['id']] ?? ['', ''];
   ?>
-  <?php if ($isEms): ?>
+  <?php if ($isEms || $isDhl): ?>
   <div class="cb" style="border-bottom:1px solid var(--line2);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <?php if (route_can_edit('tracking')): ?>
     <form method="post" style="display:inline">
       <?= csrf_field() ?>
-      <input type="hidden" name="act" value="epost_fetch">
+      <input type="hidden" name="act" value="track_fetch">
+      <input type="hidden" name="src" value="<?= $isEms ? 'epost' : 'dhl' ?>">
       <input type="hidden" name="tracking_number_id" value="<?= (int)$t['id'] ?>">
-      <button class="btn pri">우체국에서 이력 가져오기</button>
+      <button class="btn pri"><?= $isEms ? '우체국' : 'DHL' ?>에서 이력 가져오기</button>
     </form>
     <?php endif; ?>
-    <a class="btn" target="_blank" rel="noopener"
-       href="https://service.epost.go.kr/trace.RetrieveEmsRigiTraceList.comm?POST_CODE=<?= h(urlencode((string)$t['tracking_no'])) ?>&amp;displayHeader=N">우체국 사이트에서 보기</a>
-    <span style="font-size:11.5px;color:var(--ink3)">EMS 행방조회 Open API — 같은 이력은 두 번 쌓이지 않습니다</span>
+    <?php if ($isEms): ?>
+      <a class="btn" target="_blank" rel="noopener"
+         href="https://service.epost.go.kr/trace.RetrieveEmsRigiTraceList.comm?POST_CODE=<?= h(urlencode($no)) ?>&amp;displayHeader=N">우체국 사이트에서 보기</a>
+    <?php else: ?>
+      <a class="btn" target="_blank" rel="noopener"
+         href="https://www.dhl.com/kr-ko/home/tracking/tracking-express.html?submit=1&amp;tracking-id=<?= h(urlencode($no)) ?>">DHL 사이트에서 보기</a>
+    <?php endif; ?>
+    <span style="font-size:11.5px;color:var(--ink3)">같은 이력은 두 번 쌓이지 않습니다</span>
     <?php if ($raw !== ''): ?>
-      <details style="width:100%;margin-top:6px"><summary style="cursor:pointer;font-size:12px">우체국 응답 원문 (마지막 조회)</summary>
+      <details style="width:100%;margin-top:6px"><summary style="cursor:pointer;font-size:12px"><?= h($rawWho) ?> 응답 원문 (마지막 조회)</summary>
         <pre style="white-space:pre-wrap;word-break:break-all;font-size:11px;max-height:240px;overflow:auto;background:#F7FAFB;padding:8px;border-radius:6px"><?= h($raw) ?></pre></details>
     <?php endif; ?>
   </div>

@@ -231,14 +231,19 @@ function schema_upgrade_dest(): void
 /** 우체국 Open API 인증키 자리 — 환경설정 '연동' 에서 넣습니다 (비밀값: 화면에 다시 안 보임) */
 function schema_upgrade_epost(): void
 {
-    if (!empty($_SESSION['schema_epost_v1'])) { return; }
+    if (!empty($_SESSION['schema_epost_v2'])) { return; }
     try {
         db()->exec("INSERT IGNORE INTO app_settings
                       (setting_key, setting_val, group_ko, label_ko, help_ko, input_type, options_csv, sort_order)
                     VALUES ('epost_api_key', NULL, '연동', '우체국 Open API 인증키',
                             '공공데이터포털(data.go.kr)에서 \"우정사업본부_EMS행방조회 서비스\" 활용신청 후 받은 일반 인증키. 화물추적의 [우체국에서 이력 가져오기] 에 씁니다. 넣은 뒤에는 끝 4자리만 보입니다.',
                             'secret', NULL, 1)");
-        $_SESSION['schema_epost_v1'] = 1;
+        db()->exec("INSERT IGNORE INTO app_settings
+                      (setting_key, setting_val, group_ko, label_ko, help_ko, input_type, options_csv, sort_order)
+                    VALUES ('dhl_api_key', NULL, '연동', 'DHL API 키 (Consumer Key)',
+                            'developer.dhl.com 에서 Shipment Tracking - Unified 앱을 만들고 받은 API Key. 화물추적의 [DHL에서 이력 가져오기] 에 씁니다.',
+                            'secret', NULL, 2)");
+        $_SESSION['schema_epost_v2'] = 1;
     } catch (PDOException $e) {
         error_log('우체국 설정 자리 추가 실패: ' . $e->getMessage());
     }
