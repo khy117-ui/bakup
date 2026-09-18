@@ -71,8 +71,9 @@ if (!isset($routes[$page])) {
     $page = 'dashboard';
 }
 
-// 계정 · 삭제승인용 표가 없으면 붙입니다 (세션당 한 번 확인)
+// 계정 · 삭제승인용 표가 없으면 붙이고, 뷰 collation 이 어긋나 있으면 바로잡습니다 (세션당 한 번 확인)
 schema_upgrade_accounts();
+schema_fix_view_collation();
 
 if ($page !== 'login') {
     $ADMIN = require_login();

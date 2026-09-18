@@ -200,6 +200,44 @@ function delete_request_pending(): int
 }
 
 /**
+ * 뷰(미수금 · 원장 등) 를 올바른 collation 으로 다시 만듭니다.
+ *
+ * MySQL 은 뷰를 만들 때의 연결 collation 을 뷰 안의 글자 상수('CANCELLED' 등)에 박아 둡니다.
+ * 처음 설치할 때 연결이 utf8mb4_0900_ai_ci 여서, 화면 쿼리의 상수(utf8mb4_unicode_ci)와 비교하면
+ * 'Illegal mix of collations (…COERCIBLE)' 로 멈췄습니다 (입금등록 등).
+ * 서버의 sql/install.sql 에 있는 CREATE OR REPLACE VIEW 문장만, 파일 순서대로 다시 실행합니다.
+ */
+function schema_fix_view_collation(): void
+{
+    if (!empty($_SESSION['views_collation_ok'])) { return; }
+    $pdo = db();
+    try {
+        $bad = (int)$pdo->query("SELECT COUNT(*) FROM information_schema.VIEWS
+                                  WHERE TABLE_SCHEMA = DATABASE()
+                                    AND COLLATION_CONNECTION <> 'utf8mb4_unicode_ci'")->fetchColumn();
+        if ($bad > 0) {
+            $file = dirname(APP_DIR) . '/sql/install.sql';
+            $sql = is_file($file) ? (string)file_get_contents($file) : '';
+            $n = 0;
+            foreach (sql_split($sql) as $st) {
+                if (preg_match('/^CREATE\s+OR\s+REPLACE\s+VIEW\s+v_\w+\s+AS\b/i', $st)) {
+                    $pdo->exec($st);
+                    $n++;
+                }
+            }
+            error_log("뷰 collation 정리: {$bad}개가 어긋나 있어 {$n}개 문장을 다시 실행했습니다");
+            $left = (int)$pdo->query("SELECT COUNT(*) FROM information_schema.VIEWS
+                                       WHERE TABLE_SCHEMA = DATABASE()
+                                         AND COLLATION_CONNECTION <> 'utf8mb4_unicode_ci'")->fetchColumn();
+            if ($left > 0) { return; }
+        }
+        $_SESSION['views_collation_ok'] = 1;
+    } catch (PDOException $e) {
+        error_log('뷰 collation 정리 실패: ' . $e->getMessage());
+    }
+}
+
+/**
  * 계정 · 삭제승인용 표와 권한을 DB 에 붙입니다. 이미 붙어 있으면 아무것도 안 합니다.
  * 설치 SQL 을 다시 돌리지 않아도 되게, 정해진 문장만 여기서 실행합니다.
  */

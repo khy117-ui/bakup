@@ -117,6 +117,58 @@ function storage_root(): string
                  . DIRECTORY_SEPARATOR . 'documents';
 }
 
+/** SQL 파일을 문장으로 나눕니다. 따옴표 안 · 주석 · DELIMITER 를 압니다 (서버의 sql/ 파일 전용) */
+function sql_split(string $sql): array
+{
+    $out = [];
+    $buf = '';
+    $len = strlen($sql);
+    $delim = ';';
+    $i = 0;
+    while ($i < $len) {
+        if (($i === 0 || $sql[$i - 1] === "\n") && strncasecmp(substr($sql, $i, 10), 'DELIMITER ', 10) === 0) {
+            $j = strpos($sql, "\n", $i);
+            $j = $j === false ? $len : $j;
+            $delim = trim(substr($sql, $i + 10, $j - $i - 10));
+            $i = $j + 1;
+            continue;
+        }
+        $c = $sql[$i];
+        if ($c === "'" || $c === '"' || $c === '`') {
+            $buf .= $c;
+            $i++;
+            while ($i < $len) {
+                if ($sql[$i] === "\\") { $buf .= substr($sql, $i, 2); $i += 2; continue; }
+                $buf .= $sql[$i];
+                if ($sql[$i] === $c) { $i++; break; }
+                $i++;
+            }
+            continue;
+        }
+        if (substr($sql, $i, 2) === '--' || $c === '#') {
+            $j = strpos($sql, "\n", $i);
+            $i = $j === false ? $len : $j;
+            continue;
+        }
+        if (substr($sql, $i, 2) === '/*') {
+            $j = strpos($sql, '*/', $i);
+            $i = $j === false ? $len : $j + 2;
+            continue;
+        }
+        if (substr($sql, $i, strlen($delim)) === $delim) {
+            $t = trim($buf);
+            if ($t !== '') { $out[] = $t; }
+            $buf = '';
+            $i += strlen($delim);
+            continue;
+        }
+        $buf .= $c;
+        $i++;
+    }
+    if (trim($buf) !== '') { $out[] = trim($buf); }
+    return $out;
+}
+
 // ---------------------------------------------------------------- 헬퍼
 function h($v): string
 {
