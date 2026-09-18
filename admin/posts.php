@@ -168,7 +168,25 @@ $driver = board_is_mysql($pdo) ? 'MySQL' : 'SQLite(임시 · MySQL 미연결)';
 .pager-a { display: flex; gap: 4px; justify-content: center; margin-top: 18px; }
 .pager-a a { width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-family: var(--font-en); font-size: 13px; color: var(--ink); border: 1px solid var(--line); }
 .pager-a a.is-active { background: var(--navy); color: #fff; border-color: var(--navy); }
-@media (max-width: 720px) { .form-grid { grid-template-columns: 1fr; } .checks { padding-top: 0; } .tbl th:nth-child(3), .tbl td:nth-child(3), .tbl th:nth-child(5), .tbl td:nth-child(5) { display: none; } }
+.tbl .tag { white-space: nowrap; }
+.tbl td.title a { word-break: keep-all; overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .form-grid { grid-template-columns: 1fr; } .checks { padding-top: 0; flex-wrap: wrap; gap: 10px; }
+  .admin-top .right { margin-left: 0; width: 100%; justify-content: space-between; }
+  /* 표를 카드형으로: 번호 · 조회 숨김, 제목 한 줄, 작성자 · 등록일 한 줄, 버튼 한 줄 */
+  .tbl thead { display: none; }
+  .tbl, .tbl tbody, .tbl tr { display: block; width: 100%; }
+  .tbl tr { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .tbl tr:last-child { border-bottom: 0; }
+  .tbl td { display: block; padding: 0; border: 0; width: auto; }
+  .tbl td.num { display: none; }
+  .tbl td.title { font-size: 15px; line-height: 1.5; margin-bottom: 6px; }
+  .tbl td.title .tag { vertical-align: 1px; }
+  .tbl td.writer, .tbl td.date { display: inline; font-size: 13px; color: var(--muted); }
+  .tbl td.writer::after { content: " · "; }
+  .tbl td.act { margin-top: 10px; display: flex; gap: 6px; }
+  .tbl td.act form { display: inline; }
+}
 </style>
 </head>
 <body>
@@ -195,14 +213,14 @@ $driver = board_is_mysql($pdo) ? 'MySQL' : 'SQLite(임시 · MySQL 미연결)';
     <?php foreach ($list as $r): ?>
       <tr>
         <td class="num"><?= (int) $r['id'] ?></td>
-        <td>
+        <td class="title">
           <?php if ($r['pinned']): ?><span class="tag tag--pin">공지</span><?php endif; ?>
           <?php if ($r['is_secret']): ?><span class="tag tag--secret">비밀글</span><?php endif; ?>
           <?php if ($board === 'qna'): ?><span class="tag <?= $r['answer'] ? 'tag--ans">답변완료' : 'tag--wait">답변대기' ?></span><?php endif; ?>
           <a href="../helpdesk/<?= $board ?>.html?id=<?= (int) $r['id'] ?>" target="_blank" rel="noopener" style="color:var(--ink)"><?= h($r['title']) ?></a>
         </td>
-        <td><?= h($r['writer']) ?></td>
-        <td style="font-family:var(--font-en);font-size:13px;color:var(--muted)"><?= h(substr((string) $r['created_at'], 0, 10)) ?></td>
+        <td class="writer"><?= h($r['writer']) ?></td>
+        <td class="date" style="font-family:var(--font-en);font-size:13px;color:var(--muted)"><?= h(substr((string) $r['created_at'], 0, 10)) ?></td>
         <td class="num"><?= (int) $r['views'] ?></td>
         <td class="act">
           <a class="btn btn--outline btn--xs btn--square" href="posts.php?board=<?= $board ?>&amp;act=edit&amp;id=<?= (int) $r['id'] ?>"><?= $board === 'qna' && !$r['answer'] ? '답변' : '수정' ?></a>
