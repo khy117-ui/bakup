@@ -26,6 +26,31 @@ if ($fYm !== '') {
     $from = $fYm . '-01';
     $to   = date('Y-m-t', strtotime($from));
 }
+
+// 검색 조건 — 통계 · 전표 목록 공통. 금액을 눌러 목록으로 갈 때도 그대로 따라갑니다
+$fKw      = trim(query('kw'));                                   // 거래처명 · 거래처코드 · AWB
+$fCarrier = (int)query('carrier_id', '0');
+$fTrade   = in_array(query('trade'), ['EXPORT', 'IMPORT'], true) ? query('trade') : '';
+$fRep     = trim(query('rep'));                                  // 영업담당 · 팀
+$keep = array_filter(['kw' => $fKw, 'carrier_id' => $fCarrier ?: '', 'trade' => $fTrade, 'rep' => $fRep],
+                     fn($v) => $v !== '' && $v !== null);
+/** 조건을 SQL 로 (s = shipments, c = companies) */
+$fw = [];
+$fp = [];
+if ($fKw !== '') {
+    $fw[] = '(c.name_ko LIKE ? OR c.company_code LIKE ? OR s.awb_no LIKE ?)';
+    array_push($fp, '%' . $fKw . '%', $fKw . '%', '%' . $fKw . '%');
+}
+if ($fCarrier > 0)  { $fw[] = 's.carrier_id = ?'; $fp[] = $fCarrier; }
+if ($fTrade !== '') { $fw[] = 's.trade_type = ?'; $fp[] = $fTrade; }
+if ($fRep !== '') {
+    $fw[] = '(s.sales_rep LIKE ? OR s.sales_team LIKE ? OR c.sales_rep LIKE ?)';
+    array_push($fp, '%' . $fRep . '%', '%' . $fRep . '%', '%' . $fRep . '%');
+}
+$fSql = $fw ? ' AND ' . implode(' AND ', $fw) : '';
+$carrierList = db()->query('SELECT id, code, name, is_active FROM carriers ORDER BY is_active DESC, sort_order, name')
+                   ->fetchAll();
+
 $canPay  = can('CASH_WRITE');
 $cutover = ar_cutover();
 
@@ -149,12 +174,13 @@ if ($view === 'stats') {
                 COALESCE(SUM(t.tax_total),0)      AS tax_total,
                 COALESCE(SUM(t.grand_total),0)    AS grand_total
            FROM v_shipment_totals t
+           JOIN shipments s ON s.id = t.shipment_id
            JOIN companies c ON c.id = t.company_id
-          WHERE t.business_entity_id = ? AND t.voucher_date BETWEEN ? AND ?
+          WHERE t.business_entity_id = ? AND t.voucher_date BETWEEN ? AND ?' . $fSql . '
           GROUP BY t.company_id
           ORDER BY grand_total DESC
           LIMIT 100');
-    $st->execute([$eid, $from, $to]);
+    $st->execute(array_merge([$eid, $from, $to], $fp));
     $byCompany = $st->fetchAll();
 
     $st = db()->prepare(
@@ -165,9 +191,11 @@ if ($view === 'stats') {
                 COALESCE(SUM(t.tax_total),0)      AS tax_total,
                 COALESCE(SUM(t.grand_total),0)    AS grand_total
            FROM v_shipment_totals t
-          WHERE t.business_entity_id = ? AND t.voucher_date BETWEEN ? AND ?
+           JOIN shipments s ON s.id = t.shipment_id
+           JOIN companies c ON c.id = t.company_id
+          WHERE t.business_entity_id = ? AND t.voucher_date BETWEEN ? AND ?' . $fSql . '
           GROUP BY ym ORDER BY ym');
-    $st->execute([$eid, $from, $to]);
+    $st->execute(array_merge([$eid, $from, $to], $fp));
     $byMonth = $st->fetchAll();
 
     $rows = $tab === 'month' ? $byMonth : $byCompany;
@@ -192,7 +220,8 @@ if ($view === 'list') {
     $w = ['s.business_entity_id = ?', 's.deleted_at IS NULL', 's.voucher_date BETWEEN ? AND ?'];
     $p = [$eid, $from, $to];
     if ($fCompany > 0) { $w[] = 's.company_id = ?'; $p[] = $fCompany; }
-    $where = implode(' AND ', $w);
+    $where = implode(' AND ', $w) . $fSql;
+    $p = array_merge($p, $fp);
     $paid = "SELECT pa.shipment_id, SUM(pa.amount) AS paid
                FROM payment_allocations pa
                JOIN financial_transactions f ON f.id = pa.transaction_id
@@ -251,10 +280,75 @@ function ss_status(array $r, ?string $cutover): string
     return (float)$r['paid'] < (float)$r['grand'] ? 'PARTIAL' : 'PAID';
 }
 
-/** 목록으로 가는 주소 */
+/** 목록으로 가는 주소 — 검색 조건은 따라갑니다 */
 function ss_link(array $q): string
 {
-    return '?' . http_build_query(['p' => 'sales_stats', 'view' => 'list'] + $q);
+    global $keep;
+    return '?' . http_build_query(['p' => 'sales_stats', 'view' => 'list'] + $q + $keep);
+}
+
+/**
+ * 기간 1클릭 — 연도 ◀ ▶ · 1~12월 · 1~4분기 · 상/하반기 · 연간 · 이번 달 · 지난 달.
+ * 누르면 그 기간으로 바로 조회합니다 (다른 조건 · 탭은 그대로)
+ */
+function ss_period_bar(array $base, string $from, string $to): void
+{
+    $y = (int)(query('qy') ?: substr($from, 0, 4));
+    if ($y < 2000 || $y > 2100) { $y = (int)date('Y'); }
+    $link = function (string $f, string $t, array $extra = []) use ($base): string {
+        return '?' . http_build_query($base + ['from' => $f, 'to' => $t] + $extra);
+    };
+    $btn = function (string $label, string $f, string $t) use ($link, $from, $to, $y): string {
+        $on = $f === $from && $t === $to;
+        return '<a class="btn sm' . ($on ? ' pri' : '') . '" href="' . h($link($f, $t, ['qy' => $y])) . '">' . h($label) . '</a>';
+    };
+    $out = '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">';
+    $out .= '<a class="btn sm" title="' . ($y - 1) . '년" href="' . h($link($from, $to, ['qy' => $y - 1])) . '">◀</a>'
+          . '<b class="tnum" style="min-width:52px;text-align:center">' . $y . '년</b>'
+          . '<a class="btn sm" title="' . ($y + 1) . '년" href="' . h($link($from, $to, ['qy' => $y + 1])) . '">▶</a>'
+          . '<span style="width:6px"></span>';
+    for ($m = 1; $m <= 12; $m++) {
+        $f = sprintf('%04d-%02d-01', $y, $m);
+        $out .= $btn($m . '월', $f, date('Y-m-t', strtotime($f)));
+    }
+    $out .= '</div><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">';
+    for ($q = 1; $q <= 4; $q++) {
+        $f = sprintf('%04d-%02d-01', $y, $q * 3 - 2);
+        $out .= $btn($q . '분기', $f, date('Y-m-t', strtotime(sprintf('%04d-%02d-01', $y, $q * 3))));
+    }
+    $out .= $btn('상반기', "$y-01-01", "$y-06-30") . $btn('하반기', "$y-07-01", "$y-12-31")
+          . $btn($y . '년 전체', "$y-01-01", "$y-12-31")
+          . '<span style="width:6px"></span>'
+          . $btn('이번 달', date('Y-m-01'), date('Y-m-t'))
+          . $btn('지난 달', date('Y-m-01', strtotime('first day of last month')), date('Y-m-t', strtotime('last day of last month')))
+          . '</div>';
+    echo $out;
+}
+
+/** 검색 조건 입력칸 (통계 · 목록 공통) */
+function ss_filter_fields(): void
+{
+    global $fKw, $fCarrier, $fTrade, $fRep, $carrierList;
+    ?>
+    <div class="fw w2"><label for="fkw">검색어</label>
+      <input type="text" id="fkw" name="kw" value="<?= h($fKw) ?>" placeholder="거래처명 · 거래처코드 · AWB"></div>
+    <div class="fw w2"><label for="fcar">운송사</label>
+      <select id="fcar" name="carrier_id" data-search>
+        <option value="">전체</option>
+        <?php foreach ($carrierList as $ca): ?>
+          <option value="<?= (int)$ca['id'] ?>"<?= $fCarrier === (int)$ca['id'] ? ' selected' : '' ?>>
+            <?= h($ca['name'] . ' (' . $ca['code'] . ')' . ((int)$ca['is_active'] ? '' : ' · 중지')) ?></option>
+        <?php endforeach; ?>
+      </select></div>
+    <div class="fw w1"><label for="ftr">구분</label>
+      <select id="ftr" name="trade">
+        <option value="">전체</option>
+        <option value="EXPORT"<?= $fTrade === 'EXPORT' ? ' selected' : '' ?>>수출</option>
+        <option value="IMPORT"<?= $fTrade === 'IMPORT' ? ' selected' : '' ?>>수입</option>
+      </select></div>
+    <div class="fw w1"><label for="frep">영업담당</label>
+      <input type="text" id="frep" name="rep" value="<?= h($fRep) ?>" placeholder="이름 · 팀"></div>
+    <?php
 }
 
 layout_head('매출통계', 'sales_stats');
@@ -264,7 +358,9 @@ layout_head('매출통계', 'sales_stats');
   <div class="crumb">회계관리 &gt; 매출통계<?= $view === 'list' ? ' &gt; 전표 목록' : '' ?></div>
   <?php if ($view === 'list'): ?>
   <div class="right">
-    <a class="btn" href="?p=sales_stats&amp;tab=<?= h($fYm !== '' ? 'month' : 'company') ?>&amp;from=<?= h($fYm !== '' ? date('Y-01-01', strtotime($from)) : $from) ?>&amp;to=<?= h($fYm !== '' ? date('Y-12-31', strtotime($from)) : $to) ?>">← 통계로</a>
+    <a class="btn" href="?<?= h(http_build_query(['p' => 'sales_stats', 'tab' => $fYm !== '' ? 'month' : 'company',
+        'from' => $fYm !== '' ? date('Y-01-01', strtotime($from)) : $from,
+        'to' => $fYm !== '' ? date('Y-12-31', strtotime($from)) : $to] + $keep)) ?>">← 통계로</a>
   </div>
   <?php endif; ?>
 </div>
@@ -274,14 +370,19 @@ layout_head('매출통계', 'sales_stats');
 <?php if ($view === 'stats'): ?>
 
 <div class="card"><div class="cb">
-  <form class="f" method="get" style="align-items:flex-end">
+  <?php ss_period_bar(['p' => 'sales_stats', 'tab' => $tab] + $keep, $from, $to); ?>
+  <form class="f" method="get" style="align-items:flex-end;margin-top:12px;padding-top:12px;border-top:1px solid var(--line2)">
     <input type="hidden" name="p" value="sales_stats">
     <input type="hidden" name="tab" value="<?= h($tab) ?>">
     <div class="fw w1"><label for="from">시작일</label>
       <input type="date" id="from" name="from" value="<?= h($from) ?>"></div>
     <div class="fw w1"><label for="to">종료일</label>
       <input type="date" id="to" name="to" value="<?= h($to) ?>"></div>
-    <button class="btn">조회</button>
+    <?php ss_filter_fields(); ?>
+    <button class="btn pri">조회</button>
+    <?php if ($keep): ?>
+      <a class="btn" href="?<?= h(http_build_query(['p' => 'sales_stats', 'tab' => $tab, 'from' => $from, 'to' => $to])) ?>">조건 풀기</a>
+    <?php endif; ?>
   </form>
 </div></div>
 
@@ -299,11 +400,11 @@ layout_head('매출통계', 'sales_stats');
 <div class="card">
   <div class="ch">
     <a class="btn sm<?= $tab==='company'?' pri':'' ?>"
-       href="?p=sales_stats&amp;tab=company&amp;from=<?= h($from) ?>&amp;to=<?= h($to) ?>">업체별</a>
+       href="?<?= h(http_build_query(['p' => 'sales_stats', 'tab' => 'company', 'from' => $from, 'to' => $to] + $keep)) ?>">업체별</a>
     <a class="btn sm<?= $tab==='month'?' pri':'' ?>"
-       href="?p=sales_stats&amp;tab=month&amp;from=<?= h($from) ?>&amp;to=<?= h($to) ?>">월별</a>
+       href="?<?= h(http_build_query(['p' => 'sales_stats', 'tab' => 'month', 'from' => $from, 'to' => $to] + $keep)) ?>">월별</a>
     <span style="margin-left:auto;font-weight:400;color:var(--ink3)">
-      <?= h($from) ?> ~ <?= h($to) ?> · 금액을 누르면 그 전표 목록</span>
+      <?= h($from) ?> ~ <?= h($to) ?><?= $keep ? ' · 조건 ' . count($keep) . '개 적용' : '' ?> · 금액을 누르면 그 전표 목록</span>
   </div>
   <?php if (!$rows): ?>
     <div class="empty">이 기간에 전표가 없습니다.</div>
@@ -349,7 +450,10 @@ layout_head('매출통계', 'sales_stats');
 <?php else: /* ---------------------------------------------------- 전표 목록 */ ?>
 
 <div class="card"><div class="cb">
-  <form class="f" method="get" style="align-items:flex-end">
+  <?php ss_period_bar(['p' => 'sales_stats', 'view' => 'list']
+                      + ($fCompany > 0 ? ['company_id' => $fCompany] : []) + ($fPay !== '' ? ['pay' => $fPay] : []) + $keep,
+                      $from, $to); ?>
+  <form class="f" method="get" style="align-items:flex-end;margin-top:12px;padding-top:12px;border-top:1px solid var(--line2)">
     <input type="hidden" name="p" value="sales_stats">
     <input type="hidden" name="view" value="list">
     <?php if ($fCompany > 0): ?><input type="hidden" name="company_id" value="<?= $fCompany ?>"><?php endif; ?>
@@ -363,9 +467,14 @@ layout_head('매출통계', 'sales_stats');
         <option value="unpaid"<?= $fPay==='unpaid'?' selected':'' ?>>미입금 · 부분입금</option>
         <option value="paid"<?= $fPay==='paid'?' selected':'' ?>>입금완료</option>
       </select></div>
-    <button class="btn">조회</button>
+    <?php ss_filter_fields(); ?>
+    <button class="btn pri">조회</button>
     <?php if ($fCompany > 0): ?>
       <a class="btn" href="<?= h(ss_link(['from' => $from, 'to' => $to, 'pay' => $fPay])) ?>">거래처 조건 풀기</a>
+    <?php endif; ?>
+    <?php if ($keep): ?>
+      <a class="btn" href="?<?= h(http_build_query(['p' => 'sales_stats', 'view' => 'list', 'from' => $from, 'to' => $to, 'pay' => $fPay]
+                                                  + ($fCompany > 0 ? ['company_id' => $fCompany] : []))) ?>">검색 조건 풀기</a>
     <?php endif; ?>
   </form>
 </div></div>
