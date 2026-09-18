@@ -46,7 +46,8 @@ mb_internal_encoding('UTF-8');
 date_default_timezone_set('Asia/Seoul');
 
 // ---------------------------------------------------------------- 세션
-if (session_status() !== PHP_SESSION_ACTIVE) {
+// 홈페이지 공개 조회(track.php)처럼 로그인과 상관없는 입구는 GP_NO_SESSION 을 먼저 정의해 세션을 열지 않습니다
+if (session_status() !== PHP_SESSION_ACTIVE && !defined('GP_NO_SESSION')) {
     $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
           || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
     session_set_cookie_params([

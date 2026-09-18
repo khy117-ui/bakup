@@ -141,42 +141,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!$trk) {
                 $err = '추적번호를 찾을 수 없습니다.';
             } else {
-                if ($src === 'dhl') {
-                    require_once APP_DIR . '/dhl.php';
-                    $r = dhl_trace((string)$trk['tracking_no']);
-                } elseif ($src === 'fedex') {
-                    require_once APP_DIR . '/fedex.php';
-                    $r = fedex_trace((string)$trk['tracking_no']);
-                } else {
-                    require_once APP_DIR . '/epost.php';
-                    $r = epost_ems_trace((string)$trk['tracking_no']);
-                }
+                require_once APP_DIR . '/track_any.php';
+                $r = track_fetch($src, (string)$trk['tracking_no']);
                 $_SESSION['track_raw'][$tid] = [$who, mb_substr((string)$r['raw'], 0, 4000)];
                 if (!$r['ok']) {
                     $err = $r['error'];
                 } else {
-                    $pdo->beginTransaction();
-                    $ins = $pdo->prepare('INSERT IGNORE INTO tracking_events
-                                            (tracking_number_id, event_at, location, status, description)
-                                          VALUES (?,?,?,?,?)');
-                    $new = 0;
-                    foreach ($r['events'] as $e) {
-                        $ins->execute([$tid, $e['at'], $e['location'], $e['status'], $e['description']]);
-                        $new += $ins->rowCount();
-                    }
-                    $last = $r['events'] ? end($r['events']) : null;
-                    // 배달완료 — 우체국은 '배달완료', DHL 은 statusCode 'delivered', FedEx 는 eventType DL (→ 'delivered')
-                    $done = $last && (($last['code'] ?? '') === 'delivered'
-                             || preg_match('/배달완료|delivered/iu', $last['status'] . ' ' . ($last['description'] ?? '')));
-                    $pdo->prepare('UPDATE tracking_numbers
-                                      SET current_status = COALESCE(?, current_status),
-                                          current_location = COALESCE(?, current_location),
-                                          delivered_at = CASE WHEN ? = 1 AND delivered_at IS NULL THEN ? ELSE delivered_at END,
-                                          last_checked_at = NOW(), last_checked_by = ?
-                                    WHERE id = ?')
-                        ->execute([$last['status'] ?? null, $last['location'] ?? null, $done ? 1 : 0,
-                                   $last['at'] ?? null, $_SESSION['admin_id'] ?? null, $tid]);
-                    $pdo->commit();
+                    // 홈페이지 조회와 같은 저장 로직 (배달완료 판별 포함)
+                    [$new, $done] = track_save_events($pdo, $tid, $r['events'], $_SESSION['admin_id'] ?? null);
                     log_action('물류', 'UPDATE', 'tracking_numbers', $tid, (string)$trk['tracking_no'], null,
                                $who . ' 조회 — 이력 ' . count($r['events']) . '건 중 새 것 ' . $new . '건');
                     flash($r['events']
@@ -214,8 +186,7 @@ if ($sid === 0 && $kw !== '') {
     $found = $st->fetchAll();
 }
 
-$trks = [];
-if ($sid > 0) {
+$loadTrks = function (int $sid): array {
     $st = db()->prepare(
         'SELECT t.*, ca.code AS carrier, ca.name AS carrier_name FROM tracking_numbers t
            JOIN carriers ca ON ca.id = t.carrier_id
@@ -227,6 +198,40 @@ if ($sid > 0) {
                              ORDER BY event_at DESC');
         $e->execute([$t['id']]);
         $trks[$i]['events'] = $e->fetchAll();
+    }
+    return $trks;
+};
+$trks = $sid > 0 ? $loadTrks($sid) : [];
+
+// 이관 전표는 AWB 가 곧 운송사 운송장번호인데 추적번호 칸이 비어 있습니다 (예: FedEx 871350927454).
+// 번호 모양이 그 운송사 것과 맞으면 AWB 를 추적번호로 자동 등록하고, 인증키가 있으면 한 번 바로 가져옵니다.
+require_once APP_DIR . '/track_any.php';
+if ($sh && !$trks && $_SERVER['REQUEST_METHOD'] === 'GET' && route_can_edit('tracking')) {
+    $awb  = strtoupper((string)preg_replace('/[\s-]+/', '', (string)$sh['awb_no']));
+    $asrc = track_detect_src($awb, (string)$sh['carrier']);
+    $shapeOk = $asrc !== '' && ($asrc === track_detect_src($awb) || ($sh['awb_source'] ?? '') === 'CARRIER');
+    if ($shapeOk && preg_match('/^[A-Z0-9]{8,40}$/', $awb)) {
+        try {
+            $ins = db()->prepare('INSERT IGNORE INTO tracking_numbers (shipment_id, carrier_id, tracking_no, accepted_on)
+                                  VALUES (?,?,?,?)');
+            $ins->execute([$sid, (int)$sh['carrier_id'], $awb, $sh['ship_date'] ?: $sh['voucher_date']]);
+            if ($ins->rowCount() > 0) {
+                $tid = (int)db()->lastInsertId();
+                log_action('물류', 'CREATE', 'tracking_numbers', $tid, $awb, null, 'AWB 번호를 추적번호로 자동 등록');
+                if (in_array($asrc, TRACK_API_SRC, true) && track_has_key($asrc)) {
+                    $r = track_fetch($asrc, $awb);
+                    $_SESSION['track_raw'][$tid] = [TRACK_SRC_NAME[$asrc], mb_substr((string)$r['raw'], 0, 4000)];
+                    if ($r['ok']) {
+                        track_save_events(db(), $tid, $r['events'], $_SESSION['admin_id'] ?? null);
+                    } else {
+                        $err = $r['error'];
+                    }
+                }
+                $trks = $loadTrks($sid);
+            }
+        } catch (PDOException $e) {
+            error_log('AWB 자동 등록 실패: ' . $e->getMessage());
+        }
     }
 }
 
@@ -248,6 +253,7 @@ layout_head('화물추적', 'tracking');
 require_once APP_DIR . '/epost.php';
 require_once APP_DIR . '/dhl.php';
 require_once APP_DIR . '/fedex.php';
+require_once APP_DIR . '/track_any.php';
 $epKey  = epost_key();
 $dhlKey = dhl_key();
 [$fxId, $fxSecret] = fedex_creds();
@@ -390,33 +396,16 @@ if (route_can_edit('settings')): ?>
     </span>
   </div>
   <?php
-    // 번호 모양 · 운송사로 어디에 물어볼지 정합니다
-    //   우체국 EMS : 영문2 + 숫자9 + 영문2 (EG230930844KR, UP900994725KR)
-    //   DHL        : 운송사 이름에 DHL 이 있거나 숫자 10자리
-    //   FedEx      : 운송사 이름에 FEDEX · FDX · 페덱스 가 있거나 숫자 12 · 15 · 20 · 22자리
-    $no    = (string)$t['tracking_no'];
-    $cname = $t['carrier'] . ' ' . ($t['carrier_name'] ?? '');
-    $src   = '';
-    if (preg_match('/^[A-Z]{2}\d{9}[A-Z]{2}$/', $no)) {
-        $src = 'epost';
-    } elseif (stripos($cname, 'DHL') !== false) {
-        $src = 'dhl';
-    } elseif (preg_match('/FEDEX|FDX|페덱스/iu', $cname)) {
-        $src = 'fedex';
-    } elseif (preg_match('/^\d{10}$/', $no)) {
-        $src = 'dhl';
-    } elseif (fedex_is_no($no)) {
-        $src = 'fedex';
-    }
-    $srcName = ['epost' => '우체국', 'dhl' => 'DHL', 'fedex' => 'FedEx'][$src] ?? '';
-    $siteUrl = ['epost' => 'https://service.epost.go.kr/trace.RetrieveEmsRigiTraceList.comm?POST_CODE=' . urlencode($no) . '&displayHeader=N',
-                'dhl'   => 'https://www.dhl.com/kr-ko/home/tracking/tracking-express.html?submit=1&tracking-id=' . urlencode($no),
-                'fedex' => 'https://www.fedex.com/fedextrack/?trknbr=' . urlencode($no)][$src] ?? '';
+    // 번호 모양 · 운송사로 어디에 물어볼지 정합니다 (app/track_any.php — 홈페이지 조회와 같은 규칙)
+    $no      = (string)$t['tracking_no'];
+    $src     = track_detect_src($no, $t['carrier'] . ' ' . ($t['carrier_name'] ?? ''));
+    $srcName = ['epost' => '우체국', 'dhl' => 'DHL', 'fedex' => 'FedEx', 'ups' => 'UPS'][$src] ?? '';
+    $siteUrl = track_site_url($src, $no);
     [$rawWho, $raw] = $_SESSION['track_raw'][(int)$t['id']] ?? ['', ''];
   ?>
   <?php if ($src !== ''): ?>
   <div class="cb" style="border-bottom:1px solid var(--line2);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-    <?php if (route_can_edit('tracking')): ?>
+    <?php if (in_array($src, TRACK_API_SRC, true) && route_can_edit('tracking')): ?>
     <form method="post" style="display:inline">
       <?= csrf_field() ?>
       <input type="hidden" name="act" value="track_fetch">

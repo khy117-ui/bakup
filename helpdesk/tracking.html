@@ -8,6 +8,31 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&family=Montserrat:wght@500;600;700;800&display=swap">
 <link rel="stylesheet" href="../assets/css/style.css?v=20260918">
+<style>
+.tk-card{margin-top:24px}
+.tk-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.tk-carrier{display:inline-flex;align-items:center;height:28px;padding:0 12px;border-radius:999px;background:var(--navy);color:#fff;font-size:13px;font-weight:700}
+.tk-no{font-size:20px;color:var(--navy);word-break:break-all}
+.tk-badge{display:inline-flex;align-items:center;height:26px;padding:0 10px;border-radius:999px;background:var(--tint);color:var(--blue);font-size:12.5px;font-weight:700}
+.tk-badge--ok{background:#E6F6EE;color:#12804A}
+.tk-route{margin-bottom:6px}
+.tk-latest{margin:4px 0 22px;font-size:15px}
+.tk-latest .en{color:var(--muted);font-size:13px}
+.tk-msg{margin-top:18px;padding:12px 14px;border-radius:10px;background:var(--ground);color:var(--muted);font-size:14px}
+.tk-events{margin-top:26px;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.tk-events__head{padding:12px 16px;background:var(--tint);font-weight:700;color:var(--navy);font-size:14px}
+.tk-events__head span{font-weight:400;color:var(--muted);font-size:12.5px;margin-left:6px}
+.tk-day{padding:8px 16px;background:var(--ground);font-size:13px;font-weight:700;color:var(--navy);border-top:1px solid var(--line)}
+.tk-row{display:grid;grid-template-columns:64px minmax(0,1fr) minmax(0,200px);gap:12px;padding:11px 16px;border-top:1px solid var(--line);font-size:14px;align-items:start}
+.tk-row.is-latest{background:#F3FAF6}
+.tk-row.is-latest .tk-status{color:#12804A}
+.tk-time{color:var(--muted);font-size:13px}
+.tk-status{font-weight:700}
+.tk-status small{display:block;font-weight:400;color:var(--muted);font-size:12.5px;margin-top:2px}
+.tk-loc{color:var(--muted);text-align:right}
+.tk-site{margin-top:14px;text-align:right;font-size:14px}
+@media (max-width:640px){.tk-row{grid-template-columns:52px minmax(0,1fr)}.tk-loc{grid-column:2;text-align:left;font-size:13px;margin-top:-6px}}
+</style>
 </head>
 <body data-root="../">
 <header class="site-header">
@@ -22,7 +47,7 @@
   </div>
 </header>
 <main>
-<section class="page-head"><img class="page-head__img" src="../assets/img/truck.jpg" alt=""><div class="container"><nav class="crumb" aria-label="현재 위치"><a href="../index.html">HOME</a><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg><span>고객센터</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg><strong>화물추적</strong></nav><span class="eyebrow">CARGO TRACKING</span><h1>화물추적</h1></div></section><div class="lnb"><div class="container"><div class="lnb__tabs"><a href="../helpdesk/notice.html">공지사항</a><a href="../helpdesk/qna.html">Q&A</a><a href="../helpdesk/quote.html">견적문의</a><a href="../helpdesk/volume.html">부피계산법</a><a href="../helpdesk/tracking.html" class="is-active">화물추적</a><a href="../helpdesk/payment.html">해외운송비결제</a></div></div></div><section class="sec "><div class="container"><div class="sec-head"><div><span class="eyebrow">TRACKING</span><h2 class="h2">화물추적 조회</h2><p class="muted" style="margin-top:8px">온라인상에서 간편하게 화물추적(B/L) 조회를 하실 수 있습니다. 운송사를 선택하고 B/L 번호를 입력하세요.</p></div></div><form class="card card--tint"><div class="carriers"><button type="button" aria-pressed="true" class="is-active">DHL</button><button type="button" aria-pressed="false">FedEx</button><button type="button" aria-pressed="false">EMS</button><button type="button" aria-pressed="false">UPS</button></div><input type="hidden" id="carrier" name="carrier" value="DHL"><div class="search-row"><label class="sr-only" for="bl">B/L 번호</label><input id="bl" name="bl" type="text" placeholder="B/L(운송장) 번호를 입력하세요." class="search-input search-input--lg"><button class="btn btn--primary btn--square" type="submit">조회하기 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></button></div></form><div class="card" style="margin-top:24px"><p class="note" style="margin-bottom:24px">조회 결과 예시 · <strong class="en" style="font-size:18px;color:var(--navy)">[B/L 번호]</strong> · 출발지 서울 → 도착지 [국가/도시]</p><ol class="track"><li class="done"><span class="dot">✓</span><span class="name">픽업의뢰</span><span class="state">완료</span></li><li class="done"><span class="dot">✓</span><span class="name">입고</span><span class="state">완료</span></li><li class="current"><span class="dot">3</span><span class="name">항공/해상운송</span><span class="state">진행중</span></li><li class=""><span class="dot">4</span><span class="name">통관</span><span class="state">대기</span></li><li class=""><span class="dot">5</span><span class="name">내륙운송</span><span class="state">대기</span></li><li class=""><span class="dot">6</span><span class="name">제품인도</span><span class="state">대기</span></li></ol></div></div></section>
+<section class="page-head"><img class="page-head__img" src="../assets/img/truck.jpg" alt=""><div class="container"><nav class="crumb" aria-label="현재 위치"><a href="../index.html">HOME</a><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg><span>고객센터</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg><strong>화물추적</strong></nav><span class="eyebrow">CARGO TRACKING</span><h1>화물추적</h1></div></section><div class="lnb"><div class="container"><div class="lnb__tabs"><a href="../helpdesk/notice.html">공지사항</a><a href="../helpdesk/qna.html">Q&A</a><a href="../helpdesk/quote.html">견적문의</a><a href="../helpdesk/volume.html">부피계산법</a><a href="../helpdesk/tracking.html" class="is-active">화물추적</a><a href="../helpdesk/payment.html">해외운송비결제</a></div></div></div><section class="sec "><div class="container"><div class="sec-head"><div><span class="eyebrow">TRACKING</span><h2 class="h2">화물추적 조회</h2><p class="muted" style="margin-top:8px">굿배송항공 운송장(AWB) 번호나 운송사 운송장 번호를 입력하세요. 운송사를 모르면 <b>자동</b>으로 두시면 됩니다.</p></div></div><form class="card card--tint" id="track-form"><div class="carriers"><button type="button" aria-pressed="true" class="is-active" data-carrier="auto">자동</button><button type="button" aria-pressed="false" data-carrier="DHL">DHL</button><button type="button" aria-pressed="false" data-carrier="FEDEX">FedEx</button><button type="button" aria-pressed="false" data-carrier="EMS">EMS</button><button type="button" aria-pressed="false" data-carrier="UPS">UPS</button></div><input type="hidden" id="carrier" name="carrier" value="auto"><div class="search-row"><label class="sr-only" for="bl">운송장 번호</label><input id="bl" name="bl" type="text" inputmode="text" autocomplete="off" placeholder="운송장(AWB) 번호를 입력하세요." class="search-input search-input--lg"><button class="btn btn--primary btn--square" type="submit">조회하기 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></button></div><p class="note" style="margin-top:12px">DHL · FedEx · 우체국 EMS 는 이 화면에서 바로 이력이 나오고, UPS 는 운송사 사이트로 연결됩니다.</p></form><div id="track-result" aria-live="polite"></div></div></section>
 </main>
 <footer class="site-footer">
   <div class="container">
@@ -36,6 +61,7 @@
 </footer>
 <a class="kakao-fab" href="https://pf.kakao.com/_xnMMxcd" target="_blank" rel="noopener" aria-label="카카오톡 실시간 상담 (새 창)"><svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path fill="#191919" d="M12 3C6.48 3 2 6.58 2 11c0 2.84 1.86 5.33 4.66 6.75l-.95 3.53c-.08.3.26.55.52.38l4.2-2.78c.51.06 1.03.1 1.57.1 5.52 0 10-3.58 10-8s-4.48-8-10-8z"/></svg><span>카카오톡 상담</span></a>
 <script src="../assets/js/main.js"></script>
+<script src="../assets/js/tracking.js?v=20260919"></script>
 
 </body>
 </html>
