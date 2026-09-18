@@ -87,6 +87,8 @@ layout_head('AWB 관리', 'awb_list');
           <a href="?p=shipment_form&amp;id=<?= (int)$r['id'] ?>"><?= h($r['awb_no']) ?></a>
           <?php if ($r['awb_source'] === 'CARRIER'): ?>
             <span class="badge b-info" style="margin-left:3px">운송사</span>
+          <?php elseif ($r['awb_source'] === 'MANUAL'): ?>
+            <span class="badge b-warn" style="margin-left:3px">수동</span>
           <?php endif; ?></td>
         <td class="tnum" style="font-size:11.5px"><?= h($r['mawb_no'] ?: '-') ?></td>
         <td><?= h($r['name_ko']) ?></td>

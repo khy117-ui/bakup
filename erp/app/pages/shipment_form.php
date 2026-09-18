@@ -27,6 +27,8 @@ $in = [
     'ship_date' => '', 'trade_type' => 'EXPORT', 'dest_city' => '',
     'actual_weight' => '', 'volume_weight' => '', 'package_count' => '',
     'remark' => '', 'sales_team' => '', 'sales_rep' => '', 'status' => 'CONFIRMED',
+    // AWB 번호 — auto 저장할 때 자동 부여 / manual 직접 입력 (운송사 번호 등)
+    'awb_mode' => 'auto', 'awb_no' => '',
 ];
 $lines = [];
 for ($i = 0; $i < $MAXLINE; $i++) {
@@ -74,7 +76,7 @@ if ($id > 0) {
 function snapshot(int $sid): string
 {
     $st = db()->prepare(
-        'SELECT s.voucher_date, s.trade_type, s.status, s.charge_weight,
+        'SELECT s.voucher_date, s.trade_type, s.status, s.charge_weight, s.awb_no,
                 c.name_ko, ca.code AS carrier
            FROM shipments s
            JOIN companies c  ON c.id = s.company_id
@@ -93,8 +95,8 @@ function snapshot(int $sid): string
                            (int)round((float)$r['supply_amount']), $r['tax_type']);
         $sum += (float)$r['supply_amount'] + (float)$r['tax_amount'];
     }
-    return sprintf('%s %s %s 중량%s 거래처=%s 운송사=%s 합계=%s [%s]',
-        $h['voucher_date'] ?? '', $h['trade_type'] ?? '', $h['status'] ?? '',
+    return sprintf('AWB=%s %s %s %s 중량%s 거래처=%s 운송사=%s 합계=%s [%s]',
+        $h['awb_no'] ?? '', $h['voucher_date'] ?? '', $h['trade_type'] ?? '', $h['status'] ?? '',
         $h['charge_weight'] ?? '-', $h['name_ko'] ?? '', $h['carrier'] ?? '',
         number_format($sum), implode(' | ', $parts));
 }
@@ -125,6 +127,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
         }
     }
     $reason = post('reason');
+    // AWB — 공백은 빼고 영문은 대문자로. 수정 화면은 번호를 고친 경우에만 직접 입력으로 봅니다
+    $in['awb_no'] = strtoupper((string)preg_replace('/\s+/', '', $in['awb_no']));
+    if ($id > 0) {
+        $in['awb_mode'] = ($in['awb_no'] !== '' && $in['awb_no'] !== (string)$cur['awb_no']) ? 'manual' : 'keep';
+    } elseif ($in['awb_mode'] !== 'manual') {
+        $in['awb_mode'] = 'auto';
+    }
 
     $postLines = $_POST['line'] ?? [];
     if (is_array($postLines)) {
@@ -173,6 +182,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
         } elseif ($id > 0 && mb_strlen($reason) < 2) {
             // 금액이 걸린 화면이라 수정에는 사유를 남깁니다 (스펙 [45])
             $err = '수정 사유를 적어 주세요. 작업로그에 남습니다.';
+        } elseif ($in['awb_mode'] === 'manual') {
+            if (!preg_match('/^[A-Z0-9-]{4,50}$/', $in['awb_no'])) {
+                $err = 'AWB 번호는 영문 · 숫자 · - 로 4~50자입니다.';
+            } else {
+                // (사업자, AWB) 는 겹치면 안 됩니다 — 어느 전표가 쓰고 있는지 알려 줍니다
+                $st = db()->prepare('SELECT voucher_date, c.name_ko FROM shipments s
+                                       JOIN companies c ON c.id = s.company_id
+                                      WHERE s.business_entity_id = ? AND s.awb_no = ? AND s.id <> ?');
+                $st->execute([$eid, $in['awb_no'], $id]);
+                if ($dup = $st->fetch()) {
+                    $err = 'AWB ' . $in['awb_no'] . ' 은 이미 다른 전표(' . $dup['voucher_date'] . ' · '
+                         . $dup['name_ko'] . ')에 쓰였습니다.';
+                }
+            }
         }
     }
 
@@ -212,17 +235,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
                     ->execute([$id]);
                 $sid = $id;
                 $awb = (string)$cur['awb_no'];
+                if ($in['awb_mode'] === 'manual') {
+                    // AWB 를 고친 경우 — 이전 번호는 아래 작업로그(변경 전후)에 남습니다
+                    $pdo->prepare("UPDATE shipments SET awb_no = ?, awb_source = 'MANUAL'
+                                    WHERE id = ? AND business_entity_id = ?")
+                        ->execute([$in['awb_no'], $id, $eid]);
+                    $awb = $in['awb_no'];
+                }
             } else {
-                $awb = next_doc_no('AWB', 'GPA');
+                $manual = $in['awb_mode'] === 'manual';
+                $awb = $manual ? $in['awb_no'] : next_doc_no('AWB', 'GPA');
                 $st = $pdo->prepare(
                     'INSERT INTO shipments
                        (business_entity_id, company_id, awb_no, awb_source, voucher_date,
                         ship_date, trade_type, carrier_id, dest_city,
                         actual_weight, volume_weight, charge_weight, package_count,
                         status, sales_team, sales_rep, remark, created_by)
-                     VALUES (?,?,?,\'HOUSE\',?,?,?,?,?,?,?,?,?,\'CONFIRMED\',?,?,?,?)');
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,\'CONFIRMED\',?,?,?,?)');
                 $st->execute([
-                    $eid, (int)$in['company_id'], $awb, $in['voucher_date'],
+                    $eid, (int)$in['company_id'], $awb, $manual ? 'MANUAL' : 'HOUSE', $in['voucher_date'],
                     $in['ship_date'] !== '' ? $in['ship_date'] : null, $trade,
                     (int)$in['carrier_id'],
                     $in['dest_city'] !== '' ? $in['dest_city'] : null,
@@ -262,7 +293,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
         } catch (PDOException $e) {
             $pdo->rollBack();
             error_log('전표 저장 실패: ' . $e->getMessage());
-            $err = '저장하지 못했습니다. 입력값을 확인하세요.';
+            // 확인과 저장 사이에 다른 사람이 같은 AWB 를 먼저 저장한 경우
+            $err = strpos($e->getMessage(), 'uq_ship_awb') !== false
+                ? 'AWB 번호 ' . ($in['awb_no'] ?: '(자동)') . ' 이(가) 방금 다른 전표에 저장되었습니다. 다른 번호로 다시 저장하세요.'
+                : '저장하지 못했습니다. 입력값을 확인하세요.';
         }
     }
 }
@@ -293,11 +327,45 @@ layout_head($title, 'shipments');
 <input type="hidden" name="act" value="save">
 
 <div class="card">
-  <div class="ch">전표 정보
-    <span style="font-weight:400;color:var(--ink3)">
-      <?= $id > 0 ? 'AWB 번호는 바뀌지 않습니다' : 'AWB 번호는 저장할 때 자동으로 부여됩니다' ?></span>
-  </div>
+  <div class="ch">전표 정보</div>
   <div class="cb f">
+    <?php $awbManual = $id === 0 && $in['awb_mode'] === 'manual'; ?>
+    <div class="fw" style="width:100%">
+      <label for="awb_no">AWB 번호</label>
+      <?php if ($id === 0): ?>
+      <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
+        <label style="display:flex;gap:6px;align-items:center;font-weight:400;font-size:13px;cursor:pointer">
+          <input type="radio" name="awb_mode" value="auto"<?= $awbManual ? '' : ' checked' ?> onchange="awbMode()"> 자동 부여</label>
+        <label style="display:flex;gap:6px;align-items:center;font-weight:400;font-size:13px;cursor:pointer">
+          <input type="radio" name="awb_mode" value="manual"<?= $awbManual ? ' checked' : '' ?> onchange="awbMode()"> 직접 입력 (운송사 번호 등)</label>
+      </div>
+      <?php endif; ?>
+      <input type="text" id="awb_no" name="awb_no" class="tnum" maxlength="50" autocomplete="off"
+             pattern="[A-Za-z0-9\-]{4,50}" title="영문 · 숫자 · - 로 4~50자"
+             value="<?= h($id > 0 ? ($in['awb_no'] !== '' ? $in['awb_no'] : (string)$cur['awb_no']) : $in['awb_no']) ?>"
+             placeholder="<?= $id > 0 ? '' : '저장할 때 자동으로 부여됩니다' ?>">
+      <small style="color:var(--ink3)"><?= $id > 0
+        ? '번호를 고치면 직접 입력한 번호로 표시되고, 이전 번호는 작업로그에 남습니다.'
+        : '직접 입력한 번호는 다른 전표와 겹치면 저장되지 않습니다.' ?></small>
+    </div>
+    <?php if ($id === 0): ?>
+    <script>
+    function awbMode() {
+      var manual = document.querySelector('input[name=awb_mode]:checked').value === 'manual';
+      var f = document.getElementById('awb_no');
+      f.disabled = !manual;
+      f.required = manual;
+      f.placeholder = manual ? '예: 1234567890 · 1Z999AA10123456784' : '저장할 때 자동으로 부여됩니다';
+      if (manual) { f.focus(); } else { f.value = ''; }
+    }
+    document.addEventListener('DOMContentLoaded', function () {
+      var f = document.getElementById('awb_no');
+      var manual = document.querySelector('input[name=awb_mode]:checked').value === 'manual';
+      f.disabled = !manual;
+      f.required = manual;
+    });
+    </script>
+    <?php endif; ?>
     <div class="fw w3"><label>거래처 *</label>
       <select name="company_id" required>
         <option value="">선택하세요</option>
