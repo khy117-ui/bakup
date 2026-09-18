@@ -335,7 +335,8 @@ layout_head('입금 등록', 'cash_in');
   <div class="ch">정산할 매출전표
     <span style="font-weight:400;color:var(--ink3)">오래된 것부터</span>
     <?php if ($unpaid || $obRows): ?>
-      <button type="button" class="btn sm" style="margin-left:auto" onclick="autoAlloc()">
+      <button type="button" class="btn sm pri" style="margin-left:auto" onclick="pickAll(true)">전체 선택</button>
+      <button type="button" class="btn sm" onclick="autoAlloc()">
         입금액만큼 자동배분</button>
       <button type="button" class="btn sm" onclick="clearAlloc()">배분 지우기</button>
     <?php endif; ?>
@@ -349,7 +350,8 @@ layout_head('입금 등록', 'cash_in');
   <?php else: ?>
   <table>
     <thead><tr>
-      <th class="c" style="width:45px"></th>
+      <th class="c" style="width:45px"><input type="checkbox" id="pickall" onchange="pickAll(this.checked)"
+                                               title="전체 선택 / 해제" aria-label="미수 전표 전체 선택"></th>
       <th style="width:110px">전표일</th><th style="width:170px">AWB</th>
       <th class="r" style="width:135px">매출금액</th>
       <th class="r" style="width:135px">기수금</th>
@@ -448,7 +450,30 @@ function recalc(){
 function pickChanged(cb){
   var el = document.querySelector('.allocin[data-sid="' + cb.dataset.sid + '"]');
   el.value = cb.checked ? fmt(parseFloat(cb.dataset.bal)) : '';
+  syncPickAll();
   recalc();
+}
+// 전체 선택 — 모든 미수를 잔액 그대로 채웁니다. 입금액이 비어 있으면 합계를 넣어 줍니다 (적어 둔 금액은 그대로)
+function pickAll(on){
+  var sum = 0;
+  document.querySelectorAll('.pick').forEach(function(cb){
+    cb.checked = on;
+    var el = document.querySelector('.allocin[data-sid="' + cb.dataset.sid + '"]');
+    el.value = on ? fmt(parseFloat(cb.dataset.bal)) : '';
+    if (on) { sum += parseFloat(cb.dataset.bal); }
+  });
+  var a = document.getElementById('a');
+  if (on && num(a.value) === 0) { a.value = fmt(sum); }
+  syncPickAll();
+  recalc();
+}
+function syncPickAll(){
+  var all = document.getElementById('pickall');
+  if (!all) return;
+  var picks = document.querySelectorAll('.pick'), n = 0;
+  picks.forEach(function(cb){ if (cb.checked) n++; });
+  all.checked = picks.length > 0 && n === picks.length;
+  all.indeterminate = n > 0 && n < picks.length;
 }
 function autoAlloc(){
   var left = num(document.getElementById('a').value);
@@ -460,11 +485,13 @@ function autoAlloc(){
     if (cb) cb.checked = put > 0;
     left -= put;
   });
+  syncPickAll();
   recalc();
 }
 function clearAlloc(){
   document.querySelectorAll('.allocin').forEach(function(el){ el.value = ''; });
   document.querySelectorAll('.pick').forEach(function(el){ el.checked = false; });
+  syncPickAll();
   recalc();
 }
 recalc();
