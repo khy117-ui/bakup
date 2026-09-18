@@ -200,6 +200,18 @@ ul, ol { padding: 0; list-style: none; }
 .board-tools form { display: flex; gap: 8px; margin-left: auto; max-width: 100%; }
 .board-tools input { flex: 1; min-width: 0; width: 220px; max-width: 100%; }
 .board-tools input, .board-tools select { height: 44px; padding: 0 14px; border: 1px solid var(--line-2); border-radius: 10px; }
+.board__empty { padding: 28px 12px; text-align: center; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); }
+.board__row.is-pinned .no { color: var(--blue); font-weight: 700; }
+.post { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.post__head { padding: 20px 24px; background: var(--tint); }
+.post__head h3 { font-size: 20px; font-weight: 800; color: var(--navy); margin-bottom: 8px; }
+.post__meta { display: flex; gap: 16px; font-family: var(--font-en); font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+.post__body { padding: 28px 24px; font-size: 15px; line-height: 1.85; color: var(--body); word-break: break-word; }
+.post__body img { max-width: 100%; height: auto; }
+.post__body p + p { margin-top: 12px; }
+.post__files { padding: 0 24px 20px; list-style: none; font-size: 14px; }
+.post__files a { color: var(--blue); text-decoration: underline; }
+.post .form-actions { padding: 0 24px 24px; }
 .pager { display: flex; justify-content: center; gap: 4px; margin-top: 20px; }
 .pager a { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-family: var(--font-en); font-size: 13px; font-weight: 700; color: var(--muted); }
 .pager a.is-active { background: var(--navy); color: #fff; }

@@ -17,6 +17,9 @@ member/                    온라인접수 · 픽업예약 / 회원가입 / 로�
 assets/css/style.css       공통 스타일 (디자인 토큰, 컴포넌트, 반응형 미디어쿼리)
 assets/js/main.js          모바일 메뉴, 홈 조회 탭, 부피계산기, 해외운송비 합계, 지역표 검색, 운송사 선택
 assets/js/rates.js         요금표 엑셀 로더 (rates.xlsx → 표 렌더링, 관리자 미리보기)
+assets/js/site-config.js   게시판(ERP) API 주소 설정 (미리보기에서는 예시 JSON 사용)
+assets/js/board.js         공지사항 · Q&A 목록/본문 로더 (ERP API → 표 렌더링, 검색 · 페이징)
+assets/data/board/         게시판 예시 JSON (API 응답 형식 견본, 미리보기 전용)
 assets/data/rates.xlsx     요금표 원본 엑셀 (이 파일만 교체하면 요금 반영)
 admin/rates.html           관리자 페이지 · 게시판(ERP) 관리 링크 / 요금표 교체 안내 · 미리보기
 admin/config.js            ERP 게시판(공지사항 · Q&A) 링크 주소 설정
@@ -53,9 +56,24 @@ assets/img/                로고 · 사진 자산 (백업 사이트 이미지�
 ## 연동이 필요한 부분
 
 - **게시판 관리(ERP)**: 관리자 페이지의 공지사항 · Q&A 버튼은 `admin/config.js` 의 주소로 새 창을 엽니다. 공지사항은 `https://postgood.co.kr/erp/notice`, Q&A는 `https://postgood.co.kr/erp/qna` 로 연결되어 있으며, 주소가 바뀌면 이 파일만 수정하면 됩니다.
-- **게시판(공지사항 · Q&A · 견적문의)**: 목록은 예시 데이터이며 `[등록일]`, `[조회수]`는 DB 연동 후 채워집니다.
+- **게시판(공지사항 · Q&A)**: 목록과 본문은 ERP 게시판 API에서 읽어옵니다(아래 "게시판 API 형식"). 미리보기 서버에서는 `assets/data/board/*.json` 예시를 대신 읽습니다.
+- **견적문의**: 목록은 예시 데이터입니다.
 - **폼(픽업예약 · 로그인 · 회원가입 · 화물추적 · 결제)**: 마크업과 프론트 동작만 구현되어 있고 전송 대상 API는 비어 있습니다.
 - **개인정보취급방침**의 주민등록번호 수집 항목은 현행법 검토가 필요합니다.
+
+## 게시판 API 형식 (ERP 서버가 제공)
+
+홈페이지의 공지사항 · Q&A 페이지는 `assets/js/site-config.js` 에 적힌 주소에서 JSON을 읽어 목록과 본문을 그립니다. 기본 주소는 공지사항 `https://postgood.co.kr/erp/api/notice`, Q&A `https://postgood.co.kr/erp/api/qna` 이며, ERP 쪽 실제 주소에 맞게 이 파일만 바꾸면 됩니다. 홈페이지와 ERP가 같은 도메인(postgood.co.kr)이라 CORS 설정은 필요 없습니다.
+
+| 요청 | 응답(JSON) |
+|---|---|
+| 목록 `GET {api}?page=1&size=15&q=검색어` | `{"total":46,"page":1,"size":15,"items":[{"id":46,"title":"제목","date":"2025-06-10","views":2982,"writer":"관리자","pinned":true}]}` |
+| 본문 `GET {api}?id=46` | `{"id":46,"title":"제목","date":"2025-06-10","views":2982,"writer":"관리자","content":"<p>본문 HTML 또는 텍스트</p>","files":[{"name":"안내문.pdf","url":"https://…"}]}` |
+
+- `pinned: true` 인 글은 번호 대신 "공지"로 표시되고 1페이지 맨 위에 옵니다. `q` 는 제목 · 내용 검색어이며 비어 있으면 전체 목록입니다.
+- `date` 가 최근 7일 이내이면 NEW 배지가 붙습니다. `content` 는 HTML을 그대로 표시하되 `<script>` 와 인라인 이벤트 속성은 제거됩니다.
+- 응답 형식 견본은 `assets/data/board/notice.json`, `qna.json` 에 있습니다(예시 JSON은 페이징 · 검색을 브라우저에서 처리).
+- API 호출이 실패하면 표에 "게시글을 불러오지 못했습니다"와 ERP 게시판 링크가 표시됩니다. Q&A의 **글쓰기** 버튼은 `site-config.js` 의 `write` 주소(기본 `https://postgood.co.kr/erp/qna`)로 새 창을 엽니다.
 
 ## 브랜드 · 콘텐츠 기준
 
