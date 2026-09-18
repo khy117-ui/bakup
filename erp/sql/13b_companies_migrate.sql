@@ -94,7 +94,8 @@ SELECT
   NULLIF(TRIM(s.PAYREGDATE), ''),
   NULLIF(TRIM(s.CONTENTS), ''),
   -- REGDATE 가 실제 등록일시입니다. 살릴 수 있으면 살립니다
-  COALESCE(STR_TO_DATE(LEFT(TRIM(s.REGDATE), 19), '%Y-%m-%d %H:%i:%s'), NOW()),
+  COALESCE(CASE WHEN TRIM(COALESCE(s.REGDATE, '')) REGEXP '^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2} [0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}'
+                THEN STR_TO_DATE(LEFT(TRIM(s.REGDATE), 19), '%Y-%m-%d %H:%i:%s') END, NOW()),
   NULL,                          -- deleted_at : 전 건 활성. DEL 판정은 6번에서
   CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED)
 FROM companies_staging s;

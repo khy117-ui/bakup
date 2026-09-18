@@ -146,7 +146,11 @@ SELECT
   COALESCE(NULLIF(TRIM(s.COMM), ''), NULLIF(TRIM(s.SPOT), '')),
   NULLIF(CONCAT_WS(' / ', NULLIF(TRIM(s.CONTENTS), ''), NULLIF(TRIM(s.remark), '')), ''),
   COALESCE(d.regdate_d, NOW()),
-  COALESCE(STR_TO_DATE(LEFT(TRIM(s.UPTDATE), 19), '%Y-%m-%d %H:%i:%s'), d.regdate_d, NOW()),
+  -- UPTDATE 는 14,454건이 비어 있습니다. MySQL 8 strict 에서는 STR_TO_DATE('') 가 INSERT 안에서
+  -- 오류(1411)로 멈추므로, 날짜 모양일 때만 변환합니다
+  COALESCE(CASE WHEN TRIM(COALESCE(s.UPTDATE, '')) REGEXP '^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2} [0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}'
+                THEN STR_TO_DATE(LEFT(TRIM(s.UPTDATE), 19), '%Y-%m-%d %H:%i:%s') END,
+           d.regdate_d, NOW()),
   CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED),
   NULLIF(CONCAT_WS(' / ',
     CASE WHEN cm.company_id IS NULL THEN '거래처미확인' END,
@@ -205,7 +209,8 @@ JOIN (
          THEN STR_TO_DATE(REPLACE(REPLACE(LEFT(TRIM(DATESHIP),10),'/','-'),'.','-'), '%Y-%m-%d')
          WHEN DATESHIP REGEXP '^[0-9]{8}$' THEN STR_TO_DATE(DATESHIP, '%Y%m%d')
          ELSE NULL END AS dateship_d,
-    STR_TO_DATE(LEFT(TRIM(REGDATE), 19), '%Y-%m-%d %H:%i:%s') AS regdate_d
+    CASE WHEN TRIM(COALESCE(REGDATE, '')) REGEXP '^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2} [0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}'
+         THEN STR_TO_DATE(LEFT(TRIM(REGDATE), 19), '%Y-%m-%d %H:%i:%s') END AS regdate_d
   FROM shipments_staging
 ) d ON d.staging_id = s.staging_id
 -- 숫자 변환 : 콤마·공백(할인율·유류할증은 % 까지) 제거 후 숫자면 캐스팅, 아니면 NULL.
@@ -232,15 +237,19 @@ JOIN (
               REGEXP '^[0-9]+(\\.[0-9]+)?$'
          THEN CAST(REPLACE(REPLACE(COALESCE(PRICE,''),',',''),' ','') AS DECIMAL(15,2))
          ELSE NULL END AS price_d,
+    -- 할인율 · 유류할증률(%) — 100 이하만 비율로 봅니다.
+    -- FUEL 에는 비율 대신 원 단위 금액이 적힌 전표가 약 3,000건 있습니다 (예: 31,172).
+    -- 예전 식은 DECIMAL(7,2) 로 바꾸다 넘쳐서(최대 99,999.99) MySQL 8 strict 에서 멈췄습니다.
+    -- 넓은 자리로 바꿔 비교하고, 100 을 넘으면 비율이 아니므로 NULL. 원본은 staging 에 그대로 남습니다
     CASE WHEN REPLACE(REPLACE(REPLACE(COALESCE(DCYUL,''),',',''),' ',''),'%','')
               REGEXP '^[0-9]+(\\.[0-9]+)?$'
-         THEN LEAST(CAST(REPLACE(REPLACE(REPLACE(COALESCE(DCYUL,''),',',''),' ',''),'%','')
-                         AS DECIMAL(7,2)), 999.99)
+          AND CAST(REPLACE(REPLACE(REPLACE(COALESCE(DCYUL,''),',',''),' ',''),'%','') AS DECIMAL(20,2)) <= 100
+         THEN CAST(REPLACE(REPLACE(REPLACE(COALESCE(DCYUL,''),',',''),' ',''),'%','') AS DECIMAL(20,2))
          ELSE NULL END AS dcyul_d,
     CASE WHEN REPLACE(REPLACE(REPLACE(COALESCE(FUEL,''),',',''),' ',''),'%','')
               REGEXP '^[0-9]+(\\.[0-9]+)?$'
-         THEN LEAST(CAST(REPLACE(REPLACE(REPLACE(COALESCE(FUEL,''),',',''),' ',''),'%','')
-                         AS DECIMAL(7,2)), 999.99)
+          AND CAST(REPLACE(REPLACE(REPLACE(COALESCE(FUEL,''),',',''),' ',''),'%','') AS DECIMAL(20,2)) <= 100
+         THEN CAST(REPLACE(REPLACE(REPLACE(COALESCE(FUEL,''),',',''),' ',''),'%','') AS DECIMAL(20,2))
          ELSE NULL END AS fuel_d
   FROM shipments_staging
 ) n ON n.staging_id = s.staging_id
