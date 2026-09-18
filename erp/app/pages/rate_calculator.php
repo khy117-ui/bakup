@@ -161,7 +161,7 @@ layout_head('단가계산기', 'rate_calculator');
           <option value="">선택 안 함 (할인 0%)</option>
           <?php foreach ($companies as $c): ?>
             <option value="<?= (int)$c['id'] ?>"<?= (string)$in['company_id']===(string)$c['id']?' selected':'' ?>>
-              <?= h($c['name_ko']) ?></option>
+              <?= h($c['name_ko']) ?> (<?= h($c['company_code']) ?>)</option>
           <?php endforeach; ?>
         </select></div>
       <div class="fw w1"><label>운송사 *</label>

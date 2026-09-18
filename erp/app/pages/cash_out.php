@@ -374,7 +374,7 @@ layout_head($mode === 'transfer' ? '계좌이체' : '출금 등록', 'cash_out')
         <select id="ocm" name="company_id">
           <option value="">— 해당 없음 —</option>
           <?php foreach ($companies as $c): ?>
-            <option value="<?= (int)$c['id'] ?>"><?= h($c['name_ko']) ?></option>
+            <option value="<?= (int)$c['id'] ?>"><?= h($c['name_ko']) ?> (<?= h($c['company_code']) ?>)</option>
           <?php endforeach; ?>
         </select></div>
     </div>

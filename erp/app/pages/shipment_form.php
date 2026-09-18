@@ -311,10 +311,10 @@ layout_head($title, 'shipments');
       <?php endif; ?>
     </div>
     <div class="fw w1"><label>운송사 *</label>
-      <select name="carrier_id" required>
+      <select name="carrier_id" required data-search="운송사 코드 또는 이름">
         <option value="">선택</option>
         <?php foreach ($carriers as $c): ?>
-          <option value="<?= (int)$c['id'] ?>"<?= (string)$in['carrier_id']===(string)$c['id']?' selected':'' ?>><?= h($c['code']) ?></option>
+          <option value="<?= (int)$c['id'] ?>"<?= (string)$in['carrier_id']===(string)$c['id']?' selected':'' ?>><?= h($c['name']) ?> (<?= h($c['code']) ?>)</option>
         <?php endforeach; ?>
       </select></div>
     <div class="fw w1"><label>구분</label>

@@ -145,6 +145,7 @@ document.addEventListener('keydown', function (e) {
   if (e.key === 'Escape') document.body.classList.remove('nav-open');
 });
 </script>
+<script src="<?= h(asset_v('assets/combo.js')) ?>"></script>
 </body>
 </html>
 <?php

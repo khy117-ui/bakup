@@ -140,7 +140,7 @@ $st = db()->prepare(
 $st->execute($params);
 $rows = $st->fetchAll();
 
-$companies = db()->prepare('SELECT id, name_ko FROM companies WHERE deleted_at IS NULL
+$companies = db()->prepare('SELECT id, company_code, name_ko FROM companies WHERE deleted_at IS NULL
                              ORDER BY name_ko');
 $companies->execute();
 $companies = $companies->fetchAll();
@@ -183,7 +183,7 @@ layout_head('문서보관함', 'documents');
         <select name="company_id">
           <option value="">해당없음</option>
           <?php foreach ($companies as $c): ?>
-            <option value="<?= (int)$c['id'] ?>"><?= h($c['name_ko']) ?></option>
+            <option value="<?= (int)$c['id'] ?>"><?= h($c['name_ko']) ?> (<?= h($c['company_code']) ?>)</option>
           <?php endforeach; ?>
         </select></div>
       <?php else: ?>

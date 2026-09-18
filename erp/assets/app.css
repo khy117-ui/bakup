@@ -193,3 +193,23 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-line
   .btn.sm { height: 32px; }
   .pager { flex-wrap: wrap; }
 }
+
+/* 검색되는 선택칸 (assets/combo.js) — 거래처 · 운송사처럼 항목이 많은 선택칸 */
+.combo { position: relative; width: 100%; }
+.combo-sel { position: absolute !important; left: 0; bottom: 0; width: 1px !important; height: 1px !important;
+  opacity: 0; pointer-events: none; }
+.combo-list { position: absolute; z-index: 45; left: 0; right: 0; top: calc(100% + 4px); max-height: 300px;
+  overflow-y: auto; background: #fff; border: 1px solid var(--line); border-radius: 6px;
+  box-shadow: 0 10px 24px rgba(10, 36, 56, .14); }
+.combo-item { display: flex; gap: 8px; align-items: baseline; padding: 8px 10px; font-size: 13px; cursor: pointer;
+  border-bottom: 1px solid var(--line2); }
+.combo-item:last-child { border-bottom: 0; }
+.combo-item.on, .combo-item:hover { background: var(--accent-tint); }
+.combo-item b { flex-shrink: 0; min-width: 64px; color: var(--accent-deep); font-variant-numeric: tabular-nums; }
+.combo-item small { color: var(--ink3); margin-left: auto; }
+.combo-blank { color: var(--ink2); }
+.combo-none { padding: 9px 10px; font-size: 12px; color: var(--ink3); }
+@media (max-width: 900px) {
+  .combo-item { padding: 11px 10px; font-size: 14px; }
+  .combo-list { max-height: 50vh; }
+}
