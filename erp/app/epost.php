@@ -27,11 +27,26 @@ function epost_key(): string
     try {
         $st = db()->prepare("SELECT setting_val FROM app_settings WHERE setting_key = 'epost_api_key'");
         $st->execute();
-        $k = trim((string)$st->fetchColumn());
+        $k = (string)$st->fetchColumn();
     } catch (PDOException $e) {
         $k = '';
     }
+    // 포털 화면에서 두 줄로 보이는 키를 복사하면 가운데 공백 · 줄바꿈이 섞입니다 — 모두 뺍니다
+    $k = (string)preg_replace('/\s+/u', '', $k);
     return strpos($k, '%') !== false ? rawurldecode($k) : $k;
+}
+
+/** 인증키 저장 (없으면 설정 줄을 만들어서). 공백 · 줄바꿈은 빼고 넣습니다 */
+function epost_save_key(string $key): void
+{
+    $key = (string)preg_replace('/\s+/u', '', $key);
+    db()->prepare("INSERT INTO app_settings
+                     (setting_key, setting_val, group_ko, label_ko, help_ko, input_type, sort_order, updated_by)
+                   VALUES ('epost_api_key', ?, '연동', '우체국 Open API 인증키',
+                           '공공데이터포털 EMS행방조회 서비스 일반 인증키. 화물추적에서 씁니다.', 'secret', 1, ?)
+                   ON DUPLICATE KEY UPDATE setting_val = VALUES(setting_val), updated_by = VALUES(updated_by),
+                                           input_type = 'secret'")
+        ->execute([$key, $_SESSION['admin_id'] ?? null]);
 }
 
 function epost_http_get(string $url): ?string

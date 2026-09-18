@@ -96,6 +96,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             flash('배송완료로 표시했습니다.');
             redirect('?p=tracking&shipment_id=' . (int)post('shipment_id'));
 
+        } elseif ($act === 'epost_key') {
+            // 화물추적 화면에서 바로 인증키 넣기 — 최고관리자 · 환경설정 권한만
+            require_once APP_DIR . '/epost.php';
+            $k = (string)preg_replace('/\s+/u', '', post('epost_key'));
+            if (!route_can_edit('settings')) {
+                $err = '인증키는 환경설정 권한이 있는 관리자만 넣을 수 있습니다.';
+            } elseif (!preg_match('/^[A-Za-z0-9%+\/=_-]{20,300}$/', $k)) {
+                $err = '인증키 모양이 아닙니다. 공공데이터포털 마이페이지의 "일반 인증키" 를 그대로 붙여넣어 주세요.';
+            } else {
+                epost_save_key($k);
+                log_action('시스템', 'UPDATE', 'app_settings', null, '우체국 Open API 인증키', null, '(새 값으로 바꿈)');
+                flash('우체국 인증키를 저장했습니다 (끝 4자리 ' . substr($k, -4) . '). 이제 [우체국에서 이력 가져오기] 를 눌러 보세요.');
+                redirect('?p=tracking' . ((int)post('shipment_id') > 0 ? '&shipment_id=' . (int)post('shipment_id') : ''));
+            }
+
         } elseif ($act === 'epost_fetch') {
             // 우체국 EMS 행방조회 Open API 에서 이력을 가져와 쌓습니다 (같은 일시 · 상태는 건너뜀)
             require_once APP_DIR . '/epost.php';
@@ -198,6 +213,31 @@ layout_head('화물추적', 'tracking');
 </div>
 
 <?php if ($err !== ''): ?><div class="msg err"><?= h($err) ?></div><?php endif; ?>
+
+<?php
+// 우체국 Open API 인증키 — 여기서 바로 넣을 수 있게 (환경설정 권한자만)
+require_once APP_DIR . '/epost.php';
+$epKey = epost_key();
+if (route_can_edit('settings')): ?>
+<details class="card"<?= $epKey === '' ? ' open' : '' ?>>
+  <summary class="ch" style="cursor:pointer">우체국 EMS 조회 인증키
+    <?= $epKey !== '' ? '<span class="badge b-ok">저장됨 ····' . h(substr($epKey, -4)) . '</span>'
+                      : '<span class="badge b-warn">아직 없음</span>' ?></summary>
+  <div class="cb">
+    <form method="post" class="f" style="align-items:flex-end" autocomplete="off">
+      <?= csrf_field() ?>
+      <input type="hidden" name="act" value="epost_key">
+      <input type="hidden" name="shipment_id" value="<?= $sid ?>">
+      <div class="fw gr" style="min-width:260px"><label for="epk">공공데이터포털 일반 인증키</label>
+        <input type="text" id="epk" name="epost_key" class="tnum" required spellcheck="false"
+               placeholder="마이페이지의 일반 인증키를 붙여넣기 (공백은 자동으로 뺍니다)"></div>
+      <button class="btn pri">저장</button>
+    </form>
+    <div style="font-size:11.5px;color:var(--ink3);margin-top:6px">
+      두 줄로 보이는 키를 복사해 가운데 공백이 들어가도 괜찮습니다. 저장 후에는 끝 4자리만 보입니다.</div>
+  </div>
+</details>
+<?php endif; ?>
 
 <div class="msg" style="background:var(--info-bg);color:var(--info-fg)">
   운송사 API 연동은 아직 없습니다. <b>지금은 사람이 조회해서 넣는 방식</b>입니다.

@@ -42,7 +42,9 @@ if ($hasTable && $_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save'
             $r = $map[$k];
             $v = is_string($v) ? trim($v) : '';
             if ($r['input_type'] === 'secret') {
-                // 비밀값 — 비워 두면 그대로, 새로 적었을 때만 바꿉니다. 이력에도 값은 남기지 않습니다
+                // 비밀값 — 비워 두면 그대로, 새로 적었을 때만 바꿉니다. 이력에도 값은 남기지 않습니다.
+                // 복사하다 섞인 공백 · 줄바꿈은 뺍니다 (인증키가 두 줄로 보이는 화면이 많음)
+                $v = (string)preg_replace('/\s+/u', '', $v);
                 if ($v === '') { continue; }
                 if ($v !== (string)$r['setting_val']) {
                     $changed[] = $r['label_ko'] . ': (새 값으로 바꿈)';
