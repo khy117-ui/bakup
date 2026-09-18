@@ -203,35 +203,35 @@ $loadTrks = function (int $sid): array {
 };
 $trks = $sid > 0 ? $loadTrks($sid) : [];
 
-// 이관 전표는 AWB 가 곧 운송사 운송장번호인데 추적번호 칸이 비어 있습니다 (예: FedEx 871350927454).
-// 번호 모양이 그 운송사 것과 맞으면 AWB 를 추적번호로 자동 등록하고, 인증키가 있으면 한 번 바로 가져옵니다.
+// 자동 추적 — 전표를 열면:
+//   · 추적번호가 없고 AWB 가 그 운송사 번호 모양이면 AWB 를 추적번호로 등록 (이관 전표, 예: FedEx 871350927454)
+//   · 배송완료 전인데 한 번도 안 봤거나 1시간 넘게 안 본 번호는 운송사에서 바로 가져옴 (한 번에 2건까지)
 require_once APP_DIR . '/track_any.php';
-if ($sh && !$trks && $_SERVER['REQUEST_METHOD'] === 'GET' && route_can_edit('tracking')) {
-    $awb  = strtoupper((string)preg_replace('/[\s-]+/', '', (string)$sh['awb_no']));
-    $asrc = track_detect_src($awb, (string)$sh['carrier']);
-    $shapeOk = $asrc !== '' && ($asrc === track_detect_src($awb) || ($sh['awb_source'] ?? '') === 'CARRIER');
-    if ($shapeOk && preg_match('/^[A-Z0-9]{8,40}$/', $awb)) {
-        try {
-            $ins = db()->prepare('INSERT IGNORE INTO tracking_numbers (shipment_id, carrier_id, tracking_no, accepted_on)
-                                  VALUES (?,?,?,?)');
-            $ins->execute([$sid, (int)$sh['carrier_id'], $awb, $sh['ship_date'] ?: $sh['voucher_date']]);
-            if ($ins->rowCount() > 0) {
-                $tid = (int)db()->lastInsertId();
-                log_action('물류', 'CREATE', 'tracking_numbers', $tid, $awb, null, 'AWB 번호를 추적번호로 자동 등록');
-                if (in_array($asrc, TRACK_API_SRC, true) && track_has_key($asrc)) {
-                    $r = track_fetch($asrc, $awb);
-                    $_SESSION['track_raw'][$tid] = [TRACK_SRC_NAME[$asrc], mb_substr((string)$r['raw'], 0, 4000)];
-                    if ($r['ok']) {
-                        track_save_events(db(), $tid, $r['events'], $_SESSION['admin_id'] ?? null);
-                    } else {
-                        $err = $r['error'];
-                    }
-                }
-                $trks = $loadTrks($sid);
-            }
-        } catch (PDOException $e) {
-            error_log('AWB 자동 등록 실패: ' . $e->getMessage());
+if ($sh && $_SERVER['REQUEST_METHOD'] === 'GET' && route_can_edit('tracking')) {
+    try {
+        if (!$trks && ($newTid = track_auto_register(db(), $sid)) > 0) {
+            log_action('물류', 'CREATE', 'tracking_numbers', $newTid, (string)$sh['awb_no'], null, 'AWB 번호를 추적번호로 자동 등록');
+            $trks = $loadTrks($sid);
         }
+        $pulled = 0;
+        foreach ($trks as $t) {
+            if ($pulled >= 2 || $t['delivered_at']
+                || ($t['last_checked_at'] && strtotime((string)$t['last_checked_at']) > time() - 3600)) { continue; }
+            $asrc = track_detect_src((string)$t['tracking_no'], $t['carrier'] . ' ' . ($t['carrier_name'] ?? ''));
+            if (!in_array($asrc, TRACK_API_SRC, true) || !track_has_key($asrc)) { continue; }
+            $pulled++;
+            $r = track_fetch($asrc, (string)$t['tracking_no']);
+            $_SESSION['track_raw'][(int)$t['id']] = [TRACK_SRC_NAME[$asrc], mb_substr((string)$r['raw'], 0, 4000)];
+            if ($r['ok']) {
+                track_save_events(db(), (int)$t['id'], $r['events'], $_SESSION['admin_id'] ?? null);
+            } else {
+                db()->prepare('UPDATE tracking_numbers SET last_checked_at = NOW() WHERE id = ?')->execute([(int)$t['id']]);
+                $err = $r['error'];
+            }
+        }
+        if ($pulled > 0) { $trks = $loadTrks($sid); }
+    } catch (PDOException $e) {
+        error_log('자동 추적 실패: ' . $e->getMessage());
     }
 }
 

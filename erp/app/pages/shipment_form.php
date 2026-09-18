@@ -422,7 +422,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
                             . ($bad ? ' 못 올린 서류: ' . implode(' / ', $bad) : '');
                 }
             }
-            flash('매출전표 ' . $awb . ' 을 ' . ($id > 0 ? '수정' : '등록') . '했습니다.' . $docMsg);
+            // 자동 화물추적 — AWB 가 조회되는 운송사(우체국 EMS · DHL · FedEx 등) 번호면 추적번호로 등록.
+            // 이력은 ERP 가 열려 있는 동안 자동 추적(track_tick)이 몇 시간마다 가져옵니다
+            $trkMsg = '';
+            try {
+                require_once APP_DIR . '/track_any.php';
+                if (($newTid = track_auto_register($pdo, $sid, $id > 0 ? (string)$cur['awb_no'] : '')) > 0) {
+                    log_action('물류', 'CREATE', 'tracking_numbers', $newTid, $awb, null, '전표 저장 때 AWB 자동 등록');
+                    $trkMsg = ' 화물추적을 자동으로 켰습니다.';
+                }
+            } catch (PDOException $e) {
+                error_log('전표 자동 추적 등록 실패: ' . $e->getMessage());
+            }
+            flash('매출전표 ' . $awb . ' 을 ' . ($id > 0 ? '수정' : '등록') . '했습니다.' . $docMsg . $trkMsg);
             // 서류를 같이 올렸으면 그 전표로 가서 목록을 보여줍니다
             redirect($files ? '?p=shipment_form&id=' . $sid : '?p=shipments');
         } catch (PDOException $e) {

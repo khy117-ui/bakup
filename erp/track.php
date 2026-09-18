@@ -10,7 +10,7 @@
  *
  *   거래처명 · 금액 같은 내부 정보는 내보내지 않습니다 (출발/도착 국가 · 발송일 · 이력만).
  *   운송사 한도(DHL 하루 250건 등)를 지키려고 같은 번호는 20분 캐시, IP 당 10분 20건 · 하루 100건,
- *   운송사 실제 호출은 하루 300건(DHL 150건)까지만 합니다.
+ *   운송사 실제 호출은 TRACK_DAILY_CAP(자동 추적과 합계)까지만 합니다.
  */
 declare(strict_types=1);
 
@@ -42,20 +42,7 @@ if (!preg_match('/^[A-Z0-9]{6,40}$/', $q)) {
 
 try {
     $pdo = db();
-    $pdo->exec("CREATE TABLE IF NOT EXISTS public_track_cache (
-                  cache_key  VARCHAR(80) NOT NULL PRIMARY KEY,
-                  payload    MEDIUMTEXT  NOT NULL,
-                  delivered  TINYINT(1)  NOT NULL DEFAULT 0,
-                  fetched_at DATETIME    NOT NULL
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='홈페이지 화물추적 캐시'");
-    $pdo->exec("CREATE TABLE IF NOT EXISTS public_track_hits (
-                  id     BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-                  ip     VARCHAR(45) NOT NULL,
-                  src    VARCHAR(10) NULL COMMENT '운송사 실제 호출이면 epost/dhl/fedex',
-                  hit_at DATETIME    NOT NULL,
-                  KEY ix_ip (ip, hit_at),
-                  KEY ix_at (hit_at)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='홈페이지 화물추적 조회 기록'");
+    track_ensure_tables($pdo);
 } catch (PDOException $e) {
     error_log('track.php DB: ' . $e->getMessage());
     tp_out(['ok' => false, 'error' => '잠시 후 다시 조회해 주세요.'], 503);
@@ -142,7 +129,6 @@ function tp_stage(array $events, bool $delivered): int
     return $stage;
 }
 
-$liveCap = ['dhl' => 150, 'fedex' => 300, 'epost' => 300];
 $results = [];
 foreach ($targets as [$tid, $no, $ctext]) {
     $src = track_detect_src($no, $ctext);
@@ -151,7 +137,16 @@ foreach ($targets as [$tid, $no, $ctext]) {
              'source' => '', 'message' => ''];
     $events = null;
 
-    if (in_array($src, TRACK_API_SRC, true) && track_has_key($src)) {
+    // ERP 자동 추적이 최근 20분 안에 봤거나 이미 배송완료면, 운송사에 다시 묻지 않고 ERP 이력을 씁니다
+    $fresh = false;
+    if ($tid) {
+        $f = $pdo->prepare('SELECT delivered_at IS NOT NULL OR last_checked_at > NOW() - INTERVAL 20 MINUTE
+                              FROM tracking_numbers WHERE id = ?');
+        $f->execute([$tid]);
+        $fresh = (bool)(int)$f->fetchColumn();
+    }
+
+    if (!$fresh && in_array($src, TRACK_API_SRC, true) && track_has_key($src)) {
         $ck = $src . ':' . $no;
         $c = $pdo->prepare('SELECT payload FROM public_track_cache WHERE cache_key = ?
                              AND fetched_at > NOW() - INTERVAL IF(delivered = 1, 720, 20) MINUTE');
@@ -161,9 +156,7 @@ foreach ($targets as [$tid, $no, $ctext]) {
             $events = json_decode((string)$cached, true) ?: [];
             $item['source'] = 'cache';
         } else {
-            $u = $pdo->prepare('SELECT COUNT(*) FROM public_track_hits WHERE src = ? AND hit_at > NOW() - INTERVAL 1 DAY');
-            $u->execute([$src]);
-            if ((int)$u->fetchColumn() >= $liveCap[$src]) {
+            if (!track_cap_left($pdo, $src)) {
                 $item['message'] = '오늘 자동 조회 한도에 도달했습니다. 운송사 사이트에서 확인해 주세요.';
             } else {
                 $hit->execute([$ip, $src]);
@@ -198,7 +191,9 @@ foreach ($targets as [$tid, $no, $ctext]) {
     }
     if ($events === null && $item['message'] === '') {
         $item['message'] = $src === '' ? '운송사를 선택하고 다시 조회해 주세요.'
-                                       : '자동 조회가 연결되지 않은 운송사입니다. 운송사 사이트에서 확인해 주세요.';
+                         : ($fresh && in_array($src, TRACK_API_SRC, true)
+                            ? '운송사에 아직 조회되지 않는 번호입니다. 접수 직후라면 몇 시간 뒤 다시 확인해 주세요.'
+                            : '자동 조회가 연결되지 않은 운송사입니다. 운송사 사이트에서 확인해 주세요.');
     }
     $events = $events ?? [];
     $item['delivered'] = track_is_delivered($events ? end($events) : null);

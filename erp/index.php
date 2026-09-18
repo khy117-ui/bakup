@@ -60,6 +60,7 @@ $routes = [
     'delete_requests'  => 'delete_requests.php',
     'my_account'       => 'my_account.php',
     'destinations'     => 'destinations.php',
+    'track_tick'       => 'track_tick.php',
 ];
 
 if ($page === 'logout') {

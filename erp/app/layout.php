@@ -145,6 +145,16 @@ document.querySelectorAll('.body table').forEach(function (t) {
 document.addEventListener('keydown', function (e) {
   if (e.key === 'Escape') document.body.classList.remove('nav-open');
 });
+// 자동 화물추적 — 이 브라우저에서 5분에 한 번 서버에 신호 (서버도 전체 5분에 한 번만 일함)
+(function () {
+  var k = 'gp_track_tick', now = Date.now(), last = 0;
+  try { last = +localStorage.getItem(k) || 0; } catch (e) {}
+  if (now - last < 300000) return;
+  try { localStorage.setItem(k, String(now)); } catch (e) {}
+  setTimeout(function () {
+    fetch('?p=track_tick', { credentials: 'same-origin', cache: 'no-store' }).catch(function () {});
+  }, 1500);
+})();
 </script>
 <script src="<?= h(asset_v('assets/combo.js')) ?>"></script>
 </body>
