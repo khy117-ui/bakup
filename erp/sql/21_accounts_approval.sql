@@ -58,3 +58,22 @@ SELECT r.role_code, p.id
   FROM permissions p
   JOIN (SELECT 'MANAGER' AS role_code UNION ALL SELECT 'LOGISTICS') r
  WHERE p.code = 'logi.tracking.write';
+
+-- NAS 서류 백업 열쇠 (NAS 가 가져가는 방식) — 해시만 저장. 운영 DB 에는 schema_upgrade_docs() 가 붙임
+CREATE TABLE IF NOT EXISTS backup_keys (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  key_hash     CHAR(64)     NOT NULL,
+  label        VARCHAR(100) NULL,
+  created_by   BIGINT UNSIGNED NULL,
+  created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_used_at DATETIME     NULL,
+  last_ip      VARCHAR(45)  NULL,
+  revoked_at   DATETIME     NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_bk_hash (key_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='NAS 서류 백업 열쇠';
+
+INSERT INTO document_types (code, name, sort_order)
+SELECT 'ETC', '기타 서류', 99 FROM DUAL
+ WHERE NOT EXISTS (SELECT 1 FROM document_types WHERE code = 'ETC');

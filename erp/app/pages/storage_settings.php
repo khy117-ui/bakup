@@ -128,6 +128,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'test') {
     }
 }
 
+// ---------------------------------------------------------------- NAS 백업 열쇠
+// NAS 가 이 서버에서 서류를 가져가는 방식 — 열쇠는 한 개만 살아 있게 합니다
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(post('act'), ['nas_key_new', 'nas_key_revoke'], true)) {
+    csrf_check();
+    try {
+        db()->exec('UPDATE backup_keys SET revoked_at = NOW() WHERE revoked_at IS NULL');
+        if (post('act') === 'nas_key_new') {
+            $plain = bin2hex(random_bytes(24));
+            db()->prepare('INSERT INTO backup_keys (key_hash, label, created_by) VALUES (?,?,?)')
+                ->execute([hash('sha256', $plain), 'NAS 서류 백업', $_SESSION['admin_id'] ?? null]);
+            // 원문은 이번 한 번만 화면에 보여주고 저장하지 않습니다
+            $_SESSION['nas_key_once'] = $plain;
+            log_action('시스템', 'CREATE', 'backup_keys', (int)db()->lastInsertId(), 'NAS 백업 열쇠');
+            flash('NAS 백업 열쇠를 새로 만들었습니다. 아래 스크립트를 NAS 에 넣으세요 — 이 화면을 벗어나면 다시 볼 수 없습니다.');
+        } else {
+            log_action('시스템', 'DELETE', 'backup_keys', null, 'NAS 백업 열쇠', null, '끊음');
+            flash('NAS 백업 열쇠를 끊었습니다. NAS 는 더 이상 서류를 가져갈 수 없습니다.');
+        }
+        redirect('?p=storage_settings#nas');
+    } catch (PDOException $e) {
+        error_log('NAS 열쇠 실패: ' . $e->getMessage());
+        $err = 'NAS 백업 열쇠를 저장하지 못했습니다. 다시 로그인한 뒤 해 보세요.';
+    }
+}
+$nasKey = null;
+try {
+    $nasKey = db()->query('SELECT * FROM backup_keys WHERE revoked_at IS NULL ORDER BY id DESC LIMIT 1')->fetch() ?: null;
+} catch (PDOException $e) {
+    $nasKey = null;
+}
+$nasOnce = $_SESSION['nas_key_once'] ?? null;
+unset($_SESSION['nas_key_once']);
+$scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+       || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https') ? 'https' : 'http';
+$nasUrl = $scheme . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost')
+        . rtrim(dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/index.php')), '/\\') . '/nas_backup.php';
+
 // ---------------------------------------------------------------- 조회
 $rows = db()->query('SELECT * FROM storage_settings ORDER BY role, id')->fetchAll();
 
@@ -219,6 +256,88 @@ $gb = static fn($b) => $b > 0 ? number_format($b / 1073741824, 1) . ' GB' : '-';
     없으면 프로그램 폴더 아래 <code>storage/documents</code>. 호스팅에서 <b>다시 배포하면
     프로그램 폴더는 덮어써지므로</b> 문서는 반드시 <code>/app/user_data</code> 쪽에 있어야 합니다.
   </span></div>
+</div>
+
+<?php
+// 시놀로지 작업 스케줄러에 넣을 스크립트. NAS 가 이 서버에서 새 서류만 받아 폴더별로 저장합니다
+$nasScript = <<<'SH'
+#!/bin/bash
+# GOODPOST ERP 서류 → NAS 백업
+# 시놀로지: 제어판 > 작업 스케줄러 > 생성 > 예약된 작업 > 사용자 정의 스크립트 (매일 새벽)
+URL='__URL__'
+KEY='__KEY__'
+DEST='/volume1/GOODPOST/ERP서류'      # 저장할 공유폴더 경로 — 바꿔도 됩니다
+LOG="$DEST/_백업기록.log"
+
+mkdir -p "$DEST" || exit 1
+echo "$(date '+%F %T') 시작" >> "$LOG"
+after=0; got=0; bad=0
+while : ; do
+  LIST=$(curl -fsS --max-time 60 -H "X-Backup-Key: $KEY" "$URL?do=list&after=$after") \
+    || { echo "$(date '+%F %T') 목록을 못 받음 (인터넷 또는 열쇠 확인)" >> "$LOG"; exit 1; }
+  [ -z "$LIST" ] && break
+  while IFS=$'\t' read -r id sha size path; do
+    [ -z "$id" ] && continue
+    after=$id
+    target="$DEST/$path"
+    mkdir -p "$(dirname "$target")"
+    if curl -fsS --max-time 900 -H "X-Backup-Key: $KEY" "$URL?do=get&id=$id" -o "$target.part" \
+       && [ "$(sha256sum "$target.part" | cut -d' ' -f1)" = "$sha" ]; then
+      mv -f "$target.part" "$target"
+      curl -fsS -X POST -H "X-Backup-Key: $KEY" --data-urlencode "id=$id" \
+           --data-urlencode "sha=$sha" --data-urlencode "path=$path" "$URL?do=ack" > /dev/null \
+        && got=$((got+1))
+    else
+      rm -f "$target.part"; bad=$((bad+1))
+      echo "$(date '+%F %T') 실패 #$id $path" >> "$LOG"
+    fi
+  done <<< "$LIST"
+done
+echo "$(date '+%F %T') 끝 — 받음 $got · 실패 $bad" >> "$LOG"
+SH;
+$nasScript = strtr($nasScript, ['__URL__' => $nasUrl, '__KEY__' => $nasOnce ?? '(열쇠를 새로 만들면 여기에 들어갑니다)']);
+?>
+<div class="card" id="nas">
+  <div class="ch">NAS 자동 백업
+    <span style="font-weight:400;color:var(--ink3)">NAS 가 매일 이 서버에서 새 서류를 가져갑니다 — NAS 에 포트를 열 필요 없음</span></div>
+  <div class="cb">
+    <div class="f" style="align-items:center;gap:16px">
+      <div><div style="font-size:11px;color:var(--ink2)">열쇠</div>
+        <div><?= $nasKey ? '<span class="badge b-ok">사용 중</span> <span class="tnum" style="font-size:12px">만든 날 ' . h($nasKey['created_at']) . '</span>'
+                         : '<span class="badge b-warn">없음</span>' ?></div></div>
+      <div><div style="font-size:11px;color:var(--ink2)">NAS 가 마지막으로 온 때</div>
+        <div class="tnum"><?= h($nasKey['last_used_at'] ?? '아직 없음') ?>
+          <?= !empty($nasKey['last_ip']) ? '<span style="color:var(--ink3);font-size:11.5px">(' . h($nasKey['last_ip']) . ')</span>' : '' ?></div></div>
+      <div><div style="font-size:11px;color:var(--ink2)">백업 대기</div>
+        <div class="tnum"><?= money($bk['PENDING'] + $bk['FAILED']) ?>개 · 완료 <?= money($bk['SYNCED']) ?>개</div></div>
+      <form method="post" style="margin-left:auto;display:flex;gap:8px"
+            onsubmit="return confirm(this.act.value === 'nas_key_new' ? '새 열쇠를 만들면 예전 열쇠는 바로 끊깁니다. NAS 스크립트도 새로 넣어야 합니다. 계속할까요?' : 'NAS 백업을 끊을까요?');">
+        <?= csrf_field() ?>
+        <input type="hidden" name="act" value="nas_key_new">
+        <button class="btn pri" onclick="this.form.act.value='nas_key_new'"><?= $nasKey ? '열쇠 새로 만들기' : '백업 열쇠 만들기' ?></button>
+        <?php if ($nasKey): ?>
+          <button class="btn" onclick="this.form.act.value='nas_key_revoke'">끊기</button>
+        <?php endif; ?>
+      </form>
+    </div>
+  </div>
+  <?php if ($nasOnce !== null): ?>
+  <div class="cb" style="border-top:1px solid var(--line)">
+    <div class="msg err" style="margin-bottom:10px">열쇠가 들어간 스크립트입니다. <b>지금 복사해 NAS 에 넣으세요 — 이 화면을 벗어나면 다시 볼 수 없습니다.</b>
+      남에게 보내지 마세요 (서류를 받을 수 있는 열쇠입니다).</div>
+    <textarea id="nas-script" rows="14" readonly style="font-family:ui-monospace,Consolas,monospace;font-size:12px;white-space:pre"><?= h($nasScript) ?></textarea>
+    <div style="margin-top:8px"><button type="button" class="btn sm" onclick="var t=document.getElementById('nas-script');t.select();navigator.clipboard&&navigator.clipboard.writeText(t.value);this.textContent='복사했습니다'">스크립트 복사</button></div>
+  </div>
+  <?php endif; ?>
+  <div class="cb" style="border-top:1px solid var(--line2);font-size:12px;color:var(--ink2);line-height:1.9">
+    <b>NAS 에 넣는 법 (시놀로지, 한 번만)</b><br>
+    1. 위 <b>백업 열쇠 만들기</b> → 나온 스크립트 복사<br>
+    2. DSM <b>제어판 → 작업 스케줄러 → 생성 → 예약된 작업 → 사용자 정의 스크립트</b><br>
+    3. 사용자: 저장할 공유폴더에 쓸 수 있는 계정 · 일정: 매일 새벽 3시 · <b>작업 설정</b> 칸에 스크립트 붙여넣기<br>
+    4. 스크립트의 <code>DEST=</code> 를 서류를 둘 공유폴더 경로로 (예: <code>/volume1/GOODPOST/ERP서류</code>)<br>
+    5. 만든 작업을 골라 <b>실행</b> 을 한 번 눌러 보면, 이 화면의 "NAS 가 마지막으로 온 때" 와 백업 완료 수가 바뀝니다<br>
+    NAS 에는 <code>사업자/연/월/AWB_거래처/번호_종류_파일이름</code> 으로 쌓이고, 받은 뒤 지문(SHA-256)을 맞춰 본 것만 완료로 표시합니다.
+  </div>
 </div>
 
 <div class="card">
@@ -349,10 +468,8 @@ $gb = static fn($b) => $b > 0 ? number_format($b / 1073741824, 1) . ' GB' : '-';
   <div class="cb" style="font-size:12px;color:var(--ink2);line-height:1.9">
     · 파일 업로드가 <b>웹 요청 안에서</b> 일어납니다. 원본이 NAS 면 NAS 가 잠깐 안 붙는 동안
       <b>업로드 자체가 실패</b>합니다. 그래서 원본은 이 서버 폴더로 두고, NAS 는 백업으로 둡니다.<br>
-    · 백업은 웹 요청과 따로 도는 동기화가 <code>documents</code> 를 훑어
-      아직 안 올라간 파일만 보냅니다. 실패하면 다음 회차에 다시 시도합니다.<br>
-    · NAS 가 ipDISK/DDNS 로 <b>외부에 열려 있으므로</b>, 이 서버에서 붙는 건 됩니다.
-      다만 <b>그 포트가 인터넷 전체에 열려 있다면</b> 접속 허용 IP 를 이 호스팅 주소로 좁히는 게 좋습니다.<br>
+    · 백업은 <b>NAS 가 가져가는 방식</b>입니다(위 NAS 자동 백업). NAS 가 밤마다 아직 안 가져간 서류만 받고,
+      실패한 것은 다음 날 다시 받습니다. NAS 쪽 포트를 인터넷에 열 필요가 없습니다.<br>
     · <b>스캔 원본이 진짜 자료입니다.</b> DB 가 날아가도 파일이 남아 있으면 되살릴 수 있고,
       반대는 안 됩니다. 백업은 문서 쪽을 먼저 챙기세요.
   </div>

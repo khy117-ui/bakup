@@ -202,12 +202,26 @@ function delete_request_pending(): int
 /** 매출전표 관련서류용 '기타 서류' 종류 (없으면 추가) */
 function schema_upgrade_docs(): void
 {
-    if (!empty($_SESSION['schema_docs_v1'])) { return; }
+    if (!empty($_SESSION['schema_docs_v2'])) { return; }
     try {
         db()->exec("INSERT INTO document_types (code, name, sort_order)
                     SELECT 'ETC', '기타 서류', 99 FROM DUAL
                      WHERE NOT EXISTS (SELECT 1 FROM document_types WHERE code = 'ETC')");
-        $_SESSION['schema_docs_v1'] = 1;
+        // NAS 가 서류를 가져갈 때 쓰는 열쇠 — 해시만 저장, 원문은 만들 때 한 번만 보여줌
+        db()->exec("CREATE TABLE IF NOT EXISTS backup_keys (
+                      id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                      key_hash     CHAR(64)     NOT NULL,
+                      label        VARCHAR(100) NULL,
+                      created_by   BIGINT UNSIGNED NULL,
+                      created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      last_used_at DATETIME     NULL,
+                      last_ip      VARCHAR(45)  NULL,
+                      revoked_at   DATETIME     NULL,
+                      PRIMARY KEY (id),
+                      UNIQUE KEY uq_bk_hash (key_hash)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                      COMMENT='NAS 서류 백업 열쇠 (NAS 가 가져가는 방식)'");
+        $_SESSION['schema_docs_v2'] = 1;
     } catch (PDOException $e) {
         error_log('문서 종류 추가 실패: ' . $e->getMessage());
     }

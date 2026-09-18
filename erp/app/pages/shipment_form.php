@@ -578,8 +578,9 @@ layout_head($title, 'shipments');
         <td class="r tnum"><?= h($size) ?></td>
         <td class="tnum" style="font-size:12px"><?= h($d['created_at']) ?></td>
         <td><?= h($d['uploader'] ?? '-') ?></td>
-        <td class="c"><?= $d['backup_status'] === 'DONE'
-              ? '<span class="badge b-ok">완료</span>' : '<span class="badge b-warn">대기</span>' ?></td>
+        <td class="c"><?= $d['backup_status'] === 'SYNCED' ? '<span class="badge b-ok">완료</span>'
+              : ($d['backup_status'] === 'FAILED' ? '<span class="badge b-err">실패</span>'
+              : '<span class="badge b-warn">대기</span>') ?></td>
         <td class="c">
           <a class="btn sm" href="?p=file_download&amp;id=<?= (int)$d['id'] ?>">받기</a>
           <?php if ($canDoc): ?>
