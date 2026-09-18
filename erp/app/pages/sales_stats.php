@@ -302,16 +302,35 @@ function ss_period_bar(array $base, string $from, string $to): void
         $on = $f === $from && $t === $to;
         return '<a class="btn sm' . ($on ? ' pri' : '') . '" href="' . h($link($f, $t, ['qy' => $y])) . '">' . h($label) . '</a>';
     };
-    $out = '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">';
+    // 휴대폰(900px 이하)에서는 1~12월 버튼을 접어 두고 [월 선택 ▾] 로 펼칩니다. PC 는 늘 펼침
+    $curMonth = '';
+    $months = '';
+    for ($m = 1; $m <= 12; $m++) {
+        $f = sprintf('%04d-%02d-01', $y, $m);
+        $t = date('Y-m-t', strtotime($f));
+        if ($f === $from && $t === $to) { $curMonth = $m . '월'; }
+        $months .= $btn($m . '월', $f, $t);
+    }
+    $out = '<style>
+      .ss-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+      .ss-mtoggle{display:none}
+      .ss-months{display:contents}
+      @media (max-width:900px){
+        .ss-mtoggle{display:inline-flex}
+        .ss-months{display:none;width:100%;margin-top:6px}
+        .ss-months.open{display:flex}
+      }</style>';
+    $out .= '<div class="ss-row">';
     $out .= '<a class="btn sm" title="' . ($y - 1) . '년" href="' . h($link($from, $to, ['qy' => $y - 1])) . '">◀</a>'
           . '<b class="tnum" style="min-width:52px;text-align:center">' . $y . '년</b>'
           . '<a class="btn sm" title="' . ($y + 1) . '년" href="' . h($link($from, $to, ['qy' => $y + 1])) . '">▶</a>'
-          . '<span style="width:6px"></span>';
-    for ($m = 1; $m <= 12; $m++) {
-        $f = sprintf('%04d-%02d-01', $y, $m);
-        $out .= $btn($m . '월', $f, date('Y-m-t', strtotime($f)));
-    }
-    $out .= '</div><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">';
+          . '<button type="button" class="btn sm ss-mtoggle' . ($curMonth !== '' ? ' pri' : '') . '" aria-expanded="false"'
+          . ' onclick="var m=this.parentNode.querySelector(\'.ss-months\'),o=m.classList.toggle(\'open\');'
+          . 'this.setAttribute(\'aria-expanded\',o);this.querySelector(\'i\').textContent=o?\'▴\':\'▾\'">'
+          . h($curMonth !== '' ? $curMonth : '월 선택') . '&nbsp;<i style="font-style:normal">▾</i></button>'
+          . '<span style="width:6px"></span>'
+          . '<div class="ss-row ss-months">' . $months . '</div>';
+    $out .= '</div><div class="ss-row" style="margin-top:6px">';
     for ($q = 1; $q <= 4; $q++) {
         $f = sprintf('%04d-%02d-01', $y, $q * 3 - 2);
         $out .= $btn($q . '분기', $f, date('Y-m-t', strtotime(sprintf('%04d-%02d-01', $y, $q * 3))));
@@ -333,7 +352,7 @@ function ss_filter_fields(): void
     <div class="fw w2"><label for="fkw">검색어</label>
       <input type="text" id="fkw" name="kw" value="<?= h($fKw) ?>" placeholder="거래처명 · 거래처코드 · AWB"></div>
     <div class="fw w2"><label for="fcar">운송사</label>
-      <select id="fcar" name="carrier_id" data-search>
+      <select id="fcar" name="carrier_id" data-search="운송사 코드 또는 이름으로 검색">
         <option value="">전체</option>
         <?php foreach ($carrierList as $ca): ?>
           <option value="<?= (int)$ca['id'] ?>"<?= $fCarrier === (int)$ca['id'] ? ' selected' : '' ?>>
