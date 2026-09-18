@@ -56,18 +56,18 @@
     sum();
   }
 
-  /* 국제특송지역표 검색 */
+  /* 국제특송지역표 검색 (표는 rates.js 가 엑셀에서 그린 뒤 채워짐) */
   var zoneInput = document.getElementById('zone-search');
   if (zoneInput) {
-    var rows = document.querySelectorAll('#zone-table tbody tr');
     var filter = function () {
       var q = zoneInput.value.trim().toLowerCase();
-      rows.forEach(function (tr) {
+      document.querySelectorAll('#zone-table tbody tr').forEach(function (tr) {
         var name = tr.cells[0].textContent.toLowerCase();
         tr.style.display = (!q || name.indexOf(q) !== -1) ? '' : 'none';
       });
     };
     zoneInput.addEventListener('input', filter);
+    document.addEventListener('rates:rendered', filter);
     var zoneForm = zoneInput.closest('form');
     if (zoneForm) zoneForm.addEventListener('submit', function (e) { e.preventDefault(); filter(); });
   }
