@@ -37,6 +37,8 @@ $in = [
     'remark' => '', 'sales_team' => '', 'sales_rep' => '', 'status' => 'CONFIRMED',
     // AWB 번호 — auto 저장할 때 자동 부여 / manual 직접 입력 (운송사 번호 등)
     'awb_mode' => 'auto', 'awb_no' => '',
+    // 매입원가 = 운송사 매입가(불러온 값) + 추가 매입가. 둘 다 purchases 에 한 줄씩 남습니다
+    'cost_base' => '', 'cost_extra' => '', 'cost_extra_memo' => '',
 ];
 $lines = [];
 for ($i = 0; $i < $MAXLINE; $i++) {
@@ -80,6 +82,33 @@ if ($id > 0) {
     }
 }
 
+// ---------------------------------------------------------------- 매입원가 (purchases)
+//   base  : 운송사 매입가 — charge_type AIR_FREIGHT 첫 줄 (옛 시스템 TSAMOUNT 가 여기로 이관됨)
+//   extra : 추가 매입가   — charge_type EXTRA
+//   other : 매입관리 화면에서 따로 넣은 나머지 (여기서는 합계만 보여줌)
+//   이미 출금으로 지급된 줄은 잠급니다 — 금액을 바꾸면 지급 기록과 어긋납니다
+$pur = ['base' => null, 'extra' => null, 'other' => 0.0];
+if ($id > 0) {
+    $st = db()->prepare('SELECT id, charge_type, supply_amount, tax_type, remark, vendor_name, is_paid
+                           FROM purchases WHERE shipment_id = ? AND deleted_at IS NULL ORDER BY id');
+    $st->execute([$id]);
+    foreach ($st->fetchAll() as $p) {
+        $p['locked'] = (int)$p['is_paid'] === 1 || fin_purchase_paid((int)$p['id']) > 0;
+        if ($p['charge_type'] === 'AIR_FREIGHT' && $pur['base'] === null) {
+            $pur['base'] = $p;
+        } elseif ($p['charge_type'] === 'EXTRA' && $pur['extra'] === null) {
+            $pur['extra'] = $p;
+        } else {
+            $pur['other'] += (float)$p['supply_amount'];
+        }
+    }
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        $in['cost_base']  = $pur['base']  ? (string)(int)round((float)$pur['base']['supply_amount'])  : '';
+        $in['cost_extra'] = $pur['extra'] ? (string)(int)round((float)$pur['extra']['supply_amount']) : '';
+        $in['cost_extra_memo'] = $pur['extra'] ? (string)($pur['extra']['remark'] ?? '') : '';
+    }
+}
+
 /** 전표 한 건의 현재 상태를 한 줄로. 변경 전후 비교에 씁니다 */
 function snapshot(int $sid): string
 {
@@ -103,6 +132,10 @@ function snapshot(int $sid): string
                            (int)round((float)$r['supply_amount']), $r['tax_type']);
         $sum += (float)$r['supply_amount'] + (float)$r['tax_amount'];
     }
+    $st = db()->prepare('SELECT COALESCE(SUM(supply_amount), 0) FROM purchases
+                          WHERE shipment_id = ? AND deleted_at IS NULL');
+    $st->execute([$sid]);
+    $parts[] = '매입원가=' . number_format((float)$st->fetchColumn());
     return sprintf('AWB=%s %s %s %s 중량%s 거래처=%s 운송사=%s 합계=%s [%s]',
         $h['awb_no'] ?? '', $h['voucher_date'] ?? '', $h['trade_type'] ?? '', $h['status'] ?? '',
         $h['charge_weight'] ?? '-', $h['name_ko'] ?? '', $h['carrier'] ?? '',
@@ -207,6 +240,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
         }
     }
 
+    // 매입원가 — 숫자인지, 이미 지급된 줄을 바꾸려는 건 아닌지
+    if ($err === '') {
+        foreach (['cost_base' => '운송사 매입가', 'cost_extra' => '추가 매입가'] as $k => $label) {
+            $v = str_replace([',', ' '], '', (string)$in[$k]);
+            if ($v !== '' && (!is_numeric($v) || (float)$v < 0)) {
+                $err = $label . '는 0 이상 숫자로 적어 주세요.';
+                break;
+            }
+            $in[$k] = $v;
+        }
+        $in['cost_extra_memo'] = mb_substr(trim((string)$in['cost_extra_memo']), 0, 200);
+    }
+    if ($err === '') {
+        foreach (['base' => ['cost_base', '운송사 매입가'], 'extra' => ['cost_extra', '추가 매입가']] as $slot => [$k, $label]) {
+            $row = $pur[$slot];
+            if ($row && $row['locked'] && round(num($in[$k])) != round((float)$row['supply_amount'])) {
+                $err = $label . '는 이미 지급(출금)된 매입이라 여기서 바꿀 수 없습니다. 입출금 내역에서 먼저 정리하세요.';
+                break;
+            }
+        }
+    }
+
     if ($err === '') {
         $pdo = db();
         try {
@@ -290,6 +345,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
                 $ins->execute([$sid, $no, $l['charge_type'], $l['item_name'],
                                $supply, $supply, $l['tax_type'], $rate, $tax,
                                $supply + $tax]);
+            }
+
+            // 매입원가 — 운송사 매입가 · 추가 매입가를 purchases 에 한 줄씩. 0 이나 빈칸이면 그 줄을 내립니다
+            $carrierName = '';
+            foreach ($carriers as $c) { if ((int)$c['id'] === (int)$in['carrier_id']) { $carrierName = (string)$c['name']; } }
+            $costs = [
+                'base'  => ['AIR_FREIGHT', num($in['cost_base']),  $carrierName ?: '운송사', '매출전표에서 입력'],
+                'extra' => ['EXTRA',       num($in['cost_extra']), $in['cost_extra_memo'] !== '' ? mb_substr($in['cost_extra_memo'], 0, 100) : '추가매입',
+                            $in['cost_extra_memo'] !== '' ? $in['cost_extra_memo'] : '추가 매입'],
+            ];
+            foreach ($costs as $slot => [$ctype, $amt, $vendor, $memo]) {
+                $row = $pur[$slot];
+                if ($row && $row['locked']) {
+                    continue;   // 지급된 줄 — 위에서 금액이 그대로인 것만 통과시켰습니다
+                }
+                $amt = round($amt);
+                if ($row && $amt <= 0) {
+                    $pdo->prepare('UPDATE purchases SET deleted_at = NOW() WHERE id = ?')->execute([(int)$row['id']]);
+                } elseif ($row) {
+                    $tax = $row['tax_type'] === 'TAXABLE' ? round($amt * 0.1) : 0;
+                    $pdo->prepare('UPDATE purchases
+                                      SET supply_amount = ?, tax_amount = ?, total_amount = ?, carrier_id = ?,
+                                          vendor_name = ?, purchase_date = ?, remark = ?
+                                    WHERE id = ?')
+                        ->execute([$amt, $tax, $amt + $tax, (int)$in['carrier_id'] ?: null, $vendor,
+                                   $in['voucher_date'], $memo, (int)$row['id']]);
+                } elseif ($amt > 0) {
+                    $pdo->prepare('INSERT INTO purchases
+                                     (business_entity_id, shipment_id, vendor_name, carrier_id, purchase_date,
+                                      charge_type, supply_amount, tax_type, tax_amount, total_amount, remark)
+                                   VALUES (?,?,?,?,?,?,?,\'ZERO\',0,?,?)')
+                        ->execute([$eid, $sid, $vendor, (int)$in['carrier_id'] ?: null, $in['voucher_date'],
+                                   $ctype, $amt, $amt, $memo]);
+                }
             }
 
             $after = snapshot($sid);
@@ -483,6 +572,59 @@ layout_head($title, 'shipments');
   <div class="pager"><span>비어 있는 줄은 저장하지 않습니다. VAT 는 과세 항목에만 10% 로 계산됩니다.
     <?= $id > 0 ? '수정 시 기존 항목을 지우고 다시 넣습니다 — 지워진 내용은 이력에 남습니다.' : '' ?></span></div>
 </div>
+
+<div class="card" id="cost-card">
+  <div class="ch">매입원가 <span style="font-weight:400;color:var(--ink3)">운송사 매입가 + 추가 매입가 = 매입원가 → 손익에 바로 반영</span></div>
+  <div class="cb f" style="align-items:flex-end">
+    <?php $bLock = $pur['base'] && $pur['base']['locked']; $xLock = $pur['extra'] && $pur['extra']['locked']; ?>
+    <div class="fw w2"><label for="cost_base">운송사 매입가 <?= $id > 0 && $pur['base'] ? '(불러온 값)' : '' ?></label>
+      <input type="text" id="cost_base" name="cost_base" class="tnum cost" inputmode="numeric" style="text-align:right"
+             value="<?= h($in['cost_base']) ?>" placeholder="0"<?= $bLock ? ' readonly' : '' ?>>
+      <?php if ($bLock): ?><small style="color:var(--warn-fg)">지급된 매입 — 입출금에서만 정리</small><?php endif; ?></div>
+    <div class="fw w2"><label for="cost_extra">추가 매입가</label>
+      <input type="text" id="cost_extra" name="cost_extra" class="tnum cost" inputmode="numeric" style="text-align:right"
+             value="<?= h($in['cost_extra']) ?>" placeholder="0"<?= $xLock ? ' readonly' : '' ?>>
+      <?php if ($xLock): ?><small style="color:var(--warn-fg)">지급된 매입 — 입출금에서만 정리</small><?php endif; ?></div>
+    <div class="fw gr" style="min-width:200px"><label for="cost_extra_memo">추가 매입 내용</label>
+      <input type="text" id="cost_extra_memo" name="cost_extra_memo" maxlength="200"
+             value="<?= h($in['cost_extra_memo']) ?>" placeholder="예) 픽업비 · 통관수수료 · 포장비"></div>
+  </div>
+  <div class="cb" style="border-top:1px solid var(--line2)">
+    <div class="kpis" style="gap:10px">
+      <div class="kpi"><div class="lab">매출 공급가</div><div class="val tnum" id="k-rev">0</div></div>
+      <div class="kpi"><div class="lab">매입원가</div><div class="val tnum" id="k-cost">0</div>
+        <div class="sub" id="k-cost-sub"><?= $pur['other'] > 0 ? '매입관리에서 넣은 ' . money($pur['other']) . '원 포함' : '운송사 + 추가' ?></div></div>
+      <div class="kpi"><div class="lab">이익</div><div class="val tnum" id="k-profit">0</div>
+        <div class="sub" id="k-rate">이익률 -</div></div>
+    </div>
+    <div style="font-size:11.5px;color:var(--ink3);margin-top:6px">
+      매입은 부가세 빼고 공급가로 적습니다. 비우거나 0 으로 두면 그 매입 줄을 내립니다.
+      세금계산서 · 지급은 매입관리 · 출금 화면에서 합니다.</div>
+  </div>
+</div>
+<script>
+(function () {
+  var OTHER = <?= json_encode((float)$pur['other']) ?>;
+  function n(v) { var t = String(v || '').replace(/[,\s]/g, ''); return t === '' || isNaN(Number(t)) ? 0 : Number(t); }
+  function fmt(v) { return Math.round(v).toLocaleString('ko-KR'); }
+  function calc() {
+    var rev = 0;
+    document.querySelectorAll('input[name$="[supply_amount]"]').forEach(function (i) { rev += n(i.value); });
+    var cost = n(document.getElementById('cost_base').value) + n(document.getElementById('cost_extra').value) + OTHER;
+    var profit = rev - cost;
+    document.getElementById('k-rev').textContent = fmt(rev);
+    document.getElementById('k-cost').textContent = fmt(cost);
+    var p = document.getElementById('k-profit');
+    p.textContent = fmt(profit);
+    p.style.color = profit < 0 ? 'var(--err-fg)' : '';
+    document.getElementById('k-rate').textContent = rev > 0 ? '이익률 ' + (profit / rev * 100).toFixed(1) + '%' : '이익률 -';
+  }
+  document.addEventListener('input', function (e) {
+    if (e.target.matches('.cost, input[name$="[supply_amount]"]')) { calc(); }
+  });
+  calc();
+})();
+</script>
 
 <?php if ($id > 0): ?>
 <div class="card">

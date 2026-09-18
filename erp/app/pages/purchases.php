@@ -6,7 +6,7 @@ $err = '';
 
 $CHARGE = ['AIR_FREIGHT' => '특송운임', 'DOMESTIC' => '국내운송',
            'HANDLING' => '취급수수료', 'CUSTOMS' => '통관료',
-           'STORAGE' => '창고료', 'OTHER' => '기타'];
+           'STORAGE' => '창고료', 'EXTRA' => '추가매입', 'OTHER' => '기타'];
 $TAX    = ['ZERO' => 0.0, 'TAXABLE' => 10.0, 'EXEMPT' => 0.0];
 
 $carriers = db()->query('SELECT id, code FROM carriers WHERE is_active = 1
