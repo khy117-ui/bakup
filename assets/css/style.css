@@ -376,6 +376,7 @@ ul, ol { padding: 0; list-style: none; }
 }
 @media (max-width: 900px) {
   .site-header .container { height: 64px; gap: 12px; }
+  .header-tools { margin-left: auto; gap: 10px; }
   .logo img { height: 32px; }
   .nav-toggle { display: inline-flex; }
   .header-tools .btn { display: none; }
