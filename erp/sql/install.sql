@@ -1476,7 +1476,7 @@ INSERT INTO expense_categories (code, name, is_cogs, default_tax, sort_order) VA
   ('LABOR',     '인건비',        0, 'EXEMPT',   9),
   ('TAX',       '세금/공과금',   0, 'EXEMPT',  10),
   ('ETC',       '기타',          0, 'TAXABLE', 99)
-ON DUPLICATE KEY UPDATE name = VALUES(name);
+ON DUPLICATE KEY UPDATE name_ko = VALUES(name_ko);
 
 
 -- ============================================================================
@@ -1906,16 +1906,16 @@ WHERE f.status = 'CONFIRMED' AND f.txn_type = 'OUT'
 --      조회 / 등록 / 수정 / 취소(역분개) 를 따로 줍니다. 특히 취소는 좁게.
 -- ============================================================================
 
-INSERT INTO permissions (code, name, category, sort_order) VALUES
-  ('CASH_VIEW',     '입출금 조회',      '입출금', 1),
-  ('CASH_WRITE',    '입출금 등록',      '입출금', 2),
-  ('CASH_EDIT',     '입출금 수정',      '입출금', 3),
-  ('CASH_CANCEL',   '입출금 취소·역분개','입출금', 4),
-  ('LEDGER_VIEW',   '거래처원장 조회',  '입출금', 5),
-  ('ACCOUNT_MANAGE','계좌·비용분류 관리','입출금', 6),
-  ('BANK_IMPORT',   '은행내역 가져오기','입출금', 7),
-  ('PAYABLE_VIEW',  '미지급금 조회',    '입출금', 8)
-ON DUPLICATE KEY UPDATE name = VALUES(name);
+INSERT INTO permissions (code, group_ko, name_ko) VALUES
+  ('CASH_VIEW', '입출금', '입출금 조회'),
+  ('CASH_WRITE', '입출금', '입출금 등록'),
+  ('CASH_EDIT', '입출금', '입출금 수정'),
+  ('CASH_CANCEL', '입출금', '입출금 취소·역분개'),
+  ('LEDGER_VIEW', '입출금', '거래처원장 조회'),
+  ('ACCOUNT_MANAGE', '입출금', '계좌·비용분류 관리'),
+  ('BANK_IMPORT', '입출금', '은행내역 가져오기'),
+  ('PAYABLE_VIEW', '입출금', '미지급금 조회')
+ON DUPLICATE KEY UPDATE name_ko = VALUES(name_ko);
 
 -- 관리자·경영진·회계 : 전부
 INSERT INTO role_permissions (role_code, permission_id)
@@ -1924,7 +1924,7 @@ FROM (SELECT 'SUPER_ADMIN' AS role_code UNION ALL
       SELECT 'MANAGER' UNION ALL
       SELECT 'ACCOUNTING') r
 CROSS JOIN permissions p
-WHERE p.category = '입출금'
+WHERE p.group_ko = '입출금'
 ON DUPLICATE KEY UPDATE role_code = VALUES(role_code);
 
 -- 영업 : 조회만. 남의 거래처 입금을 손대지 못합니다
@@ -2364,9 +2364,9 @@ WHERE f.status = 'CONFIRMED' AND f.txn_type = 'OUT'
 --  8. 권한
 -- ============================================================================
 
-INSERT INTO permissions (code, name, category, sort_order) VALUES
-  ('OPENING_MANAGE', '기초잔액 관리', '입출금', 9)
-ON DUPLICATE KEY UPDATE name = VALUES(name);
+INSERT INTO permissions (code, group_ko, name_ko) VALUES
+  ('OPENING_MANAGE', '입출금', '기초잔액 관리')
+ON DUPLICATE KEY UPDATE name_ko = VALUES(name_ko);
 
 INSERT INTO role_permissions (role_code, permission_id)
 SELECT r.role_code, p.id
