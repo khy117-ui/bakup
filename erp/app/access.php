@@ -38,6 +38,7 @@ const ROUTE_PERMS = [
 
     'shipments'        => ['sales.voucher.read', 'sales.voucher.write'],
     'shipment_form'    => ['sales.voucher.read', 'sales.voucher.write'],
+    'web_pickups'      => ['sales.voucher.read', 'sales.voucher.write'],   // 홈페이지 온라인 접수
     'awb_list'         => ['logi.awb.read', 'logi.awb.write'],
     'awb_label'        => ['logi.awb.read', 'logi.awb.write'],
     'tracking'         => ['logi.tracking.read', 'logi.tracking.write'],
@@ -284,6 +285,44 @@ function schema_upgrade_filestore(): void
         $_SESSION['schema_fs_v1'] = 1;
     } catch (PDOException $e) {
         error_log('파일 저장소 표 준비 실패: ' . $e->getMessage());
+    }
+}
+
+/**
+ * 알림 (메일 · 카톡) 설정 자리 — 홈페이지 온라인 접수 알림 등 (app/notify.php)
+ * 비밀번호 · 키는 사용자가 환경설정에서 직접 넣습니다.
+ */
+function schema_upgrade_notify(): void
+{
+    if (!empty($_SESSION['schema_notify_v1'])) { return; }
+    $rows = [
+        ['notify_staff_emails', 'info@good-post.co.kr', '담당자 받는 메일', '온라인 접수가 들어오면 알림 받을 메일 (여러 개는 쉼표로)', 'text', null, 1],
+        ['notify_staff_phones', null, '담당자 휴대폰', '온라인 접수 카톡(알림톡) · 문자 받을 번호 (여러 개는 쉼표로)', 'text', null, 2],
+        ['notify_customer_kakao', '예', '고객에게도 카톡 · 문자', '예 = 접수 · 확인 때 고객 휴대폰으로도 보냄 (이메일은 적은 경우 항상 보냄)', 'select', '예,아니오', 3],
+        ['smtp_host', 'smtp.gmail.com', '메일 서버(SMTP) 주소', '예) smtp.gmail.com · smtp.naver.com · smtp.daum.net · 회사 메일 서버', 'text', null, 10],
+        ['smtp_port', '465', '메일 서버 포트', '465 = SSL (권장) · 587 = STARTTLS', 'text', null, 11],
+        ['smtp_user', null, '메일 계정', '보내는 메일 계정 (보통 메일 주소 전체)', 'text', null, 12],
+        ['smtp_pass', null, '메일 비밀번호 (앱 비밀번호)', '구글 · 네이버는 2단계 인증 후 발급하는 앱 비밀번호', 'secret', null, 13],
+        ['smtp_from', null, '보내는 메일 주소', '비우면 메일 계정으로 보냄', 'text', null, 14],
+        ['smtp_from_name', '굿배송항공 GOODPOST', '보내는 사람 이름', '받는 사람 메일함에 보이는 이름', 'text', null, 15],
+        ['solapi_api_key', null, 'SOLAPI API Key', 'solapi.com 콘솔 → API Key 관리 (카톡 알림톡 · 문자 발송)', 'text', null, 20],
+        ['solapi_api_secret', null, 'SOLAPI API Secret', '같은 화면의 API Secret', 'secret', null, 21],
+        ['solapi_sender', '02-6929-0666', '보내는 번호 (발신번호)', 'SOLAPI 에 등록 · 인증한 회사 번호', 'text', null, 22],
+        ['solapi_pfid', null, '카카오 채널 pfId', 'SOLAPI 에 연결한 카카오톡 채널 ID (KA01PF…). 비우면 문자로만', 'text', null, 23],
+        ['solapi_tpl_pickup_staff', null, '알림톡 템플릿 — 담당자 새 접수', '승인된 템플릿 ID (KA01TP…). 비우면 문자', 'text', null, 24],
+        ['solapi_tpl_pickup_received', null, '알림톡 템플릿 — 고객 접수 안내', '승인된 템플릿 ID. 비우면 문자', 'text', null, 25],
+        ['solapi_tpl_pickup_confirm', null, '알림톡 템플릿 — 고객 확인 안내', '승인된 템플릿 ID. 비우면 문자', 'text', null, 26],
+    ];
+    try {
+        $ins = db()->prepare("INSERT IGNORE INTO app_settings
+                                (setting_key, setting_val, group_ko, label_ko, help_ko, input_type, options_csv, sort_order)
+                              VALUES (?, ?, '알림 (메일 · 카톡)', ?, ?, ?, ?, ?)");
+        foreach ($rows as $r) { $ins->execute($r); }
+        require_once APP_DIR . '/pickups.php';
+        pickup_ensure_table(db());
+        $_SESSION['schema_notify_v1'] = 1;
+    } catch (PDOException $e) {
+        error_log('알림 설정 자리 추가 실패: ' . $e->getMessage());
     }
 }
 

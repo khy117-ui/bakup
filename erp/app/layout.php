@@ -20,6 +20,7 @@ function layout_head(string $title, string $active): void
             ['rate_calculator', '단가계산기', true],
         ]],
         ['물류관리', [
+            ['web_pickups', '온라인 접수', true],
             ['shipments', '매출전표', true],
             ['awb_list', 'AWB 관리', true],
             ['tracking', '화물추적', true],
@@ -59,6 +60,15 @@ function layout_head(string $title, string $active): void
     ];
     // 승인할 수 있는 사람에게만 대기 건수를 보여줍니다
     $pending = (function_exists('delete_request_pending') && can('sys.delete.approve')) ? delete_request_pending() : 0;
+    // 홈페이지 온라인 접수 중 아직 확인 안 한 것
+    $newPickups = 0;
+    if (function_exists('route_can_view') && route_can_view('web_pickups')) {
+        try {
+            $newPickups = (int)db()->query("SELECT COUNT(*) FROM web_pickups WHERE status = 'NEW'")->fetchColumn();
+        } catch (PDOException $e) {
+            $newPickups = 0;
+        }
+    }
     ?><!doctype html>
 <html lang="ko">
 <head>
@@ -85,7 +95,8 @@ function layout_head(string $title, string $active): void
         <?php foreach ($items as [$key, $label, $live]): ?>
           <?php if ($live): ?>
             <a class="item<?= $active === $key ? ' on' : '' ?>" href="?p=<?= h($key) ?>"><?= h($label) ?><?php
-              if ($key === 'delete_requests' && $pending > 0): ?><span class="badge b-warn" style="margin-left:auto;height:18px"><?= $pending ?></span><?php endif; ?></a>
+              if ($key === 'delete_requests' && $pending > 0): ?><span class="badge b-warn" style="margin-left:auto;height:18px"><?= $pending ?></span><?php endif;
+              if ($key === 'web_pickups' && $newPickups > 0): ?><span class="badge b-warn" style="margin-left:auto;height:18px"><?= $newPickups ?></span><?php endif; ?></a>
           <?php else: ?>
             <span class="item"><?= h($label) ?></span>
           <?php endif; ?>

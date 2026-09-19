@@ -61,6 +61,7 @@ $routes = [
     'my_account'       => 'my_account.php',
     'destinations'     => 'destinations.php',
     'track_tick'       => 'track_tick.php',
+    'web_pickups'      => 'web_pickups.php',
 ];
 
 if ($page === 'logout') {
@@ -80,6 +81,7 @@ schema_upgrade_docs();
 schema_upgrade_dest();
 schema_upgrade_epost();
 schema_upgrade_filestore();
+schema_upgrade_notify();
 
 if ($page !== 'login') {
     $ADMIN = require_login();
