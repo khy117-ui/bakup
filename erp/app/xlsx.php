@@ -5,7 +5,8 @@ declare(strict_types=1);
 if (!defined('APP_DIR')) { http_response_code(403); exit('Forbidden'); }
 
 /**
- * 아주 작은 XLSX 만들기 — 시트 하나, 모든 칸을 '텍스트'로 (홈택스 양식이 텍스트 칸이라 '01' 같은 앞자리 0 이 살아야 함).
+ * 아주 작은 XLSX 만들기 — 시트 하나. 문자열은 '텍스트' 칸으로 (홈택스 양식이 텍스트 칸이라 '01' 같은 앞자리 0 이 살아야 함),
+ * PHP int · float 로 넘긴 값은 숫자 칸(#,##0)으로 — 엑셀에서 바로 더할 수 있게.
  * 서버에 ZipArchive 가 없어도 되게 압축 없이(stored) ZIP 을 직접 씁니다.
  *
  *   $bin = xlsx_build('시트이름', [['A1', 'B1'], ['A2', 'B2']], [20, 12]);
@@ -66,6 +67,10 @@ function xlsx_build(string $sheetName, array $rows, array $widths = [], array $w
     foreach (array_values($rows) as $r => $cells) {
         $rowXml = '';
         foreach (array_values($cells) as $c => $v) {
+            if (is_int($v) || is_float($v)) {
+                $rowXml .= '<c r="' . xlsx_col($c) . ($r + 1) . '" s="3"><v>' . (is_float($v) ? rtrim(rtrim(sprintf('%.4F', $v), '0'), '.') : $v) . '</v></c>';
+                continue;
+            }
             $v = (string)($v ?? '');
             if ($v === '') { continue; }
             if (!isset($sst[$v])) {
@@ -108,16 +113,17 @@ function xlsx_build(string $sheetName, array $rows, array $widths = [], array $w
             . '<Relationship Id="rId2" Type="' . $rel . '/styles" Target="styles.xml"/>'
             . '<Relationship Id="rId3" Type="' . $rel . '/sharedStrings" Target="sharedStrings.xml"/>'
             . '</Relationships>',
-        // 0 기본 · 1 텍스트(@) · 2 텍스트 + 줄바꿈
+        // 0 기본 · 1 텍스트(@) · 2 텍스트 + 줄바꿈 · 3 숫자 #,##0
         'xl/styles.xml' => $x . '<styleSheet ' . $ns . '>'
             . '<fonts count="1"><font><sz val="10"/><name val="맑은 고딕"/></font></fonts>'
             . '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
             . '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
             . '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-            . '<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+            . '<cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
             . '<xf numFmtId="49" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
             . '<xf numFmtId="49" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1">'
-            . '<alignment wrapText="1" vertical="top"/></xf></cellXfs>'
+            . '<alignment wrapText="1" vertical="top"/></xf>'
+            . '<xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs>'
             . '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
             . '</styleSheet>',
         'xl/sharedStrings.xml' => $x . '<sst ' . $ns . ' count="' . $count . '" uniqueCount="' . count($sst) . '">'

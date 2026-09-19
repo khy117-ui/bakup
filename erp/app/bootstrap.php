@@ -139,6 +139,26 @@ function doc_protect_root(string $root): void
     }
 }
 
+/**
+ * 사업자 직인 이미지 — 공개 저장소(GitHub)에 두지 않고 서버 보관 폴더(documents/stamps, 웹 직접 접근 차단)에만 둡니다.
+ * 문서 화면에는 파일 주소가 아니라 data: 로 바로 넣어, 로그인한 화면에서만 보입니다.
+ */
+function entity_stamp_dir(): string
+{
+    return storage_root() . DIRECTORY_SEPARATOR . 'stamps';
+}
+
+function entity_stamp_data_uri(?array $be): ?string
+{
+    $rel = (string)($be['stamp_path'] ?? '');
+    if (!preg_match('/^stamps\/[A-Za-z0-9_-]+\.(png|jpg|jpeg|webp)$/', $rel)) { return null; }
+    $full = storage_root() . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $rel);
+    if (!is_file($full)) { return null; }
+    $ext  = strtolower(pathinfo($full, PATHINFO_EXTENSION));
+    $mime = ['png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'webp' => 'image/webp'][$ext];
+    return 'data:' . $mime . ';base64,' . base64_encode((string)file_get_contents($full));
+}
+
 /** <input type=file name=x[] multiple> 를 파일 하나씩의 배열로 */
 function uploaded_files(string $field): array
 {
