@@ -18,3 +18,22 @@ RedirectMatch 404 /(app|tools|storage|sql)(/|$)
     Require all denied
   </IfModule>
 </Files>
+
+# PHP 한도 · 오류 표시 — 이 서버는 Apache 모듈(mod_php)이라 .user.ini 를 안 읽습니다 (2026-09-19 확인: 한도 64MB 그대로)
+# 모듈이 없는 서버(PHP-FPM)에서는 이 묶음이 통째로 무시되고 .user.ini 가 쓰입니다
+<IfModule mod_php.c>
+  php_value upload_max_filesize 100M
+  php_value post_max_size 210M
+  php_value max_file_uploads 30
+  php_value max_execution_time 300
+  php_value max_input_time 300
+  php_flag display_errors off
+</IfModule>
+<IfModule mod_php8.c>
+  php_value upload_max_filesize 100M
+  php_value post_max_size 210M
+  php_value max_file_uploads 30
+  php_value max_execution_time 300
+  php_value max_input_time 300
+  php_flag display_errors off
+</IfModule>

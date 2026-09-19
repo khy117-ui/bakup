@@ -88,6 +88,9 @@ const DELETE_ACTIONS = [
                                         'name_sql' => 'SELECT name FROM company_contacts WHERE id = ?']],
     'documents'        => ['remove' => ['label' => '문서 내리기', 'id_from' => 'post:id', 'reason' => '',
                                         'name_sql' => 'SELECT title FROM documents WHERE id = ?']],
+    // 매출전표 삭제 — 목록의 휴지통. 청구 · 입금 · 지급된 매입이 없을 때만 (shipments.php 에서 다시 확인)
+    'shipments'        => ['delete' => ['label' => '매출전표 삭제', 'id_from' => 'post:id', 'reason' => 'reason',
+                                        'name_sql' => 'SELECT awb_no FROM shipments WHERE id = ?']],
     'shipment_form'    => ['cancel' => ['label' => '매출전표 취소', 'id_from' => 'get:id', 'reason' => 'cancel_reason',
                                         'name_sql' => 'SELECT awb_no FROM shipments WHERE id = ?']],
     'invoice_view'     => ['cancel' => ['label' => '청구서 취소', 'id_from' => 'get:id', 'reason' => 'reason',

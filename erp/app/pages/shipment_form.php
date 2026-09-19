@@ -719,7 +719,7 @@ layout_head($title, 'shipments');
              accept=".<?= h(implode(',.', DOC_EXT)) ?>"></div>
   </div>
   <div class="cb" style="padding-top:0;font-size:11.5px;color:var(--ink3)">
-    전표를 저장할 때 같이 올라갑니다 (파일 하나 20MB 까지). 저장이 안 되면(입력 오류) 파일을 다시 골라 주세요.
+    전표를 저장할 때 같이 올라갑니다 (파일 하나 <?= DOC_MAX_LABEL ?> 까지). 저장이 안 되면(입력 오류) 파일을 다시 골라 주세요.
     올린 서류는 매일 밤 회사 NAS 로 백업됩니다.</div>
 </div>
 <?php endif; ?>

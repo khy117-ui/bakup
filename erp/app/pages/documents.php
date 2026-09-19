@@ -171,7 +171,7 @@ layout_head('문서보관함', 'documents');
       <button class="btn pri">올리기</button>
     </form>
     <div style="font-size:11.5px;color:var(--ink3);margin-top:8px">
-      20MB 까지 · <?= h(implode(', ', DOC_EXT)) ?> 만 올릴 수 있습니다.
+      <?= DOC_MAX_LABEL ?> 까지 · <?= h(implode(', ', DOC_EXT)) ?> 만 올릴 수 있습니다.
       파일은 <b>웹에서 직접 열 수 없는 위치</b>에 저장되고, 로그인한 사람만 이 화면을 통해 내려받습니다.
     </div>
   </div>

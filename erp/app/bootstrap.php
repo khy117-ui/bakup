@@ -42,6 +42,10 @@ if (is_file($localCfg)) {
     ];
 }
 
+// 운영 화면에 PHP 경고 · 경로가 그대로 찍히지 않게 (기록은 error_log 로)
+@ini_set('display_errors', '0');
+@ini_set('log_errors', '1');
+
 mb_internal_encoding('UTF-8');
 date_default_timezone_set('Asia/Seoul');
 
@@ -122,7 +126,8 @@ function storage_root(): string
 // 올릴 수 있는 확장자. 실행 가능한 형식은 넣지 않습니다
 const DOC_EXT = ['pdf', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'xlsx', 'xls', 'csv',
                  'docx', 'doc', 'pptx', 'ppt', 'hwp', 'hwpx', 'txt', 'zip'];
-const DOC_MAX = 20 * 1024 * 1024;   // 20MB
+const DOC_MAX = 100 * 1024 * 1024;   // 100MB — 서버 PHP 한도는 .htaccess (php_value) 에서 맞춤
+const DOC_MAX_LABEL = '100MB';
 
 /**
  * 보관 폴더를 웹에서 바로 못 열게 막습니다.
@@ -197,7 +202,7 @@ function doc_store_upload(array $f, int $eid, int $typeId, ?int $shipmentId = nu
             : '업로드 실패 (오류 ' . (int)($f['error'] ?? 0) . ')');
     }
     if (!is_uploaded_file((string)$f['tmp_name'])) { return $name . ': 정상적인 업로드가 아닙니다'; }
-    if ((int)$f['size'] > DOC_MAX) { return $name . ': 20MB 를 넘습니다'; }
+    if ((int)$f['size'] > DOC_MAX) { return $name . ': ' . DOC_MAX_LABEL . ' 를 넘습니다'; }
     $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
     if (!in_array($ext, DOC_EXT, true)) { return $name . ': 올릴 수 없는 형식 (허용: ' . implode(', ', DOC_EXT) . ')'; }
     if ($typeId <= 0) { return $name . ': 문서 종류를 고르세요'; }
