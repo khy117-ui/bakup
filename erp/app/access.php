@@ -18,6 +18,7 @@ const ROUTE_PERMS = [
     'search'           => [null, null],
     'my_account'       => [null, null],
     'track_tick'       => [null, null],   // 자동 화물추적 신호 — 로그인한 누구의 화면이든 뒤에서 부름
+    'live_feed'        => [null, null],   // 실시간 알림 신호 — 안에서 화면별 볼 권한을 다시 확인
     'delete_requests'  => [null, null],
 
     'companies'        => ['master.company.read', 'master.company.write'],

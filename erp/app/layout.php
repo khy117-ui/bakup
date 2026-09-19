@@ -69,6 +69,15 @@ function layout_head(string $title, string $active): void
             $newPickups = 0;
         }
     }
+    // 홈페이지 Q&A 중 답변 안 한 것
+    $qnaWait = 0;
+    if (function_exists('route_can_view') && route_can_view('boards')) {
+        try {
+            $qnaWait = (int)db()->query("SELECT COUNT(*) FROM board_post WHERE board = 'qna' AND answer IS NULL")->fetchColumn();
+        } catch (PDOException $e) {
+            $qnaWait = 0;
+        }
+    }
     ?><!doctype html>
 <html lang="ko">
 <head>
@@ -96,7 +105,8 @@ function layout_head(string $title, string $active): void
           <?php if ($live): ?>
             <a class="item<?= $active === $key ? ' on' : '' ?>" href="?p=<?= h($key) ?>"><?= h($label) ?><?php
               if ($key === 'delete_requests' && $pending > 0): ?><span class="badge b-warn" style="margin-left:auto;height:18px"><?= $pending ?></span><?php endif;
-              if ($key === 'web_pickups' && $newPickups > 0): ?><span class="badge b-warn" style="margin-left:auto;height:18px"><?= $newPickups ?></span><?php endif; ?></a>
+              if ($key === 'web_pickups'): ?><span class="badge b-warn" id="live-badge-pickups" style="margin-left:auto;height:18px<?= $newPickups > 0 ? '' : ';display:none' ?>"><?= $newPickups ?></span><?php endif;
+              if ($key === 'boards'): ?><span class="badge b-warn" id="live-badge-qna" title="답변 대기 Q&amp;A" style="margin-left:auto;height:18px<?= $qnaWait > 0 ? '' : ';display:none' ?>"><?= $qnaWait ?></span><?php endif; ?></a>
           <?php else: ?>
             <span class="item"><?= h($label) ?></span>
           <?php endif; ?>
@@ -156,6 +166,69 @@ document.querySelectorAll('.body table').forEach(function (t) {
 document.addEventListener('keydown', function (e) {
   if (e.key === 'Escape') document.body.classList.remove('nav-open');
 });
+// 실시간 알림 — 30초마다 새 온라인 접수 · Q&A 를 확인해 메뉴 숫자를 고치고, 새로 들어오면 오른쪽 아래에 알림
+(function () {
+  var KEY = 'gp_live_seen';
+  var seen = {};
+  try { seen = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { seen = {}; }
+  var box = null;
+  function toast(msg, url) {
+    if (!box) {
+      box = document.createElement('div');
+      box.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;max-width:340px';
+      document.body.appendChild(box);
+    }
+    var a = document.createElement('a');
+    a.href = url;
+    a.textContent = msg;
+    a.style.cssText = 'display:block;background:#0B4F6C;color:#fff;padding:12px 14px;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.18);font-size:13px;font-weight:600;text-decoration:none;line-height:1.5';
+    box.appendChild(a);
+    setTimeout(function () { a.remove(); }, 15000);
+    try {   // 짧은 알림음 (브라우저가 막으면 조용히 넘어감)
+      var C = window.AudioContext || window.webkitAudioContext, ctx = new C(), o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = 880; g.gain.value = 0.05; o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.18);
+    } catch (e) {}
+    try { if (window.Notification && Notification.permission === 'granted') { var n = new Notification('GOODPOST ERP', { body: msg }); n.onclick = function () { window.focus(); location.href = url; }; } } catch (e) {}
+  }
+  function badge(id, n) {
+    var b = document.getElementById(id);
+    if (b) { b.textContent = n; b.style.display = n > 0 ? '' : 'none'; }
+  }
+  function tick() {
+    fetch('?p=live_feed', { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d) return;
+        var first = !seen.init;
+        if (d.pickups) {
+          badge('live-badge-pickups', d.pickups['new']);
+          if (!first && d.pickups.max_id > (seen.p || 0)) {
+            d.pickups.items.filter(function (i) { return i.id > (seen.p || 0); }).forEach(function (i) {
+              toast('🚚 새 온라인 접수 ' + i.no + ' · ' + i.title, i.url);
+            });
+          }
+          seen.p = d.pickups.max_id;
+        }
+        if (d.qna) {
+          badge('live-badge-qna', d.qna.wait);
+          if (!first && d.qna.max_id > (seen.q || 0)) {
+            d.qna.items.filter(function (i) { return i.id > (seen.q || 0); }).forEach(function (i) {
+              toast('💬 새 Q&A 문의 · ' + i.title, i.url);
+            });
+          }
+          seen.q = d.qna.max_id;
+        }
+        seen.init = 1;
+        try { localStorage.setItem(KEY, JSON.stringify(seen)); } catch (e) {}
+        document.dispatchEvent(new CustomEvent('gp:live', { detail: d }));   // 대시보드가 목록을 다시 그림
+      })
+      .catch(function () {});
+  }
+  window.gpLiveTick = tick;
+  setTimeout(tick, 800);
+  setInterval(function () { if (!document.hidden) tick(); }, 30000);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) tick(); });
+})();
 // 자동 화물추적 — 이 브라우저에서 5분에 한 번 서버에 신호 (서버도 전체 5분에 한 번만 일함)
 (function () {
   var k = 'gp_track_tick', now = Date.now(), last = 0;

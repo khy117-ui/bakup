@@ -62,6 +62,7 @@ $routes = [
     'destinations'     => 'destinations.php',
     'track_tick'       => 'track_tick.php',
     'web_pickups'      => 'web_pickups.php',
+    'live_feed'        => 'live_feed.php',
 ];
 
 if ($page === 'logout') {

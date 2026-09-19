@@ -73,6 +73,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 flash('글을 올렸습니다. 홈페이지 ' . BOARD_NAMES[$bb] . '에 바로 보입니다.');
             }
             redirect('?p=boards&b=' . $bb . '&id=' . $id);
+        } elseif ($act === 'pin') {
+            // 목록 · 글 화면에서 바로 고정 / 해제
+            $id = (int)post('id');
+            $st = $pdo->prepare("SELECT id, board, title, pinned FROM board_post WHERE id = ? AND board IN ('notice','qna')");
+            $st->execute([$id]);
+            $row = $st->fetch();
+            if (!$row) { throw new RuntimeException('글을 찾을 수 없습니다.'); }
+            $to = (int)$row['pinned'] ? 0 : 1;
+            $pdo->prepare('UPDATE board_post SET pinned = ?, updated_at = NOW() WHERE id = ?')->execute([$to, $id]);
+            log_action('게시판', 'UPDATE', 'board_post', $id, (string)$row['title'], null, $to ? '맨 위 고정' : '고정 해제');
+            flash('"' . $row['title'] . '" ' . ($to ? '을 맨 위에 고정했습니다.' : '의 고정을 풀었습니다.') . ' 홈페이지에 바로 반영됩니다.');
+            $back = post('back') === 'view' ? '&id=' . $id : '';
+            redirect('?p=boards&b=' . $row['board'] . $back);
         } elseif ($act === 'answer') {
             $id = (int)post('id');
             $ans = trim((string)($_POST['answer'] ?? ''));
@@ -189,6 +202,9 @@ layout_head('홈페이지 게시판', 'boards');
     <span style="font-weight:400;color:var(--ink3)"><?= h($cur['writer']) ?> · <?= h(substr((string)$cur['created_at'], 0, 16)) ?> · 조회 <?= (int)$cur['views'] ?></span>
     <span style="margin-left:auto;display:flex;gap:6px">
     <?php if ($canEdit && in_array($cur['board'], ['notice', 'qna'], true)): ?>
+      <form method="post"><?= csrf_field() ?><input type="hidden" name="act" value="pin"><input type="hidden" name="id" value="<?= (int)$cur['id'] ?>">
+        <input type="hidden" name="back" value="view">
+        <button class="btn sm<?= $cur['pinned'] ? '' : ' pri' ?>">📌 <?= $cur['pinned'] ? '고정 해제' : '맨 위 고정' ?></button></form>
       <a class="btn sm" href="?p=boards&amp;b=<?= h($cur['board']) ?>&amp;id=<?= (int)$cur['id'] ?>&amp;edit=1">고치기</a>
       <form method="post" onsubmit="var r=prompt('삭제(휴지통으로) 사유를 적어 주세요.');if(!r||r.trim().length<2)return false;this.reason.value=r.trim();return true;">
         <?= csrf_field() ?><input type="hidden" name="act" value="hide"><input type="hidden" name="post_id" value="<?= (int)$cur['id'] ?>">
@@ -222,13 +238,20 @@ layout_head('홈페이지 게시판', 'boards');
     <div class="empty"><?= $b === 'trash' ? '휴지통이 비어 있습니다.' : '글이 없습니다.' ?></div>
   <?php else: ?>
   <table>
-    <thead><tr><th style="width:70px">번호</th><th>제목</th><th style="width:120px">작성자</th>
+    <thead><tr><?php if ($canEdit && $b !== 'trash'): ?><th class="c" style="width:78px" title="누르면 맨 위 고정 / 해제">고정</th><?php endif; ?>
+      <th style="width:70px">번호</th><th>제목</th><th style="width:120px">작성자</th>
       <th style="width:110px">날짜</th><th class="r" style="width:70px">조회</th>
       <?php if ($b !== 'notice'): ?><th class="c" style="width:90px">답변</th><?php endif; ?></tr></thead>
     <tbody>
     <?php foreach ($rows as $r): ?>
-      <tr<?= (int)$r['id'] === $pid ? ' style="background:#EEF6FA"' : '' ?>>
-        <td class="tnum"><?= $r['pinned'] ? '<span class="badge b-info">고정</span>' : (int)$r['id'] ?></td>
+      <tr style="<?= (int)$r['id'] === $pid ? 'background:#EEF6FA' : ($r['pinned'] ? 'background:#F4F9FD' : '') ?>">
+        <?php if ($canEdit && $b !== 'trash'): ?>
+        <td class="c"><form method="post" style="display:inline"><?= csrf_field() ?>
+          <input type="hidden" name="act" value="pin"><input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
+          <button class="btn sm" title="<?= $r['pinned'] ? '고정 해제' : '맨 위 고정' ?>"
+                  style="<?= $r['pinned'] ? 'background:#0B4F6C;border-color:#0B4F6C;color:#fff' : 'color:var(--ink3)' ?>">📌<?= $r['pinned'] ? ' 고정' : '' ?></button></form></td>
+        <?php endif; ?>
+        <td class="tnum"><?= $r['pinned'] ? '<span class="badge b-info">공지</span>' : (int)$r['id'] ?></td>
         <td style="font-weight:600"><a href="?p=boards&amp;b=<?= h($b) ?>&amp;id=<?= (int)$r['id'] ?>"><?= h($r['title']) ?></a>
           <?= $r['is_secret'] ? ' <span class="badge b-warn">비밀</span>' : '' ?></td>
         <td><?= h($r['writer']) ?></td>

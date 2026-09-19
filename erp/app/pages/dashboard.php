@@ -123,6 +123,66 @@ $kpiEnd = function (string $route): string {
 };
 $today = date('Y-m-d');
 ?>
+<?php if (route_can_view('web_pickups') || route_can_view('boards')): ?>
+<!-- 실시간 — 홈페이지 온라인 접수 · Q&A. 30초마다 저절로 새로 고침 (layout 의 gp:live) -->
+<div class="card" id="live-card">
+  <div class="ch">실시간 — 홈페이지 접수 · 문의
+    <span class="badge b-ok" id="live-dot" style="font-weight:600">● 자동 새로고침</span>
+    <span style="margin-left:auto;display:flex;gap:6px">
+      <button type="button" class="btn sm" id="live-notify" style="display:none">브라우저 알림 켜기</button>
+      <button type="button" class="btn sm" onclick="window.gpLiveTick && gpLiveTick()">지금 확인</button>
+    </span></div>
+  <div class="live-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:0">
+    <?php if (route_can_view('web_pickups')): ?>
+    <div style="border-right:1px solid var(--line2)">
+      <div class="cb" style="display:flex;align-items:center;gap:8px;padding-bottom:6px">
+        <b>🚚 온라인 접수</b> <span class="badge b-warn" id="live-p-new">새 접수 0</span>
+        <a class="btn sm" style="margin-left:auto" href="?p=web_pickups">전체 보기</a></div>
+      <div id="live-p-list" style="font-size:12.5px"><div class="empty">불러오는 중…</div></div>
+    </div>
+    <?php endif; ?>
+    <?php if (route_can_view('boards')): ?>
+    <div>
+      <div class="cb" style="display:flex;align-items:center;gap:8px;padding-bottom:6px">
+        <b>💬 Q&amp;A 문의</b> <span class="badge b-warn" id="live-q-wait">답변 대기 0</span>
+        <a class="btn sm" style="margin-left:auto" href="?p=boards&amp;b=qna">전체 보기</a></div>
+      <div id="live-q-list" style="font-size:12.5px"><div class="empty">불러오는 중…</div></div>
+    </div>
+    <?php endif; ?>
+  </div>
+</div>
+<script>
+(function () {
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+  function rows(items, hot, label) {
+    if (!items || !items.length) return '<div class="empty">아직 없습니다.</div>';
+    return items.map(function (i) {
+      var on = i.status === hot;
+      return '<a href="' + esc(i.url) + '" style="display:flex;gap:10px;align-items:center;padding:9px 16px;border-top:1px solid var(--line2);text-decoration:none;color:inherit' + (on ? ';background:#FFFBEA' : '') + '">'
+        + '<span class="badge ' + (on ? 'b-warn' : 'b-ok') + '" style="flex-shrink:0">' + esc(on ? label[0] : label[1]) + '</span>'
+        + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b>' + esc(i.title) + '</b> <span style="color:var(--ink3)">' + esc(i.sub) + '</span></span>'
+        + '<span class="tnum" style="color:var(--ink3);flex-shrink:0">' + esc(i.at.slice(5)) + '</span></a>';
+    }).join('');
+  }
+  document.addEventListener('gp:live', function (e) {
+    var d = e.detail || {};
+    var pl = document.getElementById('live-p-list'), ql = document.getElementById('live-q-list');
+    if (pl && d.pickups) { pl.innerHTML = rows(d.pickups.items, 'NEW', ['새 접수', '처리']); document.getElementById('live-p-new').textContent = '새 접수 ' + d.pickups['new']; }
+    if (ql && d.qna) { ql.innerHTML = rows(d.qna.items, 'WAIT', ['답변 대기', '답변 완료']); document.getElementById('live-q-wait').textContent = '답변 대기 ' + d.qna.wait; }
+    var dot = document.getElementById('live-dot');
+    if (dot) dot.textContent = '● ' + new Date().toTimeString().slice(0, 5) + ' 확인';
+    var total = (d.pickups ? d.pickups['new'] : 0) + (d.qna ? d.qna.wait : 0);
+    document.title = (total > 0 ? '(' + total + ') ' : '') + document.title.replace(/^\(\d+\) /, '');
+  });
+  var nb = document.getElementById('live-notify');
+  if (nb && window.Notification && Notification.permission === 'default') {
+    nb.style.display = '';
+    nb.addEventListener('click', function () { Notification.requestPermission().then(function () { nb.style.display = 'none'; }); });
+  }
+})();
+</script>
+<?php endif; ?>
+
 <?php if ($seeSales || $seeComp): ?>
 <div class="kpis">
   <?php if ($seeSales): ?>
