@@ -1,0 +1,18 @@
+# 홈페이지 루트 — 웹에서 열 필요 없는 파일 · 폴더 막기 (2026-09-19)
+Options -Indexes
+
+# 설계 문서 · DB 구조 · 배포 설정 · 서버 코드 폴더 (PHP 가 파일로 읽는 것은 영향 없음)
+RedirectMatch 404 ^/(db|deploy|includes)(/|$)
+RedirectMatch 404 ^/\.git
+
+# 문서 · SQL · 백업 · 로그 파일은 어디에 있든 웹으로 안 내줌
+<FilesMatch "\.(md|sql|sqlite|bak|log|dist|lock)$">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+</FilesMatch>
+<Files ".gitignore">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+</Files>
