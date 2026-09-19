@@ -458,6 +458,9 @@ layout_head($title, 'shipments');
       <?php if (($cur['status'] ?? '') !== 'CANCELLED' && route_can_view('billing')): ?>
         <a class="btn" href="#bill-card">청구</a>
       <?php endif; ?>
+      <?php if (route_can_edit('shipments')): ?>
+        <a class="btn" href="#del-card" style="color:#A32020">삭제</a>
+      <?php endif; ?>
     <?php endif; ?>
     <a class="btn" href="?p=shipments">목록</a>
   </div>
@@ -895,6 +898,33 @@ if ($id > 0 && ($cur['status'] ?? '') !== 'CANCELLED' && route_can_view('billing
   })();
   </script>
   <?php endif; ?>
+</div>
+<?php endif; ?>
+
+<?php if ($id > 0 && route_can_edit('shipments')): ?>
+<!-- 전표 삭제 — 목록의 휴지통과 같은 처리(shipments.php act=delete): 청구 · 입금 · 지급된 매입이 있으면 막고,
+     삭제 권한이 없으면 관리자 승인 요청으로 넘어갑니다 -->
+<div class="card" id="del-card" style="border-color:#E4B9B9;background:#FFF8F8">
+  <div class="ch" style="border-color:#E4B9B9">전표 삭제</div>
+  <div class="cb">
+    <form method="post" action="?p=shipments" class="f" style="align-items:flex-end"
+          onsubmit="return confirm('매출전표 <?= h(addslashes((string)$cur['awb_no'])) ?> 을 삭제합니다. 계속할까요?');">
+      <?= csrf_field() ?>
+      <input type="hidden" name="act" value="delete">
+      <input type="hidden" name="id" value="<?= $id ?>">
+      <div class="fw gr" style="min-width:320px">
+        <label>삭제 사유 *</label>
+        <input type="text" name="reason" required minlength="2" placeholder="예) 중복 입력 · 테스트 전표">
+      </div>
+      <button class="btn" style="border-color:#D99;color:#A32020">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+        전표 삭제</button>
+    </form>
+    <div style="font-size:11.5px;color:var(--ink3);margin-top:8px">
+      목록 · 통계 · 미수에서 빠지고, 작업로그에는 사유와 함께 남습니다. 연결된 매입원가도 같이 빠집니다.
+      <b>청구서에 들어 있거나 입금 · 지급이 붙은 전표는 삭제되지 않습니다</b> — 그럴 땐 아래 '전표 취소' 를 쓰거나 청구 · 입출금을 먼저 취소하세요.
+    </div>
+  </div>
 </div>
 <?php endif; ?>
 
