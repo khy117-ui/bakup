@@ -49,7 +49,7 @@ function layout_head(string $title, string $active): void
             ['business_entity', '사업자 관리', true],
             ['permissions', '관리자 / 권한', true],
             ['delete_requests', '삭제 요청 · 승인', true],
-            ['boards', '게시판 관리', true],
+            ['boards', '홈페이지 게시판', true],
             ['activity_log', '작업로그', true],
             ['settings', '환경설정', true],
             ['storage_settings', '저장소 설정', true],

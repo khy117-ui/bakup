@@ -27,6 +27,12 @@ if (empty($res['skipped'])) {
             [$ok, $bad] = fs_sync_pending(db(), 5);
             $res['fs_sent'] = $ok;
             $res['fs_fail'] = $bad;
+            // 하루 한 번 DB 백업 → NAS (/backup/db)
+            require_once APP_DIR . '/dbbackup.php';
+            if (dbbackup_due(db())) {
+                [$bok, $bmsg] = dbbackup_run('auto');
+                $res['db_backup'] = $bok ? 'ok' : 'fail';
+            }
         }
     } catch (Throwable $e) {
         error_log('파일 저장소 동기화 실패: ' . $e->getMessage());

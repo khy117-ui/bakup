@@ -5,9 +5,9 @@
 //   write : 새 글 작성 화면 (별도 주소가 없으면 list 와 같게 두세요)
 // ------------------------------------------------------------------
 window.GOODPOST_ADMIN = {
-  erp: 'https://postgood.co.kr/erp/',
+  erp: '../erp/',
   boards: {
-    notice: { label: '공지사항', list: 'https://postgood.co.kr/erp/notice', write: 'https://postgood.co.kr/erp/notice' },
-    qna:    { label: 'Q&A',     list: 'https://postgood.co.kr/erp/qna',    write: 'https://postgood.co.kr/erp/qna' }
+    notice: { label: '공지사항', list: '../erp/index.php?p=boards&b=notice', write: '../erp/index.php?p=boards&b=notice&new=1' },
+    qna:    { label: 'Q&A',     list: '../erp/index.php?p=boards&b=qna',    write: '../erp/index.php?p=boards&b=qna&new=1' }
   }
 };

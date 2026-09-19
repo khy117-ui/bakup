@@ -168,6 +168,14 @@ $nasUrl = $scheme . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost')
 // ---------------------------------------------------------------- 파일 저장소 (NAS WebDAV) — app/filestore.php
 require_once APP_DIR . '/filestore.php';
 $fsTest = null;
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'db_backup') {
+    csrf_check();
+    require_once APP_DIR . '/dbbackup.php';
+    [$bok, $bmsg] = dbbackup_run((string)($_SESSION['admin_name'] ?? '관리자'));
+    log_action('시스템', 'CREATE', 'db_backups', null, 'DB 백업', null, $bmsg);
+    flash($bmsg);
+    redirect('?p=storage_settings#dbb');
+}
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(post('act'), ['fs_test', 'fs_sync', 'pub_upload', 'pub_delete'], true)) {
     csrf_check();
     try {
@@ -298,7 +306,7 @@ $gb = static fn($b) => $b > 0 ? number_format($b / 1073741824, 1) . ' GB' : '-';
   <div class="cb" style="border-top:1px solid var(--line2)">
     <?php foreach ($fsTest as $area => [$ok, $msg]): ?>
       <div style="font-size:12.5px;line-height:1.9"><span class="badge <?= $ok ? 'b-ok' : 'b-err' ?>"><?= $ok ? '성공' : '실패' ?></span>
-        <b><?= h(['docs' => '업무 서류', 'uploads' => '기타 첨부', 'public' => '공개 이미지'][$area] ?? $area) ?></b> <?= h($msg) ?></div>
+        <b><?= h(['docs' => '업무 서류', 'uploads' => '기타 첨부', 'public' => '공개 이미지', 'backup' => 'DB 백업'][$area] ?? $area) ?></b> <?= h($msg) ?></div>
     <?php endforeach; ?>
   </div>
   <?php endif; ?>
@@ -320,6 +328,41 @@ $gb = static fn($b) => $b > 0 ? number_format($b / 1073741824, 1) . ' GB' : '-';
     <div style="color:var(--ink3);margin-top:6px">비공개 폴더(erp)는 WebDAV 계정으로만 열리고, 인터넷 주소로는 열리지 않습니다. ERP 도 NAS 주소를 화면에 내보내지 않고
       로그인 · 권한을 확인한 뒤 자기가 받아서 내려줍니다.</div>
   </details>
+</div>
+
+<?php
+require_once APP_DIR . '/dbbackup.php';
+$dbbRows = [];
+try {
+    dbbackup_ensure_table(db());
+    $dbbRows = db()->query('SELECT * FROM db_backups ORDER BY id DESC LIMIT 10')->fetchAll();
+} catch (PDOException $e) {
+    $dbbRows = [];
+}
+?>
+<div class="card" id="dbb">
+  <div class="ch">DB 백업 → NAS <span class="tnum" style="font-weight:400;color:var(--ink3)"><?= h($fs['dir']['backup']) ?> · 하루 한 번 자동 (ERP 화면이 열려 있을 때) · 거래처 · 전표 · 입금 · 게시판 등 전체</span></div>
+  <div class="cb" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <form method="post" onsubmit="this.querySelector('button').disabled=true;this.querySelector('button').textContent='백업 중… (1~2분)';">
+      <?= csrf_field() ?><input type="hidden" name="act" value="db_backup">
+      <button class="btn pri"<?= $fs['nas'] ? '' : ' disabled' ?>>지금 DB 백업</button></form>
+    <span style="font-size:11.5px;color:var(--ink3)">NAS 에 <b>backup</b> 공유폴더를 만들고 그 안에 <b>db</b> 폴더, erpfile 계정에 읽기/쓰기 권한을 주세요.
+      파일에는 환경설정의 비밀번호 · 키도 들어 있으니 이 폴더는 비공개로 둡니다.</span>
+  </div>
+  <?php if ($dbbRows): ?>
+  <table>
+    <thead><tr><th style="width:140px">시각</th><th>파일</th><th class="r" style="width:90px">크기</th><th>내용</th><th class="c" style="width:80px">결과</th></tr></thead>
+    <tbody>
+    <?php foreach ($dbbRows as $r): ?>
+      <tr><td class="tnum"><?= h(substr((string)$r['created_at'], 0, 16)) ?></td>
+        <td class="tnum" style="font-size:12px"><?= h($r['file_name']) ?></td>
+        <td class="r tnum"><?= $r['size_bytes'] ? h(number_format((int)$r['size_bytes'] / 1048576, 1)) . ' MB' : '-' ?></td>
+        <td style="font-size:12px"><?= h($r['message'] ?? '') ?> <span style="color:var(--ink3)"><?= h($r['trigger_by'] ?? '') ?><?= $r['seconds'] !== null ? ' · ' . (int)$r['seconds'] . '초' : '' ?></span></td>
+        <td class="c"><span class="badge <?= $r['status'] === 'OK' ? 'b-ok' : ($r['status'] === 'FAIL' ? 'b-err' : 'b-info') ?>"><?= h(['OK' => '성공', 'FAIL' => '실패', 'PRUNED' => '정리됨'][$r['status']] ?? $r['status']) ?></span></td></tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  <?php else: ?><div class="empty">아직 백업이 없습니다.</div><?php endif; ?>
 </div>
 
 <div class="card" id="pub">

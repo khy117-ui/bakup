@@ -20,7 +20,7 @@ if (!defined('APP_DIR')) { http_response_code(403); exit('Forbidden'); }
  * '서버에도 사본 유지' = 예 이면 서버 · NAS 두 곳에 있어 한쪽이 망가져도 남습니다 (기본값).
  */
 
-const FS_AREAS = ['docs', 'uploads', 'public'];
+const FS_AREAS = ['docs', 'uploads', 'public', 'backup'];   // backup = DB 백업 (app/dbbackup.php)
 
 /** 환경설정 값 한 번에 */
 function fs_cfg(): array
@@ -28,7 +28,7 @@ function fs_cfg(): array
     static $c = null;
     if ($c !== null) { return $c; }
     $keys = ['fs_mode', 'fs_webdav_url', 'fs_webdav_user', 'fs_webdav_pass', 'fs_dir_docs', 'fs_dir_uploads',
-             'fs_dir_public', 'fs_public_base_url', 'fs_keep_local'];
+             'fs_dir_public', 'fs_public_base_url', 'fs_keep_local', 'fs_dir_backup'];
     $v = array_fill_keys($keys, '');
     try {
         $st = db()->query("SELECT setting_key, setting_val FROM app_settings WHERE setting_key LIKE 'fs\\_%'");
@@ -46,7 +46,8 @@ function fs_cfg(): array
         'pass'       => (string)preg_replace('/[\r\n]+/', '', $v['fs_webdav_pass']),
         'dir'        => ['docs'    => $dir($v['fs_dir_docs'], '/erp/documents'),
                          'uploads' => $dir($v['fs_dir_uploads'], '/erp/uploads'),
-                         'public'  => $dir($v['fs_dir_public'], '/web/images/erp')],
+                         'public'  => $dir($v['fs_dir_public'], '/web/images/erp'),
+                         'backup'  => $dir($v['fs_dir_backup'], '/backup/db')],
         'public_url' => $trim($v['fs_public_base_url']),
         'keep_local' => $v['fs_keep_local'] !== '아니오',
     ];

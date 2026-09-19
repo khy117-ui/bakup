@@ -109,6 +109,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
+        } elseif ($act === 'web_sheets') {
+            // 홈페이지 요금표 칸 ↔ 가격표 연결 (app/webrates.php)
+            require_once APP_DIR . '/webrates.php';
+            webrates_ensure_table($pdo);
+            $up = $pdo->prepare('INSERT INTO web_rate_sheets (sheet_name, rate_table_id, zone_labels, updated_by)
+                                 VALUES (?,?,?,?)
+                                 ON DUPLICATE KEY UPDATE rate_table_id = VALUES(rate_table_id),
+                                                         zone_labels = VALUES(zone_labels), updated_by = VALUES(updated_by)');
+            $sel = (array)($_POST['sheet'] ?? []);
+            $labs = (array)($_POST['labels'] ?? []);
+            $n = 0;
+            foreach (array_keys(WEB_RATE_SHEETS) as $sheet) {
+                $tid = (int)($sel[$sheet] ?? 0);
+                $lab = mb_substr(trim((string)($labs[$sheet] ?? '')), 0, 300);
+                $up->execute([$sheet, $tid ?: null, $lab !== '' && $lab !== WEB_RATE_SHEETS[$sheet] ? $lab : null,
+                              $_SESSION['admin_id'] ?? null]);
+                if ($tid) { $n++; }
+            }
+            log_action('기준정보', 'UPDATE', 'web_rate_sheets', null, '홈페이지 요금표 연결', null, $n . '칸 연결');
+            flash('홈페이지 요금표 연결을 저장했습니다 (' . $n . '칸). 홈페이지를 새로고침하면 바로 보입니다.');
+            redirect('?p=rate_table' . ($id ? '&id=' . $id : '') . '#web');
+
         } elseif ($act === 'rate_clear') {
             $tid = (int)post('table_id');
             $st = $pdo->prepare('SELECT status FROM carrier_rate_tables WHERE id = ?');
@@ -303,4 +325,51 @@ placeholder="1, 0, 0.5, 18000
   <?php endif; ?>
 </div>
 <?php endif; ?>
+<?php
+// ---------------------------------------------------------------- 홈페이지 요금표 연결
+require_once APP_DIR . '/webrates.php';
+$webMap = [];
+try {
+    webrates_ensure_table(db());
+    foreach (db()->query('SELECT * FROM web_rate_sheets')->fetchAll() as $m) { $webMap[$m['sheet_name']] = $m; }
+} catch (PDOException $e) {
+    $webMap = [];
+}
+$canEditRates = route_can_edit('rate_table');
+?>
+<div class="card" id="web">
+  <div class="ch">홈페이지 요금표 연결
+    <span style="font-weight:400;color:var(--ink3)">연결한 칸은 이 단가표 숫자로 홈페이지(국제특송 요금표)에 바로 보입니다 — 새 버전을 적용하면 자동으로 따라감</span>
+    <a class="btn sm" style="margin-left:auto" href="../service/express.html" target="_blank" rel="noopener">홈페이지에서 보기</a></div>
+  <form method="post">
+    <?= csrf_field() ?><input type="hidden" name="act" value="web_sheets">
+    <table>
+      <thead><tr><th style="width:170px">홈페이지 칸</th><th>연결할 가격표</th><th>머리글 (Zone 1, 2, … 순서, 쉼표)</th><th style="width:170px">지금 보이는 버전</th></tr></thead>
+      <tbody>
+      <?php foreach (WEB_RATE_SHEETS as $sheet => $defLab):
+        $m = $webMap[$sheet] ?? null;
+        $curT = $m && $m['rate_table_id'] ? webrates_current_table(db(), (int)$m['rate_table_id']) : null; ?>
+        <tr>
+          <td style="font-weight:600"><?= h(str_replace('_', ' ', $sheet)) ?></td>
+          <td><select name="sheet[<?= h($sheet) ?>]"<?= $canEditRates ? '' : ' disabled' ?>>
+            <option value="">— 연결 안 함 (엑셀 값 그대로) —</option>
+            <?php foreach ($tables as $t): ?>
+              <option value="<?= (int)$t['id'] ?>"<?= $m && (int)$m['rate_table_id'] === (int)$t['id'] ? ' selected' : '' ?>>
+                <?= h($t['ccode'] . ($t['scode'] ? '/' . $t['scode'] : '') . ' · ' . $t['name'] . ' (' . $t['effective_from'] . ' · ' . $t['status'] . ')') ?></option>
+            <?php endforeach; ?></select></td>
+          <td><input type="text" name="labels[<?= h($sheet) ?>]" value="<?= h($m['zone_labels'] ?? $defLab) ?>" style="font-size:12px"<?= $canEditRates ? '' : ' disabled' ?>></td>
+          <td style="font-size:12px"><?= $curT ? h($curT['name']) . '<div style="color:var(--ink3)">' . h($curT['effective_from']) . '부터</div>' : '<span style="color:var(--ink3)">엑셀</span>' ?></td>
+        </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+    <?php if ($canEditRates): ?>
+    <div class="cb" style="display:flex;gap:10px;align-items:center;border-top:1px solid var(--line2)">
+      <button class="btn pri">연결 저장</button>
+      <span style="font-size:11.5px;color:var(--ink3)">중량물 · 지역표 · EMS 발송조건은 ERP 단가표에 없어 예전처럼 홈페이지 엑셀(rates.xlsx)에서 읽습니다.
+        머리글은 홈페이지 표의 칸 이름입니다 — Zone 번호가 작은 것부터 차례로 붙습니다.</span>
+    </div>
+    <?php endif; ?>
+  </form>
+</div>
 <?php layout_foot();

@@ -5,370 +5,242 @@ if (!defined('APP_DIR')) { http_response_code(403); exit('Forbidden'); }
 require_once APP_DIR . '/layout.php';
 
 /**
- * 홈페이지 게시판 — 공지사항 · 견적문의 · 상담 · 자료실.
+ * 홈페이지 게시판 (공지사항 · Q&A) — 홈페이지가 읽는 표(board_post)를 ERP 에서 바로 관리합니다.
+ * 여기서 쓰고 고치면 홈페이지 고객센터에 곧바로 보입니다. 게시판은 하나뿐입니다 (예전 홈페이지 관리자 화면은 닫음).
  *
- * 홈페이지 쪽 입력 화면은 이 시스템 밖(회사 홈페이지)에 있고, 여기는 **관리자쪽**입니다.
- * 문의가 들어오면 여기서 읽고 답변합니다. 답변은 같은 글의 자식 글로 붙습니다.
+ *   글쓰기 · 수정 · 공지 고정 · 비밀글 · Q&A 답변 · 휴지통(삭제 대신 옮김, 되돌리기 가능)
+ *   휴지통은 board 값을 'trash_notice' / 'trash_qna' 로 바꿔 두는 방식 — 홈페이지 API 는 notice · qna 만 읽으므로 바로 숨겨짐
  */
 
+const BOARD_NAMES = ['notice' => '공지사항', 'qna' => 'Q&A'];
 $err = '';
+$pdo = db();
+$b   = array_key_exists(query('b'), BOARD_NAMES) ? query('b') : (query('b') === 'trash' ? 'trash' : 'notice');
+$pid = (int)query('id', '0');
 
-// ---------------------------------------------------------------- 답변 등록
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'answer') {
-    csrf_check();
-    $pid   = (int)post('post_id');
-    $title = post('title');
-    $body  = post('content');
-
-    $st = db()->prepare('SELECT p.*, b.board_type FROM posts p
-                           JOIN boards b ON b.id = p.board_id
-                          WHERE p.id = ? AND p.deleted_at IS NULL');
-    $st->execute([$pid]);
-    $parent = $st->fetch();
-
-    if (!$parent) {
-        $err = '원글을 찾을 수 없습니다.';
-    } elseif (trim($body) === '') {
-        $err = '답변 내용을 입력하세요.';
-    } else {
-        $pdo = db();
-        try {
-            $pdo->beginTransaction();
-            $pdo->prepare(
-                'INSERT INTO posts (board_id, parent_id, title, content, writer_name,
-                                    writer_ip, is_secret)
-                 VALUES (?,?,?,?,?,?,?)')
-                ->execute([
-                    (int)$parent['board_id'], $pid,
-                    $title !== '' ? $title : 'RE: ' . $parent['title'],
-                    $body, $_SESSION['admin_name'] ?? '관리자',
-                    $_SERVER['REMOTE_ADDR'] ?? '-', (int)$parent['is_secret'],
-                ]);
-            $pdo->prepare('UPDATE posts SET is_answered = 1, answered_by = ?, answered_at = NOW()
-                            WHERE id = ?')
-                ->execute([$_SESSION['admin_id'] ?? null, $pid]);
-            log_action('게시판', 'CREATE', 'posts', $pid, (string)$parent['title'],
-                       null, '답변 등록');
-            $pdo->commit();
-            flash('답변을 등록했습니다.');
-            redirect('?p=boards&b=' . (int)$parent['board_id'] . '&post=' . $pid);
-        } catch (Throwable $e) {
-            $pdo->rollBack();
-            error_log('게시판 답변 실패: ' . $e->getMessage());
-            $err = '답변을 등록하지 못했습니다.';
-        }
-    }
+/** 입력 글(일반 텍스트) → 저장 HTML (줄바꿈 유지, 태그는 글자로) */
+function bd_to_html(string $text): string
+{
+    return nl2br(htmlspecialchars(trim($text), ENT_QUOTES, 'UTF-8'));
 }
 
-// ---------------------------------------------------------------- 글 숨기기 (soft delete)
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'hide') {
-    csrf_check();
-    $pid = (int)post('post_id');
-    $why = post('reason');
-    if (mb_strlen($why) < 2) {
-        $err = '숨기는 사유를 적어 주세요.';
-    } else {
-        $st = db()->prepare('SELECT board_id, title FROM posts WHERE id = ?');
-        $st->execute([$pid]);
-        if ($row = $st->fetch()) {
-            db()->prepare('UPDATE posts SET deleted_at = NOW() WHERE id = ?')->execute([$pid]);
-            log_action('게시판', 'DELETE', 'posts', $pid, (string)$row['title'],
-                       null, 'deleted_at 설정', $why);
-            flash('글을 숨겼습니다. 내용은 남아 있어 되돌릴 수 있습니다.');
-            redirect('?p=boards&b=' . (int)$row['board_id']);
-        }
-        $err = '글을 찾을 수 없습니다.';
-    }
+/** 저장 HTML → 고칠 때 보여줄 글 */
+function bd_to_text(?string $html): string
+{
+    $s = preg_replace('#<br\s*/?>\s*#i', "\n", (string)$html);
+    $s = preg_replace('#</p>\s*#i', "\n\n", (string)$s);
+    return trim(html_entity_decode(strip_tags((string)$s), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
 }
 
-// ---------------------------------------------------------------- 게시판 사용여부
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'toggle_board') {
+// 표가 없으면 (홈페이지가 한 번도 안 열렸으면) 홈페이지와 같은 모양으로 만듭니다
+try {
+    $pdo->exec("CREATE TABLE IF NOT EXISTS board_post (
+                  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  board VARCHAR(20) NOT NULL, title VARCHAR(200) NOT NULL, content MEDIUMTEXT NOT NULL,
+                  writer VARCHAR(50) NOT NULL DEFAULT '관리자', views INT UNSIGNED NOT NULL DEFAULT 0,
+                  pinned TINYINT(1) NOT NULL DEFAULT 0, is_secret TINYINT(1) NOT NULL DEFAULT 0, password VARCHAR(255) NULL,
+                  answer MEDIUMTEXT NULL, answered_at DATETIME NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,
+                  INDEX idx_board (board, pinned, id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+} catch (PDOException $e) {
+    error_log('board_post 준비 실패: ' . $e->getMessage());
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_check();
-    $bid = (int)post('board_id');
-    $st = db()->prepare('SELECT name, is_active FROM boards WHERE id = ?');
-    $st->execute([$bid]);
-    if ($b = $st->fetch()) {
-        $to = (int)$b['is_active'] === 1 ? 0 : 1;
-        db()->prepare('UPDATE boards SET is_active = ? WHERE id = ?')->execute([$to, $bid]);
-        log_action('게시판', 'UPDATE', 'boards', $bid, (string)$b['name'],
-                   $b['is_active'] ? '사용' : '중지', $to ? '사용' : '중지');
-        flash($b['name'] . ' 을 ' . ($to ? '사용' : '중지') . ' 으로 바꿨습니다.');
-        redirect('?p=boards&b=' . $bid);
+    $act = post('act');
+    try {
+        if ($act === 'save') {
+            $bb = array_key_exists(post('board'), BOARD_NAMES) ? post('board') : 'notice';
+            $title = mb_substr(trim(post('title')), 0, 200);
+            $body  = (string)($_POST['content'] ?? '');
+            if ($title === '' || trim($body) === '') { throw new RuntimeException('제목과 내용을 입력하세요.'); }
+            $writer = mb_substr(trim(post('writer')), 0, 50) ?: '관리자';
+            $pinned = post('pinned') === '1' ? 1 : 0;
+            $id = (int)post('id');
+            if ($id > 0) {
+                $pdo->prepare('UPDATE board_post SET title = ?, content = ?, writer = ?, pinned = ?, updated_at = NOW()
+                                WHERE id = ? AND board = ?')
+                    ->execute([$title, bd_to_html($body), $writer, $pinned, $id, $bb]);
+                log_action('게시판', 'UPDATE', 'board_post', $id, $title);
+                flash('글을 고쳤습니다. 홈페이지에 바로 반영됩니다.');
+            } else {
+                $pdo->prepare('INSERT INTO board_post (board, title, content, writer, views, pinned, is_secret, created_at, updated_at)
+                               VALUES (?,?,?,?,0,?,0,NOW(),NOW())')
+                    ->execute([$bb, $title, bd_to_html($body), $writer, $pinned]);
+                $id = (int)$pdo->lastInsertId();
+                log_action('게시판', 'CREATE', 'board_post', $id, $title);
+                flash('글을 올렸습니다. 홈페이지 ' . BOARD_NAMES[$bb] . '에 바로 보입니다.');
+            }
+            redirect('?p=boards&b=' . $bb . '&id=' . $id);
+        } elseif ($act === 'answer') {
+            $id = (int)post('id');
+            $ans = trim((string)($_POST['answer'] ?? ''));
+            $pdo->prepare("UPDATE board_post SET answer = ?, answered_at = " . ($ans !== '' ? 'NOW()' : 'NULL') . ", updated_at = NOW()
+                            WHERE id = ? AND board = 'qna'")
+                ->execute([$ans !== '' ? bd_to_html($ans) : null, $id]);
+            log_action('게시판', 'UPDATE', 'board_post', $id, 'Q&A 답변', null, $ans !== '' ? '답변 등록' : '답변 지움');
+            flash($ans !== '' ? '답변을 저장했습니다. 홈페이지에 "답변완료" 로 보입니다.' : '답변을 지웠습니다.');
+            redirect('?p=boards&b=qna&id=' . $id);
+        } elseif ($act === 'hide') {
+            // 삭제 — 휴지통으로 옮김 (DELETE_ACTIONS 'boards/hide' — 권한 없으면 승인 요청)
+            $id = (int)post('post_id');
+            $why = trim(post('reason'));
+            if (mb_strlen($why) < 2) { throw new RuntimeException('삭제 사유를 적어 주세요.'); }
+            $st = $pdo->prepare("SELECT id, board, title FROM board_post WHERE id = ? AND board IN ('notice','qna')");
+            $st->execute([$id]);
+            $row = $st->fetch();
+            if (!$row) { throw new RuntimeException('글을 찾을 수 없습니다.'); }
+            $pdo->prepare("UPDATE board_post SET board = CONCAT('trash_', board), updated_at = NOW() WHERE id = ?")->execute([$id]);
+            log_action('게시판', 'DELETE', 'board_post', $id, (string)$row['title'], null, '휴지통으로', $why);
+            flash('휴지통으로 옮겼습니다. 홈페이지에서 바로 사라지고, 휴지통에서 되돌릴 수 있습니다.');
+            redirect('?p=boards&b=' . $row['board']);
+        } elseif ($act === 'restore') {
+            $id = (int)post('id');
+            $pdo->prepare("UPDATE board_post SET board = REPLACE(board, 'trash_', ''), updated_at = NOW()
+                            WHERE id = ? AND board LIKE 'trash\\_%'")->execute([$id]);
+            log_action('게시판', 'UPDATE', 'board_post', $id, null, null, '휴지통에서 되돌림');
+            flash('글을 되돌렸습니다.');
+            redirect('?p=boards&b=trash');
+        }
+    } catch (RuntimeException $e) {
+        $err = $e->getMessage();
+    } catch (PDOException $e) {
+        error_log('게시판 저장 실패: ' . $e->getMessage());
+        $err = '저장하지 못했습니다.';
     }
-    $err = '게시판을 찾을 수 없습니다.';
 }
 
 // ---------------------------------------------------------------- 조회
-$boards = db()->query(
-    'SELECT b.*,
-            (SELECT COUNT(*) FROM posts p
-              WHERE p.board_id = b.id AND p.deleted_at IS NULL AND p.parent_id IS NULL) AS cnt,
-            (SELECT COUNT(*) FROM posts p
-              WHERE p.board_id = b.id AND p.deleted_at IS NULL AND p.parent_id IS NULL
-                AND p.is_answered = 0) AS waiting
-       FROM boards b ORDER BY b.sort_order, b.id')->fetchAll();
-
-$bid = (int)query('b', '0');
-if ($bid === 0 && $boards) { $bid = (int)$boards[0]['id']; }
-$board = null;
-foreach ($boards as $b) { if ((int)$b['id'] === $bid) { $board = $b; } }
-
-$kw   = query('kw');
-$only = query('only');                       // waiting = 미답변만
-$page = max(1, (int)query('page', '1'));
-$per  = 20;
-$off  = ($page - 1) * $per;
-
-$rows = []; $total = 0; $cur = null; $replies = [];
-if ($board) {
-    $where = ['p.board_id = ?', 'p.deleted_at IS NULL', 'p.parent_id IS NULL'];
-    $params = [$bid];
-    if ($kw !== '') {
-        $where[] = '(p.title LIKE ? OR p.content LIKE ? OR p.writer_name LIKE ?)';
-        $like = '%' . $kw . '%';
-        array_push($params, $like, $like, $like);
-    }
-    if ($only === 'waiting') { $where[] = 'p.is_answered = 0'; }
-    $w = implode(' AND ', $where);
-
-    $st = db()->prepare("SELECT COUNT(*) FROM posts p WHERE $w");
-    $st->execute($params);
-    $total = (int)$st->fetchColumn();
-
-    $st = db()->prepare("SELECT p.* FROM posts p WHERE $w
-                          ORDER BY p.created_at DESC, p.id DESC LIMIT $per OFFSET $off");
-    $st->execute($params);
-    $rows = $st->fetchAll();
-
-    $pid = (int)query('post', '0');
-    if ($pid > 0) {
-        $st = db()->prepare('SELECT * FROM posts WHERE id = ? AND board_id = ?
-                              AND deleted_at IS NULL');
-        $st->execute([$pid, $bid]);
-        $cur = $st->fetch();
-        if ($cur) {
-            $st = db()->prepare('SELECT * FROM posts WHERE parent_id = ? AND deleted_at IS NULL
-                                  ORDER BY id');
-            $st->execute([$pid]);
-            $replies = $st->fetchAll();
-
-            $st = db()->prepare('SELECT * FROM post_files WHERE post_id = ? ORDER BY id');
-            $st->execute([$pid]);
-            $files = $st->fetchAll();
-        }
-    }
+$cur = null;
+if ($pid > 0) {
+    $st = $pdo->prepare('SELECT * FROM board_post WHERE id = ?');
+    $st->execute([$pid]);
+    $cur = $st->fetch() ?: null;
 }
+$isNew = query('new') === '1';
+$kw = trim(query('kw'));
+$w = $b === 'trash' ? "board LIKE 'trash\\_%'" : 'board = ?';
+$pa = $b === 'trash' ? [] : [$b];
+if ($kw !== '') { $w .= ' AND (title LIKE ? OR content LIKE ? OR writer LIKE ?)'; array_push($pa, "%$kw%", "%$kw%", "%$kw%"); }
+$st = $pdo->prepare("SELECT id, board, title, writer, views, pinned, is_secret, answer IS NOT NULL AS answered, created_at
+                       FROM board_post WHERE $w ORDER BY pinned DESC, id DESC LIMIT 200");
+$st->execute($pa);
+$rows = $st->fetchAll();
+$cnt = ['notice' => 0, 'qna' => 0, 'trash' => 0, 'wait' => 0];
+foreach ($pdo->query("SELECT board, COUNT(*) c, SUM(board = 'qna' AND answer IS NULL) w FROM board_post GROUP BY board")->fetchAll() as $r) {
+    $k = strpos((string)$r['board'], 'trash_') === 0 ? 'trash' : (string)$r['board'];
+    if (isset($cnt[$k])) { $cnt[$k] += (int)$r['c']; }
+    $cnt['wait'] += (int)$r['w'];
+}
+$canEdit = route_can_edit('boards');
+$home = '../helpdesk/' . ($b === 'qna' ? 'qna' : 'notice') . '.html';
 
-layout_head('게시판 관리', 'boards');
+layout_head('홈페이지 게시판', 'boards');
 ?>
 <div class="head">
-  <h1>게시판 관리</h1>
-  <div class="crumb">시스템 &gt; 게시판 관리</div>
+  <h1>홈페이지 게시판</h1>
+  <div class="crumb">홈페이지 &gt; 공지사항 · Q&amp;A — 여기서 쓰면 홈페이지 고객센터에 바로 보입니다</div>
+  <div class="right">
+    <a class="btn" href="<?= h($home) ?>" target="_blank" rel="noopener">홈페이지에서 보기</a>
+    <?php if ($canEdit && $b !== 'trash'): ?><a class="btn pri" href="?p=boards&amp;b=<?= h($b) ?>&amp;new=1">새 글</a><?php endif; ?>
+  </div>
 </div>
-
 <?php if ($err !== ''): ?><div class="msg err"><?= h($err) ?></div><?php endif; ?>
 
-<div class="card">
-  <div class="ch">게시판</div>
-  <table>
-    <thead><tr>
-      <th style="width:120px">코드</th><th>이름</th>
-      <th class="c" style="width:90px">형태</th>
-      <th class="c" style="width:80px">글</th><th class="c" style="width:90px">미답변</th>
-      <th class="c" style="width:70px">사용</th><th class="c" style="width:140px"></th>
-    </tr></thead>
-    <tbody>
-    <?php foreach ($boards as $b): ?>
-      <tr<?= (int)$b['id']===$bid?' style="background:#F2F7FB"':'' ?>>
-        <td class="tnum"><?= h($b['code']) ?></td>
-        <td style="font-weight:600"><?= h($b['name']) ?>
-          <?php if ($b['legacy_source']): ?>
-            <span style="font-weight:400;font-size:11px;color:var(--ink3)">
-              ← <?= h($b['legacy_source']) ?></span>
-          <?php endif; ?></td>
-        <td class="c"><?= h($b['board_type']) ?></td>
-        <td class="c tnum"><?= money($b['cnt']) ?></td>
-        <td class="c tnum" style="<?= (int)$b['waiting']>0?'color:var(--err-fg);font-weight:700':'' ?>">
-          <?= money($b['waiting']) ?></td>
-        <td class="c"><?= (int)$b['is_active']
-             ? '<span class="badge b-ok">사용</span>'
-             : '<span class="badge b-err">중지</span>' ?></td>
-        <td class="c">
-          <a class="btn sm" href="?p=boards&amp;b=<?= (int)$b['id'] ?>">글보기</a>
-          <form method="post" style="display:inline"
-                onsubmit="return confirm('사용여부를 바꿉니다.');">
-            <?= csrf_field() ?>
-            <input type="hidden" name="act" value="toggle_board">
-            <input type="hidden" name="board_id" value="<?= (int)$b['id'] ?>">
-            <button class="btn sm"><?= (int)$b['is_active'] ? '중지' : '사용' ?></button>
-          </form>
-        </td>
-      </tr>
-    <?php endforeach; ?>
-    <?php if (!$boards): ?>
-      <tr><td colspan="7" class="empty">게시판이 없습니다. <code>12_seed.sql</code> 을 실행하세요.</td></tr>
-    <?php endif; ?>
-    </tbody>
-  </table>
-</div>
+<div class="card"><div class="cb" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+  <a class="btn sm<?= $b === 'notice' ? ' pri' : '' ?>" href="?p=boards&amp;b=notice">공지사항 <?= $cnt['notice'] ?></a>
+  <a class="btn sm<?= $b === 'qna' ? ' pri' : '' ?>" href="?p=boards&amp;b=qna">Q&amp;A <?= $cnt['qna'] ?>
+    <?php if ($cnt['wait'] > 0): ?><span class="badge b-warn" style="margin-left:4px">답변 대기 <?= $cnt['wait'] ?></span><?php endif; ?></a>
+  <a class="btn sm<?= $b === 'trash' ? ' pri' : '' ?>" href="?p=boards&amp;b=trash">휴지통 <?= $cnt['trash'] ?></a>
+  <form method="get" style="margin-left:auto;display:flex;gap:6px">
+    <input type="hidden" name="p" value="boards"><input type="hidden" name="b" value="<?= h($b) ?>">
+    <input type="text" name="kw" value="<?= h($kw) ?>" placeholder="제목 · 내용 · 작성자" style="width:200px">
+    <button class="btn sm">검색</button></form>
+</div></div>
 
-<?php if ($cur): ?>
+<?php if ($canEdit && ($isNew || ($cur && in_array($cur['board'], ['notice', 'qna'], true) && query('edit') === '1'))):
+  $eb = $cur ? $cur['board'] : ($b === 'trash' ? 'notice' : $b); ?>
 <div class="card">
-  <div class="ch"><?= h($cur['title']) ?>
-    <?php if ((int)$cur['is_secret']): ?><span class="badge b-warn">비밀글</span><?php endif; ?>
-    <?php if ((int)$cur['is_answered']): ?><span class="badge b-ok">답변완료</span>
-    <?php else: ?><span class="badge b-err">미답변</span><?php endif; ?>
-    <a class="btn sm" style="margin-left:auto" href="?p=boards&amp;b=<?= $bid ?>">목록</a>
-  </div>
-  <div class="cb f" style="gap:24px">
-    <div><div style="font-size:11px;color:var(--ink2)">작성자</div>
-      <div style="font-weight:600"><?= h($cur['writer_name']) ?></div></div>
-    <div><div style="font-size:11px;color:var(--ink2)">연락처</div>
-      <div class="tnum"><?= h($cur['writer_phone'] ?: '-') ?></div></div>
-    <div><div style="font-size:11px;color:var(--ink2)">이메일</div>
-      <div><?= h($cur['writer_email'] ?: '-') ?></div></div>
-    <div><div style="font-size:11px;color:var(--ink2)">작성일</div>
-      <div class="tnum"><?= h($cur['created_at']) ?></div></div>
-    <div><div style="font-size:11px;color:var(--ink2)">조회</div>
-      <div class="tnum"><?= money($cur['view_count']) ?></div></div>
-    <div><div style="font-size:11px;color:var(--ink2)">작성 IP</div>
-      <div class="tnum" style="font-size:11.5px"><?= h($cur['writer_ip'] ?: '-') ?></div></div>
-  </div>
-  <div class="cb" style="border-top:1px solid var(--line);white-space:pre-wrap;line-height:1.8;font-size:12.5px">
-<?= h((string)$cur['content']) ?>
-  </div>
-  <?php if (!empty($files)): ?>
-  <div class="cb" style="border-top:1px solid var(--line)">
-    <div style="font-size:11px;color:var(--ink2);margin-bottom:6px">첨부파일</div>
-    <?php foreach ($files as $f): ?>
-      <div style="font-size:12px">
-        <?= h($f['original_name']) ?>
-        <span class="tnum" style="color:var(--ink3)">
-          <?= money((int)(((int)$f['size_bytes']) / 1024)) ?> KB</span>
-        <span style="color:var(--ink3)">· 다운로드 <?= money($f['download_count']) ?>회</span>
-      </div>
-    <?php endforeach; ?>
-    <div style="font-size:11px;color:var(--ink3);margin-top:6px">
-      홈페이지에서 올라온 파일입니다. 내려받기는 문서보관함 경로를 통해 붙입니다.
+  <div class="ch"><?= $cur ? '글 고치기' : '새 글' ?> · <?= h(BOARD_NAMES[$eb]) ?></div>
+  <form method="post" class="cb">
+    <?= csrf_field() ?>
+    <input type="hidden" name="act" value="save"><input type="hidden" name="board" value="<?= h($eb) ?>">
+    <input type="hidden" name="id" value="<?= (int)($cur['id'] ?? 0) ?>">
+    <div class="f" style="align-items:flex-end">
+      <div class="fw gr" style="min-width:300px"><label>제목 *</label>
+        <input type="text" name="title" maxlength="200" required value="<?= h($cur['title'] ?? '') ?>"></div>
+      <div class="fw w1"><label>작성자</label><input type="text" name="writer" maxlength="50" value="<?= h($cur['writer'] ?? '관리자') ?>"></div>
+      <label style="display:flex;gap:6px;align-items:center;font-size:12.5px"><input type="checkbox" name="pinned" value="1" style="width:auto"<?= !empty($cur['pinned']) ? ' checked' : '' ?>> 맨 위 고정(공지)</label>
     </div>
+    <div class="fw" style="margin-top:10px"><label>내용 *</label>
+      <textarea name="content" rows="14" required><?= h(bd_to_text($cur['content'] ?? '')) ?></textarea></div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn pri">저장 — 홈페이지에 바로 반영</button>
+      <a class="btn" href="?p=boards&amp;b=<?= h($eb) ?><?= $cur ? '&amp;id=' . (int)$cur['id'] : '' ?>">취소</a></div>
+  </form>
+</div>
+<?php elseif ($cur): ?>
+<div class="card">
+  <div class="ch" style="flex-wrap:wrap">
+    <?php if ($cur['pinned']): ?><span class="badge b-info">고정</span><?php endif; ?>
+    <?php if ($cur['is_secret']): ?><span class="badge b-warn">비밀글</span><?php endif; ?>
+    <b><?= h($cur['title']) ?></b>
+    <span style="font-weight:400;color:var(--ink3)"><?= h($cur['writer']) ?> · <?= h(substr((string)$cur['created_at'], 0, 16)) ?> · 조회 <?= (int)$cur['views'] ?></span>
+    <span style="margin-left:auto;display:flex;gap:6px">
+    <?php if ($canEdit && in_array($cur['board'], ['notice', 'qna'], true)): ?>
+      <a class="btn sm" href="?p=boards&amp;b=<?= h($cur['board']) ?>&amp;id=<?= (int)$cur['id'] ?>&amp;edit=1">고치기</a>
+      <form method="post" onsubmit="var r=prompt('삭제(휴지통으로) 사유를 적어 주세요.');if(!r||r.trim().length<2)return false;this.reason.value=r.trim();return true;">
+        <?= csrf_field() ?><input type="hidden" name="act" value="hide"><input type="hidden" name="post_id" value="<?= (int)$cur['id'] ?>">
+        <input type="hidden" name="reason" value=""><button class="btn sm" style="color:#A32020">삭제</button></form>
+    <?php elseif ($canEdit): ?>
+      <form method="post"><?= csrf_field() ?><input type="hidden" name="act" value="restore"><input type="hidden" name="id" value="<?= (int)$cur['id'] ?>">
+        <button class="btn sm">되돌리기</button></form>
+    <?php endif; ?>
+    </span>
+  </div>
+  <div class="cb" style="font-size:13.5px;line-height:1.8"><?= nl2br(h(bd_to_text($cur['content']))) ?></div>
+  <?php if (in_array($cur['board'], ['qna', 'trash_qna'], true)): ?>
+  <div class="cb" style="border-top:1px solid var(--line2);background:#F7FAFB">
+    <div style="font-weight:700;margin-bottom:6px">답변 <?= $cur['answered_at'] ? '<span style="font-weight:400;color:var(--ink3)">' . h(substr((string)$cur['answered_at'], 0, 16)) . '</span>' : '<span class="badge b-warn">대기</span>' ?></div>
+    <?php if ($canEdit && $cur['board'] === 'qna'): ?>
+    <form method="post">
+      <?= csrf_field() ?><input type="hidden" name="act" value="answer"><input type="hidden" name="id" value="<?= (int)$cur['id'] ?>">
+      <textarea name="answer" rows="6" placeholder="답변을 적으면 홈페이지에 '답변완료' 로 보입니다. 비우고 저장하면 답변을 지웁니다."><?= h(bd_to_text($cur['answer'] ?? '')) ?></textarea>
+      <button class="btn pri" style="margin-top:8px">답변 저장</button>
+    </form>
+    <?php else: ?>
+      <div style="font-size:13.5px;line-height:1.8"><?= $cur['answer'] ? nl2br(h(bd_to_text($cur['answer']))) : '-' ?></div>
+    <?php endif; ?>
   </div>
   <?php endif; ?>
-
-  <?php foreach ($replies as $rp): ?>
-    <div class="cb" style="border-top:1px solid var(--line);background:#F7FAFB">
-      <div style="font-size:11px;color:var(--ink2);margin-bottom:6px">
-        답변 · <b><?= h($rp['writer_name']) ?></b>
-        <span class="tnum"><?= h($rp['created_at']) ?></span>
-      </div>
-      <div style="white-space:pre-wrap;line-height:1.8;font-size:12.5px"><?= h((string)$rp['content']) ?></div>
-    </div>
-  <?php endforeach; ?>
-
-  <div class="cb" style="border-top:1px solid var(--line)">
-    <form method="post">
-      <?= csrf_field() ?>
-      <input type="hidden" name="act" value="answer">
-      <input type="hidden" name="post_id" value="<?= (int)$cur['id'] ?>">
-      <div class="f" style="align-items:flex-end">
-        <div class="fw w3"><label for="rt">답변 제목</label>
-          <input type="text" id="rt" name="title"
-                 placeholder="비우면 RE: <?= h($cur['title']) ?>"></div>
-      </div>
-      <div class="fw" style="margin-top:8px"><label for="rc">답변 내용 *</label>
-        <textarea id="rc" name="content" rows="5" required
-                  placeholder="고객에게 보낼 답변을 적습니다."></textarea></div>
-      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
-        <button class="btn pri">답변 등록</button>
-        <span style="font-size:11.5px;color:var(--ink3)">
-          답변 등록만으로 메일이 나가지는 않습니다. 메일 발송은 따로 붙입니다.
-        </span>
-      </div>
-    </form>
-  </div>
-
-  <div class="cb" style="border-top:1px solid var(--line)">
-    <form method="post" class="f" style="align-items:flex-end;gap:8px"
-          onsubmit="return confirm('글을 숨깁니다. 내용은 지워지지 않습니다.');">
-      <?= csrf_field() ?>
-      <input type="hidden" name="act" value="hide">
-      <input type="hidden" name="post_id" value="<?= (int)$cur['id'] ?>">
-      <div class="fw w3"><label>숨기는 사유 *</label>
-        <input type="text" name="reason" required placeholder="예) 광고글"></div>
-      <button class="btn" style="border-color:#C9A257;color:#6B4700">글 숨기기</button>
-    </form>
-  </div>
 </div>
 <?php endif; ?>
 
-<?php if ($board): ?>
 <div class="card">
-  <div class="ch"><?= h($board['name']) ?>
-    <form class="f" method="get" style="margin-left:auto;align-items:flex-end;gap:8px">
-      <input type="hidden" name="p" value="boards">
-      <input type="hidden" name="b" value="<?= $bid ?>">
-      <input type="text" name="kw" value="<?= h($kw) ?>" placeholder="제목 · 내용 · 작성자"
-             style="width:220px">
-      <select name="only" style="width:120px">
-        <option value="">전체</option>
-        <option value="waiting"<?= $only==='waiting'?' selected':'' ?>>미답변만</option>
-      </select>
-      <button class="btn sm">검색</button>
-    </form>
-  </div>
   <?php if (!$rows): ?>
-    <div class="empty">글이 없습니다.</div>
+    <div class="empty"><?= $b === 'trash' ? '휴지통이 비어 있습니다.' : '글이 없습니다.' ?></div>
   <?php else: ?>
   <table>
-    <thead><tr>
-      <th class="c" style="width:60px">번호</th><th>제목</th>
-      <th style="width:100px">작성자</th><th style="width:150px">작성일</th>
-      <th class="c" style="width:70px">조회</th><th class="c" style="width:90px">답변</th>
-      <th class="c" style="width:55px"></th>
-    </tr></thead>
+    <thead><tr><th style="width:70px">번호</th><th>제목</th><th style="width:120px">작성자</th>
+      <th style="width:110px">날짜</th><th class="r" style="width:70px">조회</th>
+      <?php if ($b !== 'notice'): ?><th class="c" style="width:90px">답변</th><?php endif; ?></tr></thead>
     <tbody>
     <?php foreach ($rows as $r): ?>
-      <tr>
-        <td class="c tnum"><?= (int)$r['id'] ?></td>
-        <td>
-          <a href="?p=boards&amp;b=<?= $bid ?>&amp;post=<?= (int)$r['id'] ?>"
-             style="font-weight:600"><?= h(mb_strimwidth((string)$r['title'], 0, 70, '…')) ?></a>
-          <?php if ((int)$r['is_secret']): ?>
-            <span class="badge b-warn">비밀</span>
-          <?php endif; ?>
-        </td>
-        <td><?= h($r['writer_name']) ?></td>
-        <td class="tnum" style="font-size:11.5px"><?= h($r['created_at']) ?></td>
-        <td class="c tnum"><?= money($r['view_count']) ?></td>
-        <td class="c"><?= (int)$r['is_answered']
-             ? '<span class="badge b-ok">완료</span>'
-             : '<span class="badge b-err">대기</span>' ?></td>
-        <td class="c"><a class="btn sm"
-              href="?p=boards&amp;b=<?= $bid ?>&amp;post=<?= (int)$r['id'] ?>">열기</a></td>
+      <tr<?= (int)$r['id'] === $pid ? ' style="background:#EEF6FA"' : '' ?>>
+        <td class="tnum"><?= $r['pinned'] ? '<span class="badge b-info">고정</span>' : (int)$r['id'] ?></td>
+        <td style="font-weight:600"><a href="?p=boards&amp;b=<?= h($b) ?>&amp;id=<?= (int)$r['id'] ?>"><?= h($r['title']) ?></a>
+          <?= $r['is_secret'] ? ' <span class="badge b-warn">비밀</span>' : '' ?></td>
+        <td><?= h($r['writer']) ?></td>
+        <td class="tnum"><?= h(substr((string)$r['created_at'], 0, 10)) ?></td>
+        <td class="r tnum"><?= (int)$r['views'] ?></td>
+        <?php if ($b !== 'notice'): ?>
+          <td class="c"><?= in_array($r['board'], ['qna', 'trash_qna'], true) ? ($r['answered'] ? '<span class="badge b-ok">완료</span>' : '<span class="badge b-warn">대기</span>') : '' ?></td>
+        <?php endif; ?>
       </tr>
     <?php endforeach; ?>
     </tbody>
   </table>
-  <div class="pager">
-    <span>전체 <b class="tnum"><?= money($total) ?></b> 건</span>
-    <div class="right">
-      <?php $qs = 'p=boards&b=' . $bid . '&kw=' . urlencode($kw) . '&only=' . urlencode($only); ?>
-      <?php if ($page>1): ?><a class="btn sm" href="?<?= h($qs) ?>&amp;page=<?= $page-1 ?>">이전</a><?php endif; ?>
-      <?php if ($off+$per<$total): ?><a class="btn sm" href="?<?= h($qs) ?>&amp;page=<?= $page+1 ?>">다음</a><?php endif; ?>
-    </div>
-  </div>
   <?php endif; ?>
-</div>
-<?php endif; ?>
-
-<div class="card">
-  <div class="ch">홈페이지와 어떻게 이어지나</div>
-  <div class="cb" style="font-size:12px;color:var(--ink2);line-height:1.9">
-    · 손님이 글을 쓰는 화면은 <b>회사 홈페이지</b>에 있고, 이 화면은 <b>받아서 처리하는 쪽</b>입니다.
-      같은 <code>posts</code> 테이블을 씁니다.<br>
-    · 기존 <code>IS_QNA</code> / <code>IS_QNA_ANSWER</code> 처럼 원글·답변이 따로 있던 구조는
-      <code>parent_id</code> 하나로 합쳤습니다. 답변은 원글의 자식 글입니다.<br>
-    · <b>미답변 건수</b>가 게시판 목록에 빨갛게 나옵니다. 견적문의는 이 숫자가 곧 영업 대기 건수입니다.<br>
-    · 글은 <b>지워지지 않습니다.</b> 숨기기는 <code>deleted_at</code> 만 찍고 사유를 작업로그에 남깁니다.
-  </div>
 </div>
 <?php layout_foot();

@@ -81,8 +81,9 @@ const ROUTE_PERMS = [
  *   id_from : 'post:필드' 또는 'get:필드'
  */
 const DELETE_ACTIONS = [
-    'boards'           => ['hide'   => ['label' => '게시글 숨기기', 'id_from' => 'post:post_id', 'reason' => 'reason',
-                                        'name_sql' => 'SELECT title FROM posts WHERE id = ?']],
+    // 홈페이지 게시판(board_post) 글 삭제 = 휴지통으로
+    'boards'           => ['hide'   => ['label' => '홈페이지 게시글 삭제', 'id_from' => 'post:post_id', 'reason' => 'reason',
+                                        'name_sql' => 'SELECT title FROM board_post WHERE id = ?']],
     'companies'        => ['delete' => ['label' => '거래처 삭제', 'id_from' => 'post:id', 'reason' => 'reason',
                                         'name_sql' => "SELECT CONCAT(name_ko, ' (', company_code, ')') FROM companies WHERE id = ?"]],
     'company_contacts' => ['remove' => ['label' => '업체 담당자 내리기', 'id_from' => 'post:id', 'reason' => '',
@@ -239,7 +240,7 @@ function schema_upgrade_dest(): void
  */
 function schema_upgrade_filestore(): void
 {
-    if (!empty($_SESSION['schema_fs_v1'])) { return; }
+    if (!empty($_SESSION['schema_fs_v2'])) { return; }
     $pdo = db();
     try {
         $has = $pdo->query("SELECT COUNT(*) FROM information_schema.COLUMNS
@@ -277,12 +278,14 @@ function schema_upgrade_filestore(): void
             ['fs_dir_public', '/web/images/erp', '공개 이미지 폴더', 'NAS 웹서버가 내주는 폴더 안 (WebDAV 기준 경로)', 'text', null, 7],
             ['fs_public_base_url', 'https://frugen.synology.me:8443/images/erp', '공개 이미지 기준 주소', '위 공개 폴더가 인터넷에서 보이는 주소. 바꾸면 모든 공개 이미지 주소가 같이 바뀝니다.', 'text', null, 8],
             ['fs_keep_local', '예', '서버에도 사본 유지', '예 = ERP 서버 · NAS 두 곳에 보관 (한쪽이 망가져도 남음) · 아니오 = NAS 에만', 'select', '예,아니오', 9],
+            ['fs_dir_backup', '/backup/db', 'DB 백업 폴더', 'NAS 의 비공개 폴더 (WebDAV 기준 경로). 하루 한 번 DB 전체를 여기에 저장', 'text', null, 10],
+            ['fs_backup_keep', '30', 'DB 백업 보관 개수', '이보다 오래된 백업은 NAS 에서 지웁니다 (하루 1개씩 쌓임)', 'number', null, 11],
         ];
         $ins = $pdo->prepare("INSERT IGNORE INTO app_settings
                                 (setting_key, setting_val, group_ko, label_ko, help_ko, input_type, options_csv, sort_order)
                               VALUES (?, ?, '파일 저장소', ?, ?, ?, ?, ?)");
         foreach ($rows as $r) { $ins->execute($r); }
-        $_SESSION['schema_fs_v1'] = 1;
+        $_SESSION['schema_fs_v2'] = 1;
     } catch (PDOException $e) {
         error_log('파일 저장소 표 준비 실패: ' . $e->getMessage());
     }
