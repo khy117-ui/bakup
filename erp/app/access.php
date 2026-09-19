@@ -83,8 +83,10 @@ const ROUTE_PERMS = [
  */
 const DELETE_ACTIONS = [
     // 홈페이지 게시판(board_post) 글 삭제 = 휴지통으로
-    'boards'           => ['hide'   => ['label' => '홈페이지 게시글 삭제', 'id_from' => 'post:post_id', 'reason' => 'reason',
-                                        'name_sql' => 'SELECT title FROM board_post WHERE id = ?']],
+    'boards'           => ['hide'      => ['label' => '홈페이지 게시글 삭제', 'id_from' => 'post:post_id', 'reason' => 'reason',
+                                           'name_sql' => 'SELECT title FROM board_post WHERE id = ?'],
+                           'hide_many' => ['label' => '홈페이지 게시글 여러 개 삭제', 'id_from' => 'post:first_id', 'reason' => 'reason',
+                                           'name_sql' => "SELECT CONCAT(title, ' 외') FROM board_post WHERE id = ?"]],
     'companies'        => ['delete' => ['label' => '거래처 삭제', 'id_from' => 'post:id', 'reason' => 'reason',
                                         'name_sql' => "SELECT CONCAT(name_ko, ' (', company_code, ')') FROM companies WHERE id = ?"]],
     'company_contacts' => ['remove' => ['label' => '업체 담당자 내리기', 'id_from' => 'post:id', 'reason' => '',

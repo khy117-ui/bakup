@@ -46,6 +46,27 @@ try {
     error_log('board_post 준비 실패: ' . $e->getMessage());
 }
 
+// 옛 홈페이지 목록에서 옮긴 예시 Q&A 는 답변이 본문 안에 '<strong>답변</strong> …' 으로 적혀 있어 '답변 대기' 로 잘못 셉니다.
+// 답변 칸이 비어 있고 그 모양일 때만, 본문의 답변 부분을 답변 칸으로 옮깁니다 (한 번 옮기면 다시 안 걸림)
+try {
+    $fix = $pdo->query("SELECT id, content, created_at FROM board_post
+                         WHERE board IN ('qna','trash_qna') AND answer IS NULL AND content LIKE '%<strong>답변</strong>%' LIMIT 200")->fetchAll();
+    $upd = $pdo->prepare('UPDATE board_post SET content = ?, answer = ?, answered_at = ? WHERE id = ? AND answer IS NULL');
+    foreach ($fix as $f) {
+        $parts = preg_split('#<p>\s*<strong>\s*답변\s*</strong>#u', (string)$f['content'], 2);
+        if (count($parts) === 2 && trim(strip_tags($parts[1])) !== '') {
+            $upd->execute([trim($parts[0]), '<p>' . trim($parts[1]), $f['created_at'], (int)$f['id']]);
+        }
+    }
+} catch (PDOException $e) {
+    error_log('예시 Q&A 답변 정리 실패: ' . $e->getMessage());
+}
+/** 옛 목록에서 옮긴 예시 글 (본문이 자리표시뿐) */
+function bd_is_placeholder(?string $html): bool
+{
+    return trim(strip_tags((string)$html)) === '비공개 문의입니다.';
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_check();
     $act = post('act');
@@ -108,6 +129,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             log_action('게시판', 'DELETE', 'board_post', $id, (string)$row['title'], null, '휴지통으로', $why);
             flash('휴지통으로 옮겼습니다. 홈페이지에서 바로 사라지고, 휴지통에서 되돌릴 수 있습니다.');
             redirect('?p=boards&b=' . $row['board']);
+        } elseif ($act === 'hide_many') {
+            // 목록에서 여러 개 골라 휴지통으로 (DELETE_ACTIONS 'boards/hide_many')
+            $ids = array_values(array_unique(array_filter(array_map('intval', (array)($_POST['ids'] ?? [])))));
+            $why = trim(post('reason'));
+            if (!$ids) { throw new RuntimeException('삭제할 글을 고르세요.'); }
+            if (mb_strlen($why) < 2) { throw new RuntimeException('삭제 사유를 적어 주세요.'); }
+            $ph = implode(',', array_fill(0, count($ids), '?'));
+            $st = $pdo->prepare("UPDATE board_post SET board = CONCAT('trash_', board), updated_at = NOW()
+                                  WHERE id IN ($ph) AND board IN ('notice','qna')");
+            $st->execute($ids);
+            log_action('게시판', 'DELETE', 'board_post', $ids[0], count($ids) . '개', null, '휴지통으로 ' . implode(',', $ids), $why);
+            flash($st->rowCount() . '개를 휴지통으로 옮겼습니다. 휴지통에서 되돌릴 수 있습니다.');
+            redirect('?p=boards&b=' . (array_key_exists(post('board'), BOARD_NAMES) ? post('board') : 'notice'));
         } elseif ($act === 'restore') {
             $id = (int)post('id');
             $pdo->prepare("UPDATE board_post SET board = REPLACE(board, 'trash_', ''), updated_at = NOW()
@@ -136,7 +170,8 @@ $kw = trim(query('kw'));
 $w = $b === 'trash' ? "board LIKE 'trash\\_%'" : 'board = ?';
 $pa = $b === 'trash' ? [] : [$b];
 if ($kw !== '') { $w .= ' AND (title LIKE ? OR content LIKE ? OR writer LIKE ?)'; array_push($pa, "%$kw%", "%$kw%", "%$kw%"); }
-$st = $pdo->prepare("SELECT id, board, title, writer, views, pinned, is_secret, answer IS NOT NULL AS answered, created_at
+$st = $pdo->prepare("SELECT id, board, title, writer, views, pinned, is_secret, answer IS NOT NULL AS answered, created_at,
+                              content LIKE '%비공개 문의입니다.%' AND CHAR_LENGTH(content) < 40 AS placeholder
                        FROM board_post WHERE $w ORDER BY pinned DESC, id DESC LIMIT 200");
 $st->execute($pa);
 $rows = $st->fetchAll();
@@ -215,6 +250,12 @@ layout_head('홈페이지 게시판', 'boards');
     <?php endif; ?>
     </span>
   </div>
+  <?php if ($cur['is_secret']): ?>
+  <div class="cb" style="padding-bottom:0"><div class="msg" style="background:var(--warn-bg);color:var(--warn-fg);margin:0">
+    <b>비밀글</b> — 홈페이지에서는 작성자가 넣은 비밀번호가 있어야 보이고, ERP 에서는 관리자가 그대로 봅니다.
+    <?php if (bd_is_placeholder($cur['content'])): ?><br>이 글은 <b>옛 홈페이지 목록에서 옮긴 예시 글</b>이라 실제 문의 내용이 없습니다. 지워도 됩니다.<?php endif; ?>
+  </div></div>
+  <?php endif; ?>
   <div class="cb" style="font-size:13.5px;line-height:1.8"><?= nl2br(h(bd_to_text($cur['content']))) ?></div>
   <?php if (in_array($cur['board'], ['qna', 'trash_qna'], true)): ?>
   <div class="cb" style="border-top:1px solid var(--line2);background:#F7FAFB">
@@ -237,15 +278,24 @@ layout_head('홈페이지 게시판', 'boards');
   <?php if (!$rows): ?>
     <div class="empty"><?= $b === 'trash' ? '휴지통이 비어 있습니다.' : '글이 없습니다.' ?></div>
   <?php else: ?>
+  <?php if ($canEdit && $b !== 'trash'): ?>
+  <div class="cb" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line2)">
+    <label style="display:flex;gap:6px;align-items:center;font-size:12.5px"><input type="checkbox" id="bd-all" style="width:auto"> 전체 선택</label>
+    <button type="button" class="btn sm" id="bd-del-many" style="color:#A32020" disabled>🗑 선택 삭제 (<span id="bd-n">0</span>)</button>
+    <span style="font-size:11.5px;color:var(--ink3)">삭제하면 휴지통으로 옮겨지고 홈페이지에서 바로 사라집니다 · 휴지통에서 되돌릴 수 있음</span>
+  </div>
+  <?php endif; ?>
   <table>
-    <thead><tr><?php if ($canEdit && $b !== 'trash'): ?><th class="c" style="width:78px" title="누르면 맨 위 고정 / 해제">고정</th><?php endif; ?>
+    <thead><tr><?php if ($canEdit && $b !== 'trash'): ?><th class="c" style="width:34px"></th><th class="c" style="width:78px" title="누르면 맨 위 고정 / 해제">고정</th><?php endif; ?>
       <th style="width:70px">번호</th><th>제목</th><th style="width:120px">작성자</th>
       <th style="width:110px">날짜</th><th class="r" style="width:70px">조회</th>
-      <?php if ($b !== 'notice'): ?><th class="c" style="width:90px">답변</th><?php endif; ?></tr></thead>
+      <?php if ($b !== 'notice'): ?><th class="c" style="width:90px">답변</th><?php endif; ?>
+      <?php if ($canEdit && $b !== 'trash'): ?><th class="c" style="width:60px">삭제</th><?php endif; ?></tr></thead>
     <tbody>
     <?php foreach ($rows as $r): ?>
       <tr style="<?= (int)$r['id'] === $pid ? 'background:#EEF6FA' : ($r['pinned'] ? 'background:#F4F9FD' : '') ?>">
         <?php if ($canEdit && $b !== 'trash'): ?>
+        <td class="c"><input type="checkbox" class="bd-pick" value="<?= (int)$r['id'] ?>" style="width:auto" aria-label="<?= h($r['title']) ?> 고르기"></td>
         <td class="c"><form method="post" style="display:inline"><?= csrf_field() ?>
           <input type="hidden" name="act" value="pin"><input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
           <button class="btn sm" title="<?= $r['pinned'] ? '고정 해제' : '맨 위 고정' ?>"
@@ -253,12 +303,17 @@ layout_head('홈페이지 게시판', 'boards');
         <?php endif; ?>
         <td class="tnum"><?= $r['pinned'] ? '<span class="badge b-info">공지</span>' : (int)$r['id'] ?></td>
         <td style="font-weight:600"><a href="?p=boards&amp;b=<?= h($b) ?>&amp;id=<?= (int)$r['id'] ?>"><?= h($r['title']) ?></a>
-          <?= $r['is_secret'] ? ' <span class="badge b-warn">비밀</span>' : '' ?></td>
+          <?= $r['is_secret'] ? ' <span class="badge b-warn">비밀</span>' : '' ?>
+          <?= !empty($r['placeholder']) ? ' <span class="badge b-info" title="옛 홈페이지 목록에서 옮긴 예시 글 — 실제 내용 없음">예시</span>' : '' ?></td>
         <td><?= h($r['writer']) ?></td>
         <td class="tnum"><?= h(substr((string)$r['created_at'], 0, 10)) ?></td>
         <td class="r tnum"><?= (int)$r['views'] ?></td>
         <?php if ($b !== 'notice'): ?>
           <td class="c"><?= in_array($r['board'], ['qna', 'trash_qna'], true) ? ($r['answered'] ? '<span class="badge b-ok">완료</span>' : '<span class="badge b-warn">대기</span>') : '' ?></td>
+        <?php endif; ?>
+        <?php if ($canEdit && $b !== 'trash'): ?>
+          <td class="c"><button type="button" class="btn sm bd-del-one" data-id="<?= (int)$r['id'] ?>" data-title="<?= h($r['title']) ?>"
+                  title="삭제 (휴지통으로)" style="color:#A32020;padding:0 8px">🗑</button></td>
         <?php endif; ?>
       </tr>
     <?php endforeach; ?>
@@ -266,4 +321,39 @@ layout_head('홈페이지 게시판', 'boards');
   </table>
   <?php endif; ?>
 </div>
+<?php if ($canEdit && $b !== 'trash'): ?>
+<form method="post" id="bd-del-form" style="display:none">
+  <?= csrf_field() ?>
+  <input type="hidden" name="act" value="hide_many"><input type="hidden" name="board" value="<?= h($b) ?>">
+  <input type="hidden" name="first_id" value=""><input type="hidden" name="reason" value="">
+  <div id="bd-del-ids"></div>
+</form>
+<script>
+(function () {
+  var picks = document.querySelectorAll('.bd-pick'), n = document.getElementById('bd-n'), many = document.getElementById('bd-del-many');
+  function upd() { var c = 0; picks.forEach(function (p) { if (p.checked) c++; }); n.textContent = c; many.disabled = c === 0; }
+  picks.forEach(function (p) { p.addEventListener('change', upd); });
+  var all = document.getElementById('bd-all');
+  if (all) all.addEventListener('change', function () { picks.forEach(function (p) { p.checked = all.checked; }); upd(); });
+  function send(ids, label) {
+    var why = prompt(label + ' 을(를) 삭제(휴지통으로)합니다.\n삭제 사유를 적어 주세요.');
+    if (why === null) return;
+    if (why.trim().length < 2) { alert('삭제 사유를 두 글자 이상 적어 주세요.'); return; }
+    var f = document.getElementById('bd-del-form'), box = document.getElementById('bd-del-ids');
+    box.innerHTML = '';
+    ids.forEach(function (id) { var i = document.createElement('input'); i.type = 'hidden'; i.name = 'ids[]'; i.value = id; box.appendChild(i); });
+    f.elements['first_id'].value = ids[0];
+    f.elements['reason'].value = why.trim();
+    f.submit();
+  }
+  many.addEventListener('click', function () {
+    var ids = []; picks.forEach(function (p) { if (p.checked) ids.push(p.value); });
+    if (ids.length) send(ids, '고른 글 ' + ids.length + '개');
+  });
+  document.querySelectorAll('.bd-del-one').forEach(function (b) {
+    b.addEventListener('click', function () { send([b.getAttribute('data-id')], '"' + b.getAttribute('data-title') + '"'); });
+  });
+})();
+</script>
+<?php endif; ?>
 <?php layout_foot();
