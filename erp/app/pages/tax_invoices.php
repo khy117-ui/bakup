@@ -146,6 +146,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'create') {
     }
 }
 
+// ---------------------------------------------------------------- 홈택스 일괄발급 엑셀 내려받기
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'hometax_xlsx') {
+    csrf_check();
+    require_once APP_DIR . '/hometax.php';
+    try {
+        [$rows, $skip, $used] = hometax_rows(db(), $eid, (array)($_POST['tid'] ?? []));
+        if (!$rows) {
+            $err = '내려받을 세금계산서가 없습니다.'
+                 . ($skip ? ' 뺀 것: ' . implode(' / ', array_map(fn($k, $v) => $k . ' ' . $v, array_keys($skip), $skip)) : '');
+        } else {
+            $bin = hometax_xlsx($rows);
+            log_action('세금계산서', 'EXPORT', 'tax_invoices', null, '홈택스 엑셀', null,
+                       count($rows) . '건 · ' . implode(',', $used) . ($skip ? ' · 뺀 것 ' . count($skip) . '건' : ''));
+            if ($skip) {
+                // 뺀 것은 다음 화면에서 알려 줍니다 (파일 응답에는 메시지를 못 붙임)
+                flash('홈택스 엑셀에서 뺀 것 ' . count($skip) . '건: '
+                      . implode(' / ', array_map(fn($k, $v) => $k . ' ' . $v, array_keys($skip), $skip)));
+            }
+            $fn = 'hometax_' . entity_code($eid) . '_' . date('Ymd_His') . '_' . count($rows) . '건.xlsx';
+            header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            header("Content-Disposition: attachment; filename=\"hometax.xlsx\"; filename*=UTF-8''" . rawurlencode($fn));
+            header('Content-Length: ' . strlen($bin));
+            header('Cache-Control: no-store');
+            echo $bin;
+            exit;
+        }
+    } catch (Throwable $e) {
+        error_log('홈택스 엑셀 실패: ' . $e->getMessage());
+        $err = $e instanceof RuntimeException ? $e->getMessage() : '엑셀을 만들지 못했습니다.';
+    }
+}
+
+// ---------------------------------------------------------------- 홈택스 발급 목록으로 승인번호 붙이기
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'hometax_match') {
+    csrf_check();
+    require_once APP_DIR . '/hometax.php';
+    try {
+        $res = hometax_match_approvals(db(), $eid, (string)($_POST['pasted'] ?? ''));
+        if ($res['error'] !== '') {
+            $err = $res['error'];
+        } else {
+            flash('승인번호를 ' . count($res['matched']) . '건 붙였습니다.'
+                  . ($res['unmatched'] ? ' 못 찾은 것 ' . count($res['unmatched']) . '건: '
+                                         . implode(' / ', array_slice($res['unmatched'], 0, 10)) : ''));
+            redirect('?p=tax_invoices');
+        }
+    } catch (Throwable $e) {
+        error_log('홈택스 승인번호 붙이기 실패: ' . $e->getMessage());
+        $err = '승인번호를 붙이지 못했습니다.';
+    }
+}
+
 // ---------------------------------------------------------------- 상태 변경
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(post('act'), ['issue', 'cancel'], true)) {
     csrf_check();
@@ -240,9 +292,12 @@ layout_head('전자세금계산서', 'tax_invoices');
 
 <?php if ($err !== ''): ?><div class="msg err"><?= h($err) ?></div><?php endif; ?>
 
-<div class="msg" style="background:var(--info-bg);color:var(--info-fg)">
-  <b>국세청 전송은 아직 붙어 있지 않습니다.</b> 연동사(팝빌·바로빌 등)가 정해지지 않았습니다.
-  지금은 내용을 여기서 만들고, 연동사에서 발행한 뒤 <b>승인번호를 받아 여기 기록</b>하는 방식으로 씁니다.
+<div class="msg" style="background:var(--info-bg);color:var(--info-fg);line-height:1.8">
+  <b>홈택스 엑셀 일괄발급으로 국세청에 보냅니다.</b>
+  ① 아래 발행 내역에서 <b>작성중</b> 인 것을 골라 <b>[홈택스 엑셀 내려받기]</b> (한 파일 100건까지)
+  → ② 홈택스 <b>전자(세금)계산서 일괄발급</b> 에 그 파일을 올려 발급 (인증서 서명 — 50건씩)
+  → ③ 홈택스 발급 목록을 엑셀로 받아 <b>머리행까지 복사</b> 해 아래 <b>[승인번호 붙이기]</b> 칸에 붙여 넣으면 승인번호가 자동으로 붙고 '전송완료' 가 됩니다.
+  <span style="color:var(--ink3)">엑셀 비고 칸에 ERP 문서번호가 들어가 짝을 찾습니다. 비고를 지우지 마세요.</span>
 </div>
 
 <?php if ($cur): ?>
@@ -363,7 +418,7 @@ layout_head('전자세금계산서', 'tax_invoices');
   </table>
   <div class="pager"><span>
     <b>영세율과 과세가 섞인 청구서는 [만들기] 한 번에 두 장으로 나눠 만듭니다</b> —
-    운송(특송 · 항공 · 해상)은 영세율 세금계산서, 핸드링 · 도큐멘트 · 국내운송 · 창고 · 검사 · 통관는 과세 세금계산서.
+    운송(특송 · 항공 · 해상)은 영세율 세금계산서, 핸드링 · 도큐멘트 · 국내운송 · 창고 · 검사 · 통관은 과세 세금계산서.
   </span></div>
   <?php endif; ?>
 </div>
@@ -386,8 +441,17 @@ layout_head('전자세금계산서', 'tax_invoices');
   <?php if (!$rows): ?>
     <div class="empty">발행한 세금계산서가 없습니다.</div>
   <?php else: ?>
+  <form method="post" id="ht-form">
+  <?= csrf_field() ?>
+  <input type="hidden" name="act" value="hometax_xlsx">
+  <div class="cb" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line)">
+    <span style="font-size:12.5px;color:var(--ink2)">작성중 · 발행(승인번호 없음) 문서를 골라 홈택스 일괄발급 엑셀로 —
+      <b id="ht-n">0</b>건</span>
+    <button class="btn sm pri" style="margin-left:auto" id="ht-btn" disabled>홈택스 엑셀 내려받기</button>
+  </div>
   <table>
     <thead><tr>
+      <th class="c" style="width:36px"><input type="checkbox" id="ht-all" title="이 목록의 보낼 수 있는 것 모두"></th>
       <th style="width:165px">문서번호</th><th style="width:100px">작성일자</th>
       <th>공급받는자</th><th style="width:125px">사업자번호</th>
       <th class="c" style="width:90px">종류</th>
@@ -398,6 +462,9 @@ layout_head('전자세금계산서', 'tax_invoices');
     <tbody>
     <?php foreach ($rows as $r): [$lab,$cls] = $STATUS[$r['status']] ?? [$r['status'],'b-info']; ?>
       <tr>
+        <td class="c"><?php if (in_array($r['status'], ['DRAFT', 'ISSUED'], true) && !$r['nts_approval_no']
+                                && in_array($r['doc_type'], ['TAX', 'ZERO'], true)): ?>
+          <input type="checkbox" class="ht-pick" name="tid[]" value="<?= (int)$r['id'] ?>"><?php endif; ?></td>
         <td class="tnum" style="font-weight:600"><?= h($r['doc_no']) ?></td>
         <td class="tnum"><?= h($r['issue_date']) ?></td>
         <td><?= h($r['buyer_name']) ?></td>
@@ -412,6 +479,41 @@ layout_head('전자세금계산서', 'tax_invoices');
     <?php endforeach; ?>
     </tbody>
   </table>
+  </form>
+  <script>
+  (function () {
+    var picks = document.querySelectorAll('.ht-pick'), n = document.getElementById('ht-n'), btn = document.getElementById('ht-btn');
+    function upd() {
+      var c = 0; picks.forEach(function (p) { if (p.checked) c++; });
+      n.textContent = c; btn.disabled = c === 0;
+      btn.textContent = c > 100 ? '100건까지만 됩니다' : '홈택스 엑셀 내려받기';
+      if (c > 100) btn.disabled = true;
+    }
+    picks.forEach(function (p) { p.addEventListener('change', upd); });
+    document.getElementById('ht-all').addEventListener('change', function () {
+      var on = this.checked; picks.forEach(function (p) { p.checked = on; }); upd();
+    });
+    // 파일을 받은 뒤 화면을 새로 읽어 '뺀 것' 안내를 보여 줍니다
+    document.getElementById('ht-form').addEventListener('submit', function () {
+      setTimeout(function () { location.reload(); }, 2500);
+    });
+  })();
+  </script>
   <?php endif; ?>
+</div>
+
+<div class="card">
+  <div class="ch">홈택스 승인번호 붙이기
+    <span style="font-weight:400;color:var(--ink3)">발급 후 홈택스 목록조회 → 엑셀 내려받기 → 머리행부터 표 전체 복사 → 아래에 붙여넣기</span></div>
+  <form method="post" class="cb">
+    <?= csrf_field() ?>
+    <input type="hidden" name="act" value="hometax_match">
+    <textarea name="pasted" rows="5" required style="font-family:ui-monospace,Consolas,monospace;font-size:12px"
+              placeholder="작성일자&#9;승인번호&#9;…&#9;공급받는자사업자등록번호&#9;…&#9;공급가액&#9;세액&#9;…&#9;비고 (홈택스 엑셀에서 복사한 그대로)"></textarea>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+      <span style="font-size:11.5px;color:var(--ink3)">비고의 ERP 문서번호로 먼저 찾고, 없으면 작성일자 · 공급받는자 번호 · 공급가액 · 세액이 모두 같은 한 건을 찾습니다.</span>
+      <button class="btn pri" style="margin-left:auto">승인번호 붙이기</button>
+    </div>
+  </form>
 </div>
 <?php layout_foot();
