@@ -21,6 +21,66 @@ $eid = entity_id();                       // 새로 만드는 것은 한 사업�
 
 require_perm('CASH_WRITE', '입금 등록');
 
+/** 기타 입금(거래처 없이 수동 입력) 구분 — financial_transactions.payee_type 에 둡니다 */
+const CASH_IN_ETC = ['INTEREST' => '이자수익', 'MISC' => '잡이익 · 기타수입', 'REFUND' => '환급금 (세금 · 보험 등)',
+                     'SUSPENSE' => '가수금 (누가 보냈는지 확인 전)', 'LOAN' => '차입금 · 대표자 입금',
+                     'ASSET' => '자산 매각', 'OTHER' => '기타'];
+
+// ---------------------------------------------------------------- 기타 입금 (수동)
+// 거래처 · 전표와 관계없는 입금 — 이자, 환급, 가수금, 차입 등. 매출 미수를 줄이지 않습니다
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save_etc') {
+    csrf_check();
+    $entId  = (int)post('business_entity_id', (string)$eid);
+    $date   = post('txn_date', date('Y-m-d'));
+    $kind   = array_key_exists(post('kind'), CASH_IN_ETC) ? post('kind') : '';
+    $amount = (float)str_replace(',', '', post('amount'));
+    $acctId = (int)post('to_account_id');
+    $method = in_array(post('method'), ['TRANSFER', 'CASH', 'CARD', 'NOTE', 'PG'], true) ? post('method') : 'TRANSFER';
+    $who    = trim(post('counterparty'));
+    $summary = trim(post('summary'));
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+        $err = '입금일자를 입력하세요.';
+    } elseif ($kind === '') {
+        $err = '입금 구분을 고르세요.';
+    } elseif ($amount <= 0) {
+        $err = '입금금액을 입력하세요.';
+    } else {
+        $pdo = db();
+        try {
+            if ($acctId > 0) {
+                $chk = $pdo->prepare('SELECT COUNT(*) FROM business_bank_accounts WHERE id = ? AND business_entity_id = ? AND is_active = 1');
+                $chk->execute([$acctId, $entId]);
+                if (!(int)$chk->fetchColumn()) { throw new RuntimeException('고른 계좌가 이 사업자의 계좌가 아닙니다.'); }
+            }
+            $pdo->beginTransaction();
+            $no = next_doc_no('CASH_IN', entity_code($entId) . '-R-', '-', $entId);
+            $label = CASH_IN_ETC[$kind];
+            $pdo->prepare(
+                "INSERT INTO financial_transactions
+                   (business_entity_id, doc_no, txn_type, txn_date, company_id, counterparty, to_account_id, method,
+                    supply_amount, tax_type, vat_amount, amount, payee_type, alloc_amount, summary, memo, status, created_by)
+                 VALUES (?,?,'IN',?,NULL,?,?,?,?,'EXEMPT',0,?,?,0,?,?,'CONFIRMED',?)")
+                ->execute([$entId, $no, $date, $who !== '' ? mb_substr($who, 0, 100) : null, $acctId ?: null, $method,
+                           $amount, $amount, $kind, mb_substr('[' . $label . ']' . ($summary !== '' ? ' ' . $summary : ''), 0, 255),
+                           post('memo') ?: null, $_SESSION['admin_id'] ?? null]);
+            $txnId = (int)$pdo->lastInsertId();
+            fin_audit($txnId, 'CREATE', null, null, money($amount) . '원 · 기타 입금(' . $label . ')');
+            log_action('입출금', 'CREATE', 'financial_transactions', $txnId, $no, null, '기타 입금 ' . $label . ' ' . money($amount));
+            $pdo->commit();
+            flash('기타 입금 ' . $no . ' (' . $label . ' ' . money($amount) . '원) 을 등록했습니다.');
+            redirect('?p=cash_list&type=IN');
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) { $pdo->rollBack(); }
+            if ($e instanceof RuntimeException) {
+                $err = $e->getMessage();
+            } else {
+                error_log('기타 입금 등록 실패: ' . $e->getMessage());
+                $err = '등록하지 못했습니다.';
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------- 저장
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save') {
     csrf_check();
@@ -241,6 +301,67 @@ layout_head('입금 등록', 'cash_in');
 </div>
 
 <?php if ($err !== ''): ?><div class="msg err"><?= h($err) ?></div><?php endif; ?>
+
+<?php
+$etcEnts = db()->query('SELECT id, code, name_ko FROM business_entities WHERE is_active = 1 ORDER BY id')->fetchAll();
+$etcAcc = db()->query("SELECT a.id, a.business_entity_id, a.bank_name, a.account_no FROM business_bank_accounts a
+                        WHERE a.is_active = 1 AND a.purpose IN ('IN','BOTH') ORDER BY a.business_entity_id, a.sort_order, a.id")->fetchAll();
+$etcOpen = post('act') === 'save_etc' || query('mode') === 'etc';
+?>
+<details class="card" id="etc"<?= $etcOpen ? ' open' : '' ?>>
+  <summary class="ch" style="cursor:pointer">기타 입금 — 수동 입력 (거래처 · 전표 없이)
+    <span style="font-weight:400;color:var(--ink3)">이자 · 환급금 · 가수금 · 차입 · 자산 매각 등 — 매출 미수는 줄이지 않습니다</span></summary>
+  <form method="post" class="cb">
+    <?= csrf_field() ?>
+    <input type="hidden" name="act" value="save_etc">
+    <div class="f" style="align-items:flex-end">
+      <div class="fw w1"><label for="ee">사업자 *</label>
+        <select id="ee" name="business_entity_id">
+          <?php foreach ($etcEnts as $en): ?>
+            <option value="<?= (int)$en['id'] ?>"<?= (int)$en['id'] === (int)$formEnt ? ' selected' : '' ?>><?= h($en['code'] . ' · ' . $en['name_ko']) ?></option>
+          <?php endforeach; ?></select></div>
+      <div class="fw w1"><label for="ed">입금일 *</label>
+        <input type="date" id="ed" name="txn_date" value="<?= h(post('txn_date') ?: date('Y-m-d')) ?>" required></div>
+      <div class="fw w2"><label for="ek">입금 구분 *</label>
+        <select id="ek" name="kind" required><option value="">— 고르세요 —</option>
+          <?php foreach (CASH_IN_ETC as $k => $lab): ?>
+            <option value="<?= $k ?>"<?= post('kind') === $k ? ' selected' : '' ?>><?= h($lab) ?></option>
+          <?php endforeach; ?></select></div>
+      <div class="fw w1"><label for="ea">입금금액 *</label>
+        <input type="text" id="ea" name="amount" class="tnum" inputmode="numeric" style="text-align:right" required
+               value="<?= h(post('act') === 'save_etc' ? post('amount') : '') ?>" placeholder="0"></div>
+    </div>
+    <div class="f" style="align-items:flex-end;margin-top:10px">
+      <div class="fw w2"><label for="ew">입금한 곳 (입금자명)</label>
+        <input type="text" id="ew" name="counterparty" maxlength="100" value="<?= h(post('act') === 'save_etc' ? post('counterparty') : '') ?>" placeholder="예) 국민은행 이자 · 강서세무서"></div>
+      <div class="fw w2"><label for="eac">입금계좌</label>
+        <select id="eac" name="to_account_id"><option value="">— 지정 안 함 —</option>
+          <?php foreach ($etcAcc as $ac): ?>
+            <option value="<?= (int)$ac['id'] ?>" data-ent="<?= (int)$ac['business_entity_id'] ?>"><?= h($ac['bank_name'] . ' ' . $ac['account_no']) ?></option>
+          <?php endforeach; ?></select></div>
+      <div class="fw w1"><label for="em">방법</label>
+        <select id="em" name="method"><option value="TRANSFER">계좌이체</option><option value="CASH">현금</option>
+          <option value="CARD">카드</option><option value="NOTE">어음</option><option value="PG">PG</option></select></div>
+      <div class="fw gr" style="min-width:200px"><label for="es">적요</label>
+        <input type="text" id="es" name="summary" maxlength="200" value="<?= h(post('act') === 'save_etc' ? post('summary') : '') ?>" placeholder="예) 9월 예금이자"></div>
+    </div>
+    <div class="fw" style="margin-top:10px"><label for="emo">메모</label>
+      <input type="text" id="emo" name="memo" maxlength="500"></div>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:12px">
+      <button class="btn pri">기타 입금 등록</button>
+      <span style="font-size:11.5px;color:var(--ink3)">거래처 대금이면 아래 '거래처 선택' 으로 등록하세요 — 그래야 미수가 줄어듭니다.
+        누가 보낸 돈인지 모르면 <b>가수금</b>으로 넣어 두고, 확인되면 취소 후 거래처 입금으로 다시 넣습니다.</span>
+    </div>
+  </form>
+  <script>
+  // 사업자에 맞는 계좌만 보이게
+  (function () {
+    var ent = document.getElementById('ee'), acc = document.getElementById('eac');
+    function f() { Array.prototype.forEach.call(acc.options, function (o) { var e = o.getAttribute('data-ent'); o.hidden = !!e && e !== ent.value; if (o.hidden && o.selected) acc.value = ''; }); }
+    ent.addEventListener('change', f); f();
+  })();
+  </script>
+</details>
 
 <div class="card">
   <div class="ch">거래처 선택</div>

@@ -238,7 +238,10 @@ layout_head('입출금 내역', 'cash_list');
       <div><div style="font-size:11px;color:var(--ink2)">배분됨</div>
         <div class="tnum"><?= money($cur['alloc_amount']) ?>
           <?php $left = (float)$cur['amount'] - (float)$cur['alloc_amount'];
-                if ($left > 0): ?>
+                $etcIn = $cur['txn_type'] === 'IN' && empty($cur['company_id']);   // 기타 입금(수동) — 배분 대상 아님
+                if ($etcIn): ?>
+            <span style="color:var(--ink3);font-size:11px">(기타 입금 — 전표와 관계없음)</span>
+          <?php elseif ($left > 0): ?>
             <span style="color:var(--warn-fg);font-size:11px">
               (미배분 <?= money($left) ?>)</span>
           <?php endif; ?></div></div>
@@ -288,8 +291,9 @@ layout_head('입출금 내역', 'cash_list');
     </tbody>
   </table>
   <?php elseif ($cur['status'] !== 'CANCELLED'): ?>
-    <div class="empty">배분된 전표가 없습니다 — 전액 <?=
-      $cur['txn_type'] === 'IN' ? '선수금' : '미배분' ?>입니다.</div>
+    <div class="empty"><?= $cur['txn_type'] === 'IN' && empty($cur['company_id'])
+      ? '기타 입금(수동 입력)입니다 — 매출전표에 배분하지 않습니다.'
+      : '배분된 전표가 없습니다 — 전액 ' . ($cur['txn_type'] === 'IN' ? '선수금' : '미배분') . '입니다.' ?></div>
   <?php endif; ?>
 
   <?php if ($cur['status'] !== 'CANCELLED'): ?>
