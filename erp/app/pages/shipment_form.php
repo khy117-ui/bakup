@@ -624,7 +624,7 @@ layout_head($title, 'shipments');
     </tbody>
   </table>
   <script>
-  // 종류를 고르면 회사 기준 세금구분으로 (운송 = 영세율, 핸드링 · 도큐멘트 · 국내운송 · 창고 · 검사 = 과세)
+  // 종류를 고르면 회사 기준 세금구분으로 (운송 = 영세율, 핸드링 · 도큐멘트 · 국내운송 · 창고 · 검사 · 통관 = 과세)
   document.querySelectorAll('select.ctype').forEach(function (s) {
     s.addEventListener('change', function () {
       var tax = s.options[s.selectedIndex].getAttribute('data-tax');
@@ -634,7 +634,7 @@ layout_head($title, 'shipments');
   });
   </script>
   <div class="pager"><span>비어 있는 줄은 저장하지 않습니다. VAT 는 과세 항목에만 10% 로 계산됩니다.
-    종류를 고르면 세금구분이 회사 기준으로 바뀝니다 (운송 = 영세율 · 핸드링 · 도큐멘트 · 국내운송 · 창고 · 검사 = 과세).
+    종류를 고르면 세금구분이 회사 기준으로 바뀝니다 (운송 = 영세율 · 핸드링 · 도큐멘트 · 국내운송 · 창고 · 검사 · 통관 = 과세).
     <?= $id > 0 ? '수정 시 기존 항목을 지우고 다시 넣습니다 — 지워진 내용은 이력에 남습니다.' : '' ?></span></div>
 </div>
 

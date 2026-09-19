@@ -365,7 +365,7 @@ layout_head($title, 'quotations');
     </tbody>
   </table>
   <script>
-  // 종류를 고르면 회사 기준 세금구분으로 (운송 = 영세율, 핸드링 · 도큐멘트 · 국내운송 · 창고 · 검사 = 과세)
+  // 종류를 고르면 회사 기준 세금구분으로 (운송 = 영세율, 핸드링 · 도큐멘트 · 국내운송 · 창고 · 검사 · 통관 = 과세)
   document.querySelectorAll('select.ctype').forEach(function (s) {
     s.addEventListener('change', function () {
       var tax = s.options[s.selectedIndex].getAttribute('data-tax');

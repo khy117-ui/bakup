@@ -538,8 +538,8 @@ function invoice_create(int $eid, int $cid, array $shipIds, string $invoiceDate,
 /**
  * 비용 종류와 기본 세금구분 — 매출전표 · 견적 · 매입이 같이 씁니다.
  * 회사 기준 (2026-09-19): 특송 · 항공 · 해상 운송(수출입)은 영세율,
- *   핸드링차지 · 도큐멘트피 · 국내운송 · 창고료 · 검사료는 과세 10%.
- *   통관료 · 기타는 정해지지 않아 기본값이 없습니다 (줄에서 직접 고름).
+ *   핸드링차지 · 도큐멘트피 · 국내운송 · 창고료 · 검사료 · 통관료는 과세 10%.
+ *   기타는 기본값이 없습니다 (줄에서 직접 고름).
  * 종류를 고르면 화면이 세금구분을 기본값으로 바꿔 주고, 필요하면 그 줄만 다시 고칠 수 있습니다.
  */
 const CHARGE_TYPES = [
@@ -551,7 +551,7 @@ const CHARGE_TYPES = [
     'DOMESTIC'    => ['국내운송',   'TAXABLE'],
     'STORAGE'     => ['창고료',     'TAXABLE'],
     'INSPECTION'  => ['검사료',     'TAXABLE'],
-    'CUSTOMS'     => ['통관료',     ''],
+    'CUSTOMS'     => ['통관료',     'TAXABLE'],
     'OTHER'       => ['기타',       ''],
 ];
 
