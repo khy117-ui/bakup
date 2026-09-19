@@ -107,19 +107,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ((int)$f['size'] > 2 * 1024 * 1024) {
                     throw new RuntimeException('직인 그림은 2MB 이하로 올려 주세요.');
                 }
+                // 비공개 구역 uploads/stamps — 서버에 먼저 두고, 파일 저장소가 NAS 면 NAS /erp/uploads/stamps 로
+                require_once APP_DIR . '/filestore.php';
                 $dir = entity_stamp_dir();
                 if (!is_dir($dir) && !@mkdir($dir, 0750, true) && !is_dir($dir)) {
                     throw new RuntimeException('보관 폴더를 만들지 못했습니다.');
                 }
                 doc_protect_root(storage_root());
                 $newRel = 'stamps/' . preg_replace('/[^A-Za-z0-9]/', '', (string)$eidS) . '_' . bin2hex(random_bytes(8)) . '.' . $ext;
-                if (!@move_uploaded_file((string)$f['tmp_name'], storage_root() . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $newRel))) {
+                if (!@move_uploaded_file((string)$f['tmp_name'], fs_local_path('uploads', $newRel))) {
                     throw new RuntimeException('직인 파일을 저장하지 못했습니다.');
+                }
+                if (fs_cfg()['nas'] && !fs_push('uploads', $newRel, $why)) {
+                    error_log('직인 NAS 저장 실패: ' . $why);   // 서버 사본으로 계속 씀
                 }
             }
             $pdo->prepare('UPDATE business_entities SET stamp_path = ? WHERE id = ?')->execute([$newRel, $eidS]);
             if ($oldPath !== '' && preg_match('/^stamps\/[A-Za-z0-9_-]+\.(png|jpg|jpeg|webp)$/', $oldPath)) {
-                @unlink(storage_root() . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $oldPath));
+                require_once APP_DIR . '/filestore.php';
+                @unlink(fs_local_path('uploads', $oldPath));
+                @unlink(storage_root() . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $oldPath));   // 예전 위치
+                if (fs_cfg()['nas']) { fs_dav('DELETE', fs_dav_url('uploads', $oldPath), null, null, 15); }
             }
             log_action('시스템', 'UPDATE', 'business_entities', $eidS, '직인', null, $newRel ? '직인 이미지 등록' : '직인 이미지 삭제');
             flash($newRel ? '직인을 등록했습니다. 청구서 인쇄 화면에 찍힙니다.' : '직인을 지웠습니다.');

@@ -229,6 +229,61 @@ function schema_upgrade_dest(): void
     }
 }
 
+/**
+ * 파일 저장소 (app/filestore.php) — 서류 저장 위치 칸 · 공개 이미지 표 · 환경설정 '파일 저장소' 항목
+ * 파일 자체는 DB 에 넣지 않습니다. DB 에는 상대경로 · 메타데이터만.
+ */
+function schema_upgrade_filestore(): void
+{
+    if (!empty($_SESSION['schema_fs_v1'])) { return; }
+    $pdo = db();
+    try {
+        $has = $pdo->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+                             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'documents' AND COLUMN_NAME = 'storage'")
+                   ->fetchColumn();
+        if (!(int)$has) {
+            $pdo->exec("ALTER TABLE documents
+                          ADD COLUMN storage VARCHAR(10) NOT NULL DEFAULT 'LOCAL'
+                              COMMENT 'LOCAL 이 서버에만 / NAS 파일 서버에 있음(서버 사본은 설정에 따라)' AFTER stored_path,
+                          ADD KEY ix_doc_storage (storage)");
+        }
+        $pdo->exec("CREATE TABLE IF NOT EXISTS public_files (
+                      id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                      rel_path        VARCHAR(300) NOT NULL COMMENT '공개 구역 기준 상대경로 — 주소 = 공개 기준 주소 + / + rel_path',
+                      original_name   VARCHAR(255) NOT NULL,
+                      mime_type       VARCHAR(100) NULL,
+                      size_bytes      BIGINT UNSIGNED NULL,
+                      width           INT NULL,
+                      height          INT NULL,
+                      checksum_sha256 CHAR(64) NULL,
+                      purpose         VARCHAR(50) NULL COMMENT '홈페이지 · 메일 · 로고 등 메모',
+                      uploaded_by     BIGINT UNSIGNED NULL,
+                      created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      deleted_at      DATETIME NULL,
+                      PRIMARY KEY (id),
+                      UNIQUE KEY uq_pf_path (rel_path)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='공개 이미지 (NAS 웹 폴더)'");
+        $rows = [
+            ['fs_mode', 'LOCAL', '저장 방식', 'LOCAL = 이 서버에만 · NAS = 집 시놀로지 NAS(WebDAV)에 저장. NAS 가 잠시 안 붙으면 서버에 두었다가 자동으로 다시 보냅니다.', 'select', 'LOCAL,NAS', 1],
+            ['fs_webdav_url', 'https://frugen.synology.me:5006', 'NAS WebDAV 주소', 'https:// 로 시작. 시놀로지 WebDAV Server 의 HTTPS 주소 · 포트 (예 https://frugen.synology.me:5006)', 'text', null, 2],
+            ['fs_webdav_user', null, 'NAS 계정', 'ERP 전용으로 만든 NAS 계정 (erp · web/images 폴더에만 권한)', 'text', null, 3],
+            ['fs_webdav_pass', null, 'NAS 비밀번호', 'ERP 전용 계정의 비밀번호', 'secret', null, 4],
+            ['fs_dir_docs', '/erp/documents', '비공개 · 업무 서류 폴더', 'WebDAV 기준 경로 (공유폴더/하위폴더). 웹에 공개하지 않는 공유폴더여야 합니다.', 'text', null, 5],
+            ['fs_dir_uploads', '/erp/uploads', '비공개 · 기타 첨부 폴더', '직인 · 거래처 서류 등. 역시 웹에 공개하지 않는 폴더.', 'text', null, 6],
+            ['fs_dir_public', '/web/images/erp', '공개 이미지 폴더', 'NAS 웹서버가 내주는 폴더 안 (WebDAV 기준 경로)', 'text', null, 7],
+            ['fs_public_base_url', 'https://frugen.synology.me:8443/images/erp', '공개 이미지 기준 주소', '위 공개 폴더가 인터넷에서 보이는 주소. 바꾸면 모든 공개 이미지 주소가 같이 바뀝니다.', 'text', null, 8],
+            ['fs_keep_local', '예', '서버에도 사본 유지', '예 = ERP 서버 · NAS 두 곳에 보관 (한쪽이 망가져도 남음) · 아니오 = NAS 에만', 'select', '예,아니오', 9],
+        ];
+        $ins = $pdo->prepare("INSERT IGNORE INTO app_settings
+                                (setting_key, setting_val, group_ko, label_ko, help_ko, input_type, options_csv, sort_order)
+                              VALUES (?, ?, '파일 저장소', ?, ?, ?, ?, ?)");
+        foreach ($rows as $r) { $ins->execute($r); }
+        $_SESSION['schema_fs_v1'] = 1;
+    } catch (PDOException $e) {
+        error_log('파일 저장소 표 준비 실패: ' . $e->getMessage());
+    }
+}
+
 /** 우체국 Open API 인증키 자리 — 환경설정 '연동' 에서 넣습니다 (비밀값: 화면에 다시 안 보임) */
 function schema_upgrade_epost(): void
 {

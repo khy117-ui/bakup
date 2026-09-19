@@ -165,6 +165,61 @@ $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
 $nasUrl = $scheme . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost')
         . rtrim(dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/index.php')), '/\\') . '/nas_backup.php';
 
+// ---------------------------------------------------------------- 파일 저장소 (NAS WebDAV) — app/filestore.php
+require_once APP_DIR . '/filestore.php';
+$fsTest = null;
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(post('act'), ['fs_test', 'fs_sync', 'pub_upload', 'pub_delete'], true)) {
+    csrf_check();
+    try {
+        if (post('act') === 'fs_test') {
+            $fsTest = fs_test();
+            log_action('시스템', 'UPDATE', 'app_settings', null, '파일 저장소 연결 시험', null,
+                       implode(' / ', array_map(fn($k, $v) => $k . ($v[0] ? ' OK' : ' 실패'), array_keys($fsTest), $fsTest)));
+        } elseif (post('act') === 'fs_sync') {
+            [$ok, $bad, $why] = fs_sync_pending(db(), 50);
+            flash('NAS 로 ' . $ok . '건 보냈습니다.' . ($bad ? ' 실패 ' . $bad . '건 — ' . $why : ''));
+            redirect('?p=storage_settings#fs');
+        } elseif (post('act') === 'pub_upload') {
+            $f = $_FILES['img'] ?? null;
+            $newId = $f ? fs_store_public_image($f, post('purpose'), $why) : 0;
+            if ($newId > 0) {
+                flash('공개 이미지를 올렸습니다. 아래 목록의 주소를 복사해 쓰세요.');
+                redirect('?p=storage_settings#pub');
+            }
+            $err = '공개 이미지를 올리지 못했습니다 — ' . ($why ?: '파일을 고르세요');
+        } else {
+            $st = db()->prepare('SELECT * FROM public_files WHERE id = ? AND deleted_at IS NULL');
+            $st->execute([(int)post('id')]);
+            if ($pf = $st->fetch()) {
+                fs_dav('DELETE', fs_dav_url('public', (string)$pf['rel_path']), null, null, 15);
+                @unlink(fs_local_path('public', (string)$pf['rel_path']));
+                db()->prepare('UPDATE public_files SET deleted_at = NOW() WHERE id = ?')->execute([(int)$pf['id']]);
+                log_action('시스템', 'DELETE', 'public_files', (int)$pf['id'], (string)$pf['original_name']);
+                flash('공개 이미지를 내렸습니다. 그 주소는 더 이상 열리지 않습니다.');
+            }
+            redirect('?p=storage_settings#pub');
+        }
+    } catch (Throwable $e) {
+        error_log('파일 저장소 작업 실패: ' . $e->getMessage());
+        $err = '처리하지 못했습니다. (' . ($e instanceof PDOException ? '표 준비 전 — 다시 로그인 후 시도' : $e->getMessage()) . ')';
+    }
+}
+$fs = fs_cfg();
+$fsCnt = ['LOCAL' => 0, 'NAS' => 0];
+try {
+    foreach (db()->query("SELECT storage, COUNT(*) c FROM documents WHERE deleted_at IS NULL GROUP BY storage")->fetchAll() as $r) {
+        $fsCnt[$r['storage']] = (int)$r['c'];
+    }
+} catch (PDOException $e) {
+    // storage 칸이 아직 없을 수 있음 (다음 로그인 때 생김)
+}
+$pubFiles = [];
+try {
+    $pubFiles = db()->query('SELECT * FROM public_files WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 60')->fetchAll();
+} catch (PDOException $e) {
+    $pubFiles = [];
+}
+
 // ---------------------------------------------------------------- 조회
 $rows = db()->query('SELECT * FROM storage_settings ORDER BY role, id')->fetchAll();
 
@@ -205,20 +260,99 @@ $gb = static fn($b) => $b > 0 ? number_format($b / 1073741824, 1) . ' GB' : '-';
 
 <?php if ($err !== ''): ?><div class="msg err"><?= h($err) ?></div><?php endif; ?>
 
-<?php if (!$keyOk): ?>
-<div class="msg err">
-  <b>암호화 열쇠가 없습니다.</b> <code>config.local.php</code> 의 <code>app_key</code> 에
-  32자 이상 임의 문자열을 넣으세요. 그 전까지는 NAS 접속 비밀번호를 저장할 수 없습니다
-  (평문으로 남기지 않기 위해 막아 둡니다).
+<div class="card" id="fs">
+  <div class="ch">파일 저장소
+    <span class="badge <?= $fs['nas'] ? 'b-ok' : 'b-warn' ?>"><?= $fs['nas'] ? 'NAS (WebDAV)' : '이 서버만 (LOCAL)' ?></span>
+    <a class="btn sm" style="margin-left:auto" href="?p=settings">환경설정에서 바꾸기</a></div>
+  <div class="cb" style="font-size:12.5px;line-height:1.9">
+    파일은 DB 에 넣지 않습니다 — DB 에는 <b>상대경로 · 이름 · 크기 · 지문(SHA-256)</b> 만 있고, 파일은 아래 위치에 있습니다.
+    <table style="margin-top:6px">
+      <thead><tr><th style="width:160px">구역</th><th>NAS 위치 (WebDAV)</th><th>누가 볼 수 있나</th></tr></thead>
+      <tbody>
+        <tr><td><b>업무 서류</b></td><td class="tnum"><?= h($fs['url'] . $fs['dir']['docs']) ?></td>
+            <td>비공개 — ERP 로그인 · 문서 권한 확인 후 ERP 가 대신 받아 내려줌</td></tr>
+        <tr><td><b>기타 첨부 · 직인</b></td><td class="tnum"><?= h($fs['url'] . $fs['dir']['uploads']) ?></td>
+            <td>비공개 — 〃</td></tr>
+        <tr><td><b>공개 이미지</b></td><td class="tnum"><?= h($fs['url'] . $fs['dir']['public']) ?></td>
+            <td>공개 — <span class="tnum"><?= h($fs['public_url'] ?: '(기준 주소 없음)') ?>/…</span></td></tr>
+      </tbody>
+    </table>
+    <div style="margin-top:8px">서류: NAS 에 있음 <b class="tnum"><?= money($fsCnt['NAS'] ?? 0) ?></b> ·
+      서버에만 있음 <b class="tnum" style="color:<?= $fs['nas'] && ($fsCnt['LOCAL'] ?? 0) > 0 ? 'var(--warn-fg)' : 'inherit' ?>"><?= money($fsCnt['LOCAL'] ?? 0) ?></b>
+      <?= $fs['nas'] ? '(자동 작업이 5분마다 5건씩 NAS 로 보냄)' : '' ?>
+      · 서버 사본 유지 <b><?= $fs['keep_local'] ? '예' : '아니오' ?></b></div>
+  </div>
+  <div class="cb" style="border-top:1px solid var(--line2);display:flex;gap:8px;flex-wrap:wrap">
+    <form method="post"><?= csrf_field() ?><input type="hidden" name="act" value="fs_test">
+      <button class="btn pri"<?= $fs['nas'] ? '' : ' disabled title="환경설정에서 저장 방식을 NAS 로"' ?>>NAS 연결 시험</button></form>
+    <form method="post"><?= csrf_field() ?><input type="hidden" name="act" value="fs_sync">
+      <button class="btn"<?= $fs['nas'] && ($fsCnt['LOCAL'] ?? 0) > 0 ? '' : ' disabled' ?>>서버에만 있는 서류 지금 NAS 로 보내기 (50건)</button></form>
+  </div>
+  <?php if ($fsTest !== null): ?>
+  <div class="cb" style="border-top:1px solid var(--line2)">
+    <?php foreach ($fsTest as $area => [$ok, $msg]): ?>
+      <div style="font-size:12.5px;line-height:1.9"><span class="badge <?= $ok ? 'b-ok' : 'b-err' ?>"><?= $ok ? '성공' : '실패' ?></span>
+        <b><?= h(['docs' => '업무 서류', 'uploads' => '기타 첨부', 'public' => '공개 이미지'][$area] ?? $area) ?></b> <?= h($msg) ?></div>
+    <?php endforeach; ?>
+  </div>
+  <?php endif; ?>
+  <details class="cb" style="border-top:1px solid var(--line2);font-size:12.5px;line-height:1.9">
+    <summary style="cursor:pointer;font-weight:600">시놀로지 NAS 준비하는 법 (한 번만)</summary>
+    <ol style="margin:8px 0 0 18px;padding:0">
+      <li><b>패키지 센터 → WebDAV Server</b> 설치 → 열어서 <b>HTTPS 사용</b> 체크, 포트 <b>5006</b> (HTTP 는 끔)</li>
+      <li><b>제어판 → 보안 → 인증서 → 설정</b>: WebDAV 서비스에 <b>frugen.synology.me</b> 인증서 지정 (공개 주소에 쓰는 것과 같은 인증서)</li>
+      <li><b>제어판 → 공유 폴더 → 생성</b>: 이름 <b>erp</b> — <u>Web Station 에 연결하지 않는 폴더</u>여야 합니다 (비공개).
+          File Station 에서 그 안에 <b>documents</b>, <b>uploads</b> 폴더를 만듦</li>
+      <li>공개 이미지: 지금 <span class="tnum">https://frugen.synology.me:8443/images/…</span> 가 보이는 <b>web</b> 공유폴더의 <b>images</b> 안에 <b>erp</b> 폴더를 만듦</li>
+      <li><b>제어판 → 사용자 → 생성</b>: 예 <b>erpfile</b> (강한 비밀번호) — 공유폴더 권한: <b>erp 읽기/쓰기</b>, <b>web 읽기/쓰기</b>, 나머지는 <b>접근 불가</b>.
+          응용 프로그램 권한: <b>WebDAV 만 허용</b> (DSM · File Station 등은 거부)</li>
+      <li><b>공유기 포트포워딩</b>: 외부 5006 → NAS 5006 (TCP). 공개 이미지용 8443 은 이미 되어 있음</li>
+      <li><b>제어판 → 보안 → 보호 → 자동 차단</b> 켜기 (비밀번호 여러 번 틀리면 IP 차단)</li>
+      <li>ERP <b>환경설정 → 파일 저장소</b>: 저장 방식 <b>NAS</b>, WebDAV 주소 <span class="tnum">https://frugen.synology.me:5006</span>, NAS 계정 · 비밀번호(직접 입력), 폴더는 기본값 그대로 → 저장</li>
+      <li>이 화면에서 <b>[NAS 연결 시험]</b> → 세 구역 모두 '성공' 이면 끝. 그 뒤 올리는 서류는 NAS 로 가고, 예전 서류는 [지금 보내기] 또는 자동으로 옮겨집니다</li>
+    </ol>
+    <div style="color:var(--ink3);margin-top:6px">비공개 폴더(erp)는 WebDAV 계정으로만 열리고, 인터넷 주소로는 열리지 않습니다. ERP 도 NAS 주소를 화면에 내보내지 않고
+      로그인 · 권한을 확인한 뒤 자기가 받아서 내려줍니다.</div>
+  </details>
 </div>
-<?php endif; ?>
 
-<?php if (!$hasPrimary): ?>
-<div class="msg" style="background:var(--warn-bg);color:var(--warn-fg)">
-  <b>원본 저장소가 지정되지 않았습니다.</b> 지금은 아래 <b>현재 쓰는 경로</b>가 그대로 쓰입니다.
-  잘 돌아가지만, 경로를 옮길 계획이 있으면 여기에 등록해 두는 게 낫습니다.
+<div class="card" id="pub">
+  <div class="ch">공개 이미지 <span style="font-weight:400;color:var(--ink3)">홈페이지 · 메일 · 안내문에 넣을 그림 — 주소만 알면 누구나 볼 수 있으니 업무 서류는 넣지 마세요</span></div>
+  <form method="post" enctype="multipart/form-data" class="cb f" style="align-items:flex-end">
+    <?= csrf_field() ?>
+    <input type="hidden" name="act" value="pub_upload">
+    <div class="fw gr" style="min-width:240px"><label for="pimg">그림 (PNG · JPG · GIF · WEBP, 10MB 이하)</label>
+      <input type="file" id="pimg" name="img" accept="image/png,image/jpeg,image/gif,image/webp" required></div>
+    <div class="fw w2"><label for="ppur">메모 (어디에 쓰나)</label>
+      <input type="text" id="ppur" name="purpose" placeholder="예) 홈페이지 배너"></div>
+    <button class="btn pri"<?= $fs['nas'] && $fs['public_url'] !== '' ? '' : ' disabled title="NAS 모드 + 공개 기준 주소 필요"' ?>>NAS 에 올리기</button>
+  </form>
+  <?php if ($pubFiles): ?>
+  <table>
+    <thead><tr><th style="width:70px">미리보기</th><th>주소</th><th style="width:150px">메모</th>
+      <th class="r" style="width:90px">크기</th><th style="width:130px">올린 날</th><th class="c" style="width:120px"></th></tr></thead>
+    <tbody>
+    <?php foreach ($pubFiles as $pf): $u = fs_public_url((string)$pf['rel_path']); ?>
+      <tr>
+        <td><img src="<?= h($u) ?>" alt="" loading="lazy" style="max-width:56px;max-height:40px;border-radius:4px"></td>
+        <td class="tnum" style="font-size:11.5px;word-break:break-all"><a href="<?= h($u) ?>" target="_blank" rel="noopener"><?= h($u) ?></a>
+          <div style="color:var(--ink3)"><?= h($pf['original_name']) ?> · <?= (int)$pf['width'] ?>×<?= (int)$pf['height'] ?></div></td>
+        <td><?= h($pf['purpose'] ?: '-') ?></td>
+        <td class="r tnum"><?= h(number_format((int)$pf['size_bytes'] / 1024, 0)) ?> KB</td>
+        <td class="tnum"><?= h(substr((string)$pf['created_at'], 0, 16)) ?></td>
+        <td class="c" style="white-space:nowrap">
+          <button type="button" class="btn sm" onclick="navigator.clipboard&&navigator.clipboard.writeText(<?= h(json_encode($u)) ?>);this.textContent='복사됨'">주소 복사</button>
+          <form method="post" style="display:inline" onsubmit="return confirm('이 그림을 내릴까요? 이 주소를 쓰는 곳에서 그림이 안 보이게 됩니다.');">
+            <?= csrf_field() ?><input type="hidden" name="act" value="pub_delete"><input type="hidden" name="id" value="<?= (int)$pf['id'] ?>">
+            <button class="btn sm">내리기</button></form></td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  <?php else: ?>
+    <div class="empty">아직 올린 공개 이미지가 없습니다.</div>
+  <?php endif; ?>
 </div>
-<?php endif; ?>
 
 <div class="kpis">
   <div class="kpi"><div class="lab">보관 중 문서</div>
@@ -406,7 +540,7 @@ $pcScript = strtr($pcScript, ['__URL__' => $nasUrl, '__KEY__' => $nasOnce ?? '(k
 </div>
 
 <div class="card">
-  <div class="ch">등록된 저장소</div>
+  <div class="ch">등록된 저장소 <span style="font-weight:400;color:var(--ink3)">예전 방식 기록용 — 실제 파일 위치는 맨 위 '파일 저장소' 설정을 따릅니다</span></div>
   <?php if (!$rows): ?>
     <div class="empty">등록된 저장소가 없습니다.</div>
   <?php else: ?>

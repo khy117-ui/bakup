@@ -140,23 +140,31 @@ function doc_protect_root(string $root): void
 }
 
 /**
- * 사업자 직인 이미지 — 공개 저장소(GitHub)에 두지 않고 서버 보관 폴더(documents/stamps, 웹 직접 접근 차단)에만 둡니다.
+ * 사업자 직인 이미지 — 공개 저장소(GitHub)에 두지 않고 비공개 구역(uploads/stamps)에만 둡니다.
+ * 파일 저장소가 NAS 면 NAS /erp/uploads/stamps 에도 올라갑니다 (app/filestore.php).
  * 문서 화면에는 파일 주소가 아니라 data: 로 바로 넣어, 로그인한 화면에서만 보입니다.
  */
 function entity_stamp_dir(): string
 {
-    return storage_root() . DIRECTORY_SEPARATOR . 'stamps';
+    require_once APP_DIR . '/filestore.php';
+    return dirname(fs_local_path('uploads', 'stamps/x'));
 }
 
 function entity_stamp_data_uri(?array $be): ?string
 {
     $rel = (string)($be['stamp_path'] ?? '');
     if (!preg_match('/^stamps\/[A-Za-z0-9_-]+\.(png|jpg|jpeg|webp)$/', $rel)) { return null; }
-    $full = storage_root() . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $rel);
-    if (!is_file($full)) { return null; }
-    $ext  = strtolower(pathinfo($full, PATHINFO_EXTENSION));
+    require_once APP_DIR . '/filestore.php';
+    $bin = fs_read('uploads', $rel);
+    if ($bin === null) {
+        // 저장소 도입 전에 서류 폴더(documents/stamps)에 올린 직인
+        $old = storage_root() . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $rel);
+        $bin = is_file($old) ? (string)file_get_contents($old) : null;
+    }
+    if ($bin === null || $bin === '') { return null; }
+    $ext  = strtolower(pathinfo($rel, PATHINFO_EXTENSION));
     $mime = ['png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'webp' => 'image/webp'][$ext];
-    return 'data:' . $mime . ';base64,' . base64_encode((string)file_get_contents($full));
+    return 'data:' . $mime . ';base64,' . base64_encode($bin);
 }
 
 /** <input type=file name=x[] multiple> 를 파일 하나씩의 배열로 */
@@ -220,8 +228,16 @@ function doc_store_upload(array $f, int $eid, int $typeId, ?int $shipmentId = nu
             ->execute([$eid, $typeId, $shipmentId ?: null, $companyId ?: null, $docDate ?: null,
                        $title !== '' ? $title : $name, $name, $rel, $mime, (int)$f['size'], $hash,
                        $_SESSION['admin_id'] ?? null]);
-        log_action('문서', 'CREATE', 'documents', (int)db()->lastInsertId(), $name, null,
+        $docId = (int)db()->lastInsertId();
+        log_action('문서', 'CREATE', 'documents', $docId, $name, null,
                    number_format((int)$f['size']) . ' bytes' . ($shipmentId ? ' · 전표 #' . $shipmentId : ''));
+        // 파일 저장소가 NAS 면 바로 보냅니다. 안 붙으면 서버에 둔 채(LOCAL) 자동 작업이 나중에 다시 보냄
+        require_once APP_DIR . '/filestore.php';
+        if (fs_cfg()['nas'] && fs_push('docs', $rel, $why)) {
+            db()->prepare("UPDATE documents SET storage = 'NAS', backup_status = 'SYNCED', backup_at = NOW(),
+                                  backup_path = ? WHERE id = ?")
+                ->execute(['NAS:' . fs_cfg()['dir']['docs'] . '/' . $rel, $docId]);
+        }
     } catch (PDOException $e) {
         @unlink($full);
         error_log('문서 저장 실패: ' . $e->getMessage());
