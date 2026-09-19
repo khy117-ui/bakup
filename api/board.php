@@ -70,7 +70,8 @@ if (isset($_GET['id'])) {
         board_json(['error' => '글을 찾을 수 없습니다.'], 404);
     }
     if ($row['is_secret']) {
-        $pw = (string) ($_REQUEST['pw'] ?? '');
+        // 비밀번호는 요청 머리글(X-Board-Pw)로 받습니다 — 주소(?pw=)에 남지 않게. 예전 방식도 받아 둠
+        $pw = isset($_SERVER['HTTP_X_BOARD_PW']) ? rawurldecode((string) $_SERVER['HTTP_X_BOARD_PW']) : (string) ($_REQUEST['pw'] ?? '');
         $ok = $pw !== '' && $row['password'] && password_verify($pw, $row['password']);
         if (!$ok) {
             board_json(['error' => 'secret', 'message' => '비밀글입니다. 작성 시 입력한 비밀번호를 입력해 주세요.', 'item' => board_row_public($row)], 403);

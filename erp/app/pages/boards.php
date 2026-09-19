@@ -252,7 +252,8 @@ layout_head('홈페이지 게시판', 'boards');
   </div>
   <?php if ($cur['is_secret']): ?>
   <div class="cb" style="padding-bottom:0"><div class="msg" style="background:var(--warn-bg);color:var(--warn-fg);margin:0">
-    <b>비밀글</b> — 홈페이지에서는 작성자가 넣은 비밀번호가 있어야 보이고, ERP 에서는 관리자가 그대로 봅니다.
+    <b>비밀글</b> — ERP 에서는 <b>비밀번호 없이</b> 관리자가 전체 내용을 봅니다 (아래가 이 글의 전체 내용).
+    비밀번호는 홈페이지에서 손님이 자기 글을 열 때만 씁니다.
     <?php if (bd_is_placeholder($cur['content'])): ?><br>이 글은 <b>옛 홈페이지 목록에서 옮긴 예시 글</b>이라 실제 문의 내용이 없습니다. 지워도 됩니다.<?php endif; ?>
   </div></div>
   <?php endif; ?>
