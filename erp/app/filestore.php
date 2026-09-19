@@ -276,18 +276,21 @@ function fs_test(): array
         $tmp = fopen('php://temp', 'w+b');
         [$g] = fs_dav('GET', fs_dav_url($area, $rel), null, $tmp, 20);
         fclose($tmp);
-        fs_dav('DELETE', fs_dav_url($area, $rel), null, null, 20);
         $msg = $c['dir'][$area] . ' — 쓰기 · 읽기 · 지우기 성공';
         if ($area === 'public' && $c['public_url'] !== '') {
-            // 공개 주소로도 보이는지 (지우기 전에 확인해야 하지만, 여기서는 기준 주소가 응답하는지만)
-            $ch = curl_init($c['public_url'] . '/');
-            curl_setopt_array($ch, [CURLOPT_NOBODY => true, CURLOPT_TIMEOUT => 8, CURLOPT_RETURNTRANSFER => true]);
-            curl_exec($ch);
+            // 방금 올린 시험 파일이 공개 주소로 실제로 열리는지 (지우기 전에)
+            $ch = curl_init(fs_public_url($rel));
+            curl_setopt_array($ch, [CURLOPT_TIMEOUT => 10, CURLOPT_RETURNTRANSFER => true]);
+            $pb = curl_exec($ch);
             $pc = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
             curl_close($ch);
-            $msg .= ' · 공개 주소 응답 ' . ($pc ?: '없음');
+            $pubOk = $pc === 200 && is_string($pb) && strpos($pb, 'GOODPOST ERP') !== false;
+            $msg .= $pubOk ? ' · 공개 주소로도 열림 (' . $c['public_url'] . '/…)'
+                           : ' · 공개 주소로는 안 열림 (HTTP ' . ($pc ?: '없음') . ') — 공개 기준 주소가 이 폴더를 가리키는지 확인';
+            if (!$pubOk) { $g = -1; }
         }
-        $out[$area] = [$g === 200, $g === 200 ? $msg : $c['dir'][$area] . ' — 썼지만 읽기 실패 (HTTP ' . $g . ')'];
+        fs_dav('DELETE', fs_dav_url($area, $rel), null, null, 20);
+        $out[$area] = [$g === 200, $g === 200 || $g === -1 ? $msg : $c['dir'][$area] . ' — 썼지만 읽기 실패 (HTTP ' . $g . ')'];
     }
     @unlink($probe);
     return $out;

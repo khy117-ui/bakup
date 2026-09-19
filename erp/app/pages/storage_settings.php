@@ -205,10 +205,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(post('act'), ['fs_test', '
     }
 }
 $fs = fs_cfg();
-$fsCnt = ['LOCAL' => 0, 'NAS' => 0];
+// LOCAL 중에서도 ERP 에서 올린 서류(보낼 대상)와 옛 시스템에서 이름만 옮겨온 목록(파일은 옛 서버에)을 나눠 셉니다
+$fsCnt = ['LOCAL' => 0, 'NAS' => 0, 'LEGACY' => 0];
 try {
-    foreach (db()->query("SELECT storage, COUNT(*) c FROM documents WHERE deleted_at IS NULL GROUP BY storage")->fetchAll() as $r) {
-        $fsCnt[$r['storage']] = (int)$r['c'];
+    foreach (db()->query("SELECT CASE WHEN storage = 'NAS' THEN 'NAS'
+                                      WHEN stored_path REGEXP '^[0-9]{4}/[0-9]{2}/[0-9a-f]{32}[.][a-z0-9]+$' THEN 'LOCAL'
+                                      ELSE 'LEGACY' END AS k, COUNT(*) c
+                            FROM documents WHERE deleted_at IS NULL GROUP BY k")->fetchAll() as $r) {
+        $fsCnt[$r['k']] = (int)$r['c'];
     }
 } catch (PDOException $e) {
     // storage 칸이 아직 없을 수 있음 (다음 로그인 때 생김)
@@ -279,7 +283,9 @@ $gb = static fn($b) => $b > 0 ? number_format($b / 1073741824, 1) . ' GB' : '-';
     </table>
     <div style="margin-top:8px">서류: NAS 에 있음 <b class="tnum"><?= money($fsCnt['NAS'] ?? 0) ?></b> ·
       서버에만 있음 <b class="tnum" style="color:<?= $fs['nas'] && ($fsCnt['LOCAL'] ?? 0) > 0 ? 'var(--warn-fg)' : 'inherit' ?>"><?= money($fsCnt['LOCAL'] ?? 0) ?></b>
-      <?= $fs['nas'] ? '(자동 작업이 5분마다 5건씩 NAS 로 보냄)' : '' ?>
+      <?= $fs['nas'] && ($fsCnt['LOCAL'] ?? 0) > 0 ? '(자동 작업이 5분마다 5건씩 NAS 로 보냄)' : '' ?>
+      · 옛 시스템 첨부 목록 <b class="tnum"><?= money($fsCnt['LEGACY'] ?? 0) ?></b>
+      <span style="color:var(--ink3)">(이름만 옮겨 옴 — 파일은 옛 서버에 있어 보낼 것 없음)</span>
       · 서버 사본 유지 <b><?= $fs['keep_local'] ? '예' : '아니오' ?></b></div>
   </div>
   <div class="cb" style="border-top:1px solid var(--line2);display:flex;gap:8px;flex-wrap:wrap">
