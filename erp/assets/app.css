@@ -117,6 +117,29 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-line
 
 .badge { display: inline-flex; align-items: center; height: 21px; padding: 0 8px;
   border-radius: 4px; font-size: 11px; font-weight: 600; }
+/* 표 안의 버튼 · 상태 글씨가 좁은 칸에서 세로로 한 글자씩 꺾이지 않게 */
+.btn, .badge { white-space: nowrap; }
+td .btn { flex-shrink: 0; }
+
+/* PC 넓은 화면 — 칸 너비를 내용에 맞춰 고르게 나눕니다.
+   화면마다 칸에 너비를 박아 두어서, 남는 폭이 전부 거래처 같은 한 칸으로 몰려 가운데가 텅 비었음.
+   입력칸이 있는 표(전표 입력 등)는 박아 둔 너비를 그대로 씁니다. */
+@media (min-width: 901px) {
+  .body table:not(:has(input:not([type=checkbox]):not([type=hidden]), select, textarea)) th[style*="width"] {
+    width: auto !important;
+  }
+  /* 숫자 · 날짜 · 가운데 칸은 한 줄로. 거래처 · 적요 같은 글 칸은 표가 넘칠 때만 줄바꿈 */
+  .body td.r, .body td.c, .body td.tnum { white-space: nowrap; }
+  /* 좁은 PC 창에서 거래처 이름 같은 글 칸이 한두 글자 폭으로 찌그러지지 않게 (넘치면 표만 옆으로 밀림) */
+  .body table:not(:has(input:not([type=checkbox]):not([type=hidden]), select, textarea)) td:not(.r):not(.c):not(.tnum) {
+    min-width: 120px;
+  }
+}
+/* 사이드바 아래 사용자 칸 — '나가기' · '역할 · 내 정보' 가 꺾이지 않게 */
+.side .me > a:first-of-type { min-width: 0; flex: 1 1 auto; }
+.side .me small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side .me .btn { flex-shrink: 0; }
+.side .me .av { flex-shrink: 0; }
 .b-ok { color: var(--ok-fg); background: var(--ok-bg); }
 .b-warn { color: var(--warn-fg); background: var(--warn-bg); }
 .b-err { color: var(--err-fg); background: var(--err-bg); }

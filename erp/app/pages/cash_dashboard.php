@@ -265,7 +265,7 @@ layout_head('입출금 현황', 'cash_dashboard');
         <td class="r tnum" style="color:#1B7F5A"><?= money($a['in_total']) ?></td>
         <td class="r tnum" style="color:#B3261E"><?= money($a['out_total']) ?></td>
         <td class="r tnum" style="font-weight:700"><?= money($a['balance']) ?></td>
-        <td class="tnum" style="font-size:11.5px"><?= h($a['last_txn_date'] ?: '-') ?></td>
+        <td class="tnum" style="font-size:11.5px"><?= h($a['last_txn_date'] && $a['last_txn_date'] > '1901-01-01' ? $a['last_txn_date'] : '-') ?></td>
       </tr>
     <?php endforeach; ?>
     </tbody>
