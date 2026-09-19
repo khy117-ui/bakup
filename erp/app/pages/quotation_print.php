@@ -139,8 +139,7 @@ $buyer = $q['name_ko'] ?: ($q['prospect_name'] ?: '-');
     </tr></thead>
     <tbody>
     <?php
-    $CT = ['AIR_FREIGHT'=>'특송운임','DOMESTIC'=>'국내운송','HANDLING'=>'취급수수료',
-           'CUSTOMS'=>'통관료','STORAGE'=>'창고료','OTHER'=>'기타'];
+    $CT = charge_labels();
     foreach ($items as $it): ?>
       <tr>
         <td class="c tnum"><?= (int)$it['line_no'] ?></td>

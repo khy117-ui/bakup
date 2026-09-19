@@ -535,6 +535,45 @@ function invoice_create(int $eid, int $cid, array $shipIds, string $invoiceDate,
     }
 }
 
+/**
+ * 비용 종류와 기본 세금구분 — 매출전표 · 견적 · 매입이 같이 씁니다.
+ * 회사 기준 (2026-09-19): 특송 · 항공 · 해상 운송(수출입)은 영세율,
+ *   핸드링차지 · 도큐멘트피 · 국내운송 · 창고료 · 검사료는 과세 10%.
+ *   통관료 · 기타는 정해지지 않아 기본값이 없습니다 (줄에서 직접 고름).
+ * 종류를 고르면 화면이 세금구분을 기본값으로 바꿔 주고, 필요하면 그 줄만 다시 고칠 수 있습니다.
+ */
+const CHARGE_TYPES = [
+    'AIR_FREIGHT' => ['특송운임',   'ZERO'],
+    'AIR_CARGO'   => ['항공운임',   'ZERO'],
+    'SEA_FREIGHT' => ['해상운임',   'ZERO'],
+    'HANDLING'    => ['핸드링차지', 'TAXABLE'],
+    'DOC_FEE'     => ['도큐멘트피', 'TAXABLE'],
+    'DOMESTIC'    => ['국내운송',   'TAXABLE'],
+    'STORAGE'     => ['창고료',     'TAXABLE'],
+    'INSPECTION'  => ['검사료',     'TAXABLE'],
+    'CUSTOMS'     => ['통관료',     ''],
+    'OTHER'       => ['기타',       ''],
+];
+
+/** 종류 코드 → 이름 */
+function charge_labels(): array
+{
+    return array_map(fn($v) => $v[0], CHARGE_TYPES);
+}
+
+/** 종류 코드 → 기본 세금구분 ('' 이면 없음) */
+function charge_default_tax(string $code): string
+{
+    return CHARGE_TYPES[$code][1] ?? '';
+}
+
+/** 세금계산서 종류 이름 — TAX 일반(과세) / ZERO 영세율 / EXEMPT 계산서(면세) */
+function tax_doc_label(string $type): string
+{
+    return ['TAX' => '세금계산서', 'ZERO' => '영세율 세금계산서', 'EXEMPT' => '계산서',
+            'MODIFY' => '수정세금계산서'][$type] ?? $type;
+}
+
 /** 연체 여부는 저장하지 않고 볼 때 계산합니다 (날짜가 지나면 저절로 바뀌므로) */
 function invoice_state(array $inv): array
 {
