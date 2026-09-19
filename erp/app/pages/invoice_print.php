@@ -160,6 +160,10 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
   <div class="bar">
     <button class="btn" onclick="window.print()">인쇄 / PDF 저장</button>
     <a class="btn" href="?p=invoice_print&amp;id=<?= $id ?>&amp;xlsx=1">엑셀로 저장</a>
+    <?php if (!$stampUri): // 화면에만 보이는 안내 (인쇄 · PDF 에는 안 나옴) ?>
+      <a class="btn" style="border-color:#E4B9B9;color:#A32020" href="?p=business_entity&amp;id=<?= (int)$eid ?>#stamp">
+        <?= trim((string)($be['stamp_path'] ?? '')) === '' ? '직인 미등록 — 사업자 관리에서 올리기' : '직인 파일을 찾지 못함 — 다시 올리기' ?></a>
+    <?php endif; ?>
     <a class="btn" href="?p=invoice_view&amp;id=<?= $id ?>">돌아가기</a>
     <?php if ($inv['status'] === 'DRAFT'): ?>
       <span style="font-size:12px;color:#A32020">아직 발행하지 않은 청구서입니다 (작성중)</span>
