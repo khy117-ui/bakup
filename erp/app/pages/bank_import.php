@@ -214,11 +214,12 @@ $imports = $st->fetchAll();
 $rows = [];
 if ($impId > 0) {
     $st = db()->prepare(
-        "SELECT r.*, c.name_ko AS suggested_name,
+        "SELECT r.*, c.name_ko AS suggested_name, t.doc_no AS txn_no,
                 (SELECT COALESCE(SUM(v.balance),0) FROM v_company_receivable v
                   WHERE v.company_id = r.suggested_company_id) AS suggested_balance
            FROM bank_import_rows r
            LEFT JOIN companies c ON c.id = r.suggested_company_id
+           LEFT JOIN financial_transactions t ON t.id = r.transaction_id
           WHERE r.import_id = ?
           ORDER BY (r.match_status = 'CONFIRMED'), (r.match_status = 'IGNORED'),
                    r.line_no");
@@ -346,10 +347,9 @@ layout_head('은행내역 가져오기', 'bank_import');
         <td class="c">
           <?php if (!$done): ?>
             <?php if ((float)$r['in_amount'] > 0): ?>
-              <a class="btn sm pri" href="?p=cash_in<?= $r['suggested_company_id']
-                   ? '&amp;company_id=' . (int)$r['suggested_company_id'] : '' ?>">입금처리</a>
+              <a class="btn sm pri" href="?p=cash_in&amp;bank_row=<?= (int)$r['id'] ?>">입금처리</a>
             <?php else: ?>
-              <a class="btn sm" href="?p=cash_out">출금처리</a>
+              <a class="btn sm" href="?p=cash_out&amp;bank_row=<?= (int)$r['id'] ?>">출금처리</a>
             <?php endif; ?>
             <form method="post" style="display:inline">
               <?= csrf_field() ?>
@@ -359,6 +359,9 @@ layout_head('은행내역 가져오기', 'bank_import');
               <button class="btn sm">무시</button>
             </form>
           <?php else: ?>
+            <?php if ($r['transaction_id']): ?>
+              <a href="?p=cash_list&amp;id=<?= (int)$r['transaction_id'] ?>" style="font-size:11.5px;font-weight:600"><?= h($r['txn_no'] ?: '거래 보기') ?></a><br>
+            <?php endif; ?>
             <span style="font-size:11px"><?= h($r['confirmed_at'] ?: '') ?></span>
           <?php endif; ?>
         </td>
@@ -369,7 +372,8 @@ layout_head('은행내역 가져오기', 'bank_import');
   <div class="pager"><span>
     <b>자동으로 확정하지 않습니다.</b> 추천은 이름이 겹친다는 뜻일 뿐입니다 —
     같은 이름의 다른 회사일 수도, 대표자 개인 이름으로 들어온 돈일 수도 있습니다.
-    <b>입금처리</b>를 누르면 입금 등록 화면이 열리고, 거기서 어느 전표에 충당할지 직접 고릅니다.
+    <b>입금처리</b>를 누르면 일자 · 금액 · 계좌 · 이름이 채워진 입금 등록 화면이 열리고, 거기서 어느 전표에 충당할지 직접 고릅니다.
+    저장하면 이 줄은 <b>처리완료</b>로 바뀌고 거래번호가 붙습니다 (그 거래를 취소하면 다시 미처리로 돌아옵니다).
   </span></div>
   <?php endif; ?>
 </div>

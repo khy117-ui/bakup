@@ -81,12 +81,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'cancel') {
                 invoice_recalc((int)$invId);
             }
 
+            // 은행내역에서 처리한 거래면 그 줄을 다시 미처리로
+            require_once APP_DIR . '/bankrow.php';
+            $bankBack = bank_row_unlink($pdo, $id);
+
             fin_audit($id, 'CANCEL', 'status', 'CONFIRMED', 'CANCELLED', $reason,
                       json_encode($t, JSON_UNESCAPED_UNICODE));
             log_action('입출금', 'CANCEL', 'financial_transactions', $id,
                        (string)$t['doc_no'], 'CONFIRMED', 'CANCELLED', $reason);
             $pdo->commit();
-            flash('취소했습니다. 배분이 풀려 미수금이 되돌아왔습니다. 기록은 남아 있습니다.');
+            flash('취소했습니다. 배분이 풀려 미수금이 되돌아왔습니다. 기록은 남아 있습니다.'
+                . ($bankBack ? ' 연결된 은행내역 줄도 다시 미처리로 돌렸습니다.' : ''));
             redirect('?p=cash_list&id=' . $id);
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) { $pdo->rollBack(); }

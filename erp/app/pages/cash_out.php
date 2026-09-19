@@ -18,6 +18,18 @@ $eid = entity_id();
 
 require_perm('CASH_WRITE', '출금 등록');
 
+// 은행내역 가져오기의 [출금처리] 에서 왔으면 그 줄 — 저장하면 처리완료로
+require_once APP_DIR . '/bankrow.php';
+$bankRowId = (int)(post('bank_row') ?: query('bank_row', '0'));
+$bankRow = bank_row_open($bankRowId, 'OUT');
+if ($bankRowId > 0 && !$bankRow && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+    $err = '이 은행내역은 이미 처리됐거나 출금 줄이 아닙니다. 그냥 출금 등록으로 진행합니다.';
+    $bankRowId = 0;
+}
+$bankDate = $bankRow ? substr((string)$bankRow['txn_at'], 0, 10) : '';
+$bankAmt  = $bankRow ? money($bankRow['out_amount']) : '';
+if ($bankRow) { $eid = (int)$bankRow['business_entity_id']; }
+
 $cats = db()->query('SELECT id, code, name, default_tax, is_cogs FROM expense_categories
                       WHERE is_active = 1 ORDER BY sort_order, id')->fetchAll();
 
@@ -43,7 +55,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(post('act'), ['out', 'tran
         } elseif ($amt <= 0) {
             $err = '이체금액을 입력하세요.';
         } else {
+            $pdo = db();
             try {
+                $pdo->beginTransaction();
                 $no = next_doc_no('CASH_TR', entity_code($entId) . '-T-', '-', $entId);
                 db()->prepare(
                     'INSERT INTO financial_transactions
@@ -56,16 +70,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(post('act'), ['out', 'tran
                                post('summary') ?: null, post('memo') ?: null,
                                $_SESSION['admin_id'] ?? null]);
                 $txnId = (int)db()->lastInsertId();
+                $impBack = $bankRowId > 0
+                    ? bank_row_link($pdo, $bankRowId, 'OUT', $txnId, $entId, $date, [$amt, $amt + $fee]) : 0;
                 fin_audit($txnId, 'CREATE', null, null,
-                          '계좌이체 ' . money($amt) . '원 (수수료 ' . money($fee) . ')');
+                          '계좌이체 ' . money($amt) . '원 (수수료 ' . money($fee) . ')'
+                          . ($impBack ? ' · 은행내역 연결' : ''));
                 log_action('입출금', 'CREATE', 'financial_transactions', $txnId, $no,
                            null, '계좌이체 ' . money($amt));
+                $pdo->commit();
                 flash('계좌이체 ' . $no . ' 을 등록했습니다. 비용·손익에는 잡히지 않습니다'
-                    . ($fee > 0 ? ' (수수료 ' . money($fee) . '원은 비용입니다).' : '.'));
-                redirect('?p=cash_list&type=TRANSFER');
+                    . ($fee > 0 ? ' (수수료 ' . money($fee) . '원은 비용입니다).' : '.')
+                    . ($impBack ? ' 은행내역의 이 줄은 처리완료로 바뀌었습니다.' : ''));
+                redirect($impBack ? '?p=bank_import&import_id=' . $impBack : '?p=cash_list&type=TRANSFER');
             } catch (Throwable $e) {
-                error_log('계좌이체 실패: ' . $e->getMessage());
-                $err = '등록하지 못했습니다.';
+                if ($pdo->inTransaction()) { $pdo->rollBack(); }
+                if ($e instanceof RuntimeException) {
+                    $err = $e->getMessage();
+                } else {
+                    error_log('계좌이체 실패: ' . $e->getMessage());
+                    $err = '등록하지 못했습니다.';
+                }
             }
         }
     } else {
@@ -177,13 +201,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(post('act'), ['out', 'tran
                     $insOb->execute([$txnId, ++$n, $obId, $v, $_SESSION['admin_id'] ?? null]);
                 }
 
+                $impBack = $bankRowId > 0
+                    ? bank_row_link($pdo, $bankRowId, 'OUT', $txnId, $entId, $date, [$total]) : 0;
                 fin_audit($txnId, 'CREATE', null, null,
-                          money($total) . '원 · 매입배분 ' . $n . '건');
+                          money($total) . '원 · 매입배분 ' . $n . '건' . ($impBack ? ' · 은행내역 연결' : ''));
                 log_action('입출금', 'CREATE', 'financial_transactions', $txnId, $no,
                            null, '출금 ' . money($total));
                 $pdo->commit();
-                flash('출금 ' . $no . ' 을 등록했습니다.');
-                redirect('?p=cash_list&type=OUT');
+                flash('출금 ' . $no . ' 을 등록했습니다.' . ($impBack ? ' 은행내역의 이 줄은 처리완료로 바뀌었습니다.' : ''));
+                redirect($impBack ? '?p=bank_import&import_id=' . $impBack : '?p=cash_list&type=OUT');
             } catch (Throwable $e) {
                 if ($pdo->inTransaction()) { $pdo->rollBack(); }
                 $err = $e instanceof RuntimeException ? $e->getMessage() : '등록하지 못했습니다.';
@@ -252,10 +278,12 @@ layout_head($mode === 'transfer' ? '계좌이체' : '출금 등록', 'cash_out')
 </div>
 
 <?php if ($err !== ''): ?><div class="msg err"><?= h($err) ?></div><?php endif; ?>
+<?php if ($bankRow): ?><?= bank_row_banner($bankRow, 'OUT') ?><?php endif; ?>
 
 <div class="card"><div class="cb" style="display:flex;gap:8px">
-  <a class="btn<?= $mode !== 'transfer' ? ' pri' : '' ?>" href="?p=cash_out&amp;mode=out">비용 출금</a>
-  <a class="btn<?= $mode === 'transfer' ? ' pri' : '' ?>" href="?p=cash_out&amp;mode=transfer">계좌이체</a>
+  <?php $brq = $bankRow ? '&amp;bank_row=' . (int)$bankRow['id'] : ''; ?>
+  <a class="btn<?= $mode !== 'transfer' ? ' pri' : '' ?>" href="?p=cash_out&amp;mode=out<?= $brq ?>">비용 출금</a>
+  <a class="btn<?= $mode === 'transfer' ? ' pri' : '' ?>" href="?p=cash_out&amp;mode=transfer<?= $brq ?>">계좌이체</a>
   <span style="font-size:11.5px;color:var(--ink2);align-self:center">
     <?= $mode === 'transfer'
         ? '회사 통장 사이의 이동입니다. 비용·손익에 잡히지 않습니다.'
@@ -268,6 +296,7 @@ layout_head($mode === 'transfer' ? '계좌이체' : '출금 등록', 'cash_out')
 <form method="post">
 <?= csrf_field() ?>
 <input type="hidden" name="act" value="transfer">
+<?php if ($bankRow): ?><input type="hidden" name="bank_row" value="<?= (int)$bankRow['id'] ?>"><?php endif; ?>
 <div class="card">
   <div class="ch">계좌이체</div>
   <div class="cb">
@@ -280,9 +309,9 @@ layout_head($mode === 'transfer' ? '계좌이체' : '출금 등록', 'cash_out')
           <?php endforeach; ?>
         </select></div>
       <div class="fw w1"><label for="td">이체일 *</label>
-        <input type="date" id="td" name="txn_date" required value="<?= h(date('Y-m-d')) ?>"></div>
+        <input type="date" id="td" name="txn_date" required value="<?= h($bankDate ?: date('Y-m-d')) ?>"></div>
       <div class="fw w1"><label for="ta">이체금액 *</label>
-        <input type="text" id="ta" name="amount" class="tnum" required
+        <input type="text" id="ta" name="amount" class="tnum" required value="<?= h($bankAmt) ?>"
                style="text-align:right;font-weight:700"></div>
       <div class="fw w1"><label for="tf">이체수수료</label>
         <input type="text" id="tf" name="fee" class="tnum" style="text-align:right" value="0"></div>
@@ -292,7 +321,7 @@ layout_head($mode === 'transfer' ? '계좌이체' : '출금 등록', 'cash_out')
         <select id="tfr" name="from_account_id" required>
           <option value="">— 선택 —</option>
           <?php foreach ($accounts as $a): ?>
-            <option value="<?= (int)$a['id'] ?>"><?= h($a['bank_name']) ?> <?= h($a['account_no']) ?>
+            <option value="<?= (int)$a['id'] ?>"<?= $bankRow && (int)$bankRow['bank_account_id'] === (int)$a['id'] ? ' selected' : '' ?>><?= h($a['bank_name']) ?> <?= h($a['account_no']) ?>
               (잔액 <?= money($a['balance'] ?? 0) ?>)</option>
           <?php endforeach; ?>
         </select></div>
@@ -331,10 +360,12 @@ layout_head($mode === 'transfer' ? '계좌이체' : '출금 등록', 'cash_out')
 <form id="vsearch" method="get">
   <input type="hidden" name="p" value="cash_out">
   <input type="hidden" name="mode" value="out">
+  <?php if ($bankRow): ?><input type="hidden" name="bank_row" value="<?= (int)$bankRow['id'] ?>"><?php endif; ?>
 </form>
 <form method="post">
 <?= csrf_field() ?>
 <input type="hidden" name="act" value="out">
+<?php if ($bankRow): ?><input type="hidden" name="bank_row" value="<?= (int)$bankRow['id'] ?>"><?php endif; ?>
 <div class="card">
   <div class="ch">출금 내용</div>
   <div class="cb">
@@ -347,7 +378,7 @@ layout_head($mode === 'transfer' ? '계좌이체' : '출금 등록', 'cash_out')
           <?php endforeach; ?>
         </select></div>
       <div class="fw w1"><label for="od">출금일 *</label>
-        <input type="date" id="od" name="txn_date" required value="<?= h(date('Y-m-d')) ?>"></div>
+        <input type="date" id="od" name="txn_date" required value="<?= h($bankDate ?: date('Y-m-d')) ?>"></div>
       <div class="fw w1"><label for="oc">비용분류 *</label>
         <select id="oc" name="category_id" required onchange="catChanged(this)">
           <option value="">— 선택 —</option>
@@ -368,7 +399,7 @@ layout_head($mode === 'transfer' ? '계좌이체' : '출금 등록', 'cash_out')
     </div>
     <div class="f" style="align-items:flex-end;margin-top:8px">
       <div class="fw w2"><label for="opn">받는 쪽 *</label>
-        <input type="text" id="opn" name="payee_name" required
+        <input type="text" id="opn" name="payee_name" required value="<?= h($bankRow['counterparty'] ?? '') ?>"
                placeholder="DHL / 한성통운 / 세무법인 …"></div>
       <div class="fw w2"><label for="ocm">거래처 (환불일 때)</label>
         <select id="ocm" name="company_id">
@@ -381,7 +412,7 @@ layout_head($mode === 'transfer' ? '계좌이체' : '출금 등록', 'cash_out')
     <div class="f" style="align-items:flex-end;margin-top:8px">
       <div class="fw w1"><label for="os">공급가액 *</label>
         <input type="text" id="os" name="supply_amount" class="tnum" required
-               style="text-align:right;font-weight:700" oninput="calcVat()"></div>
+               style="text-align:right;font-weight:700" oninput="calcVat()"<?= $bankRow ? ' readonly title="은행내역 합계에서 부가세 구분에 맞춰 자동으로 나눕니다"' : '' ?>></div>
       <div class="fw w1"><label for="ot">부가세 구분</label>
         <select id="ot" name="tax_type" onchange="calcVat()">
           <option value="TAXABLE">과세 (10%)</option>
@@ -400,7 +431,7 @@ layout_head($mode === 'transfer' ? '계좌이체' : '출금 등록', 'cash_out')
         <select id="oa" name="from_account_id">
           <option value="">— 지정 안 함 —</option>
           <?php foreach ($accounts as $a): ?>
-            <option value="<?= (int)$a['id'] ?>"><?= h($a['bank_name']) ?> <?= h($a['account_no']) ?>
+            <option value="<?= (int)$a['id'] ?>"<?= $bankRow && (int)$bankRow['bank_account_id'] === (int)$a['id'] ? ' selected' : '' ?>><?= h($a['bank_name']) ?> <?= h($a['account_no']) ?>
               (잔액 <?= money($a['balance'] ?? 0) ?>)</option>
           <?php endforeach; ?>
         </select></div>
@@ -427,7 +458,7 @@ layout_head($mode === 'transfer' ? '계좌이체' : '출금 등록', 'cash_out')
       <div class="fw w2"><label for="osm">적요</label>
         <input type="text" id="osm" name="summary"></div>
       <div class="fw w2"><label for="omm">메모</label>
-        <input type="text" id="omm" name="memo"></div>
+        <input type="text" id="omm" name="memo" value="<?= h($bankRow && $bankRow['description'] ? '은행: ' . $bankRow['description'] : '') ?>"></div>
     </div>
   </div>
 </div>
@@ -494,7 +525,17 @@ layout_head($mode === 'transfer' ? '계좌이체' : '출금 등록', 'cash_out')
 <script>
 function num(v){ v=(v||'').toString().replace(/[^0-9.-]/g,''); return v===''?0:parseFloat(v); }
 function fmt(n){ return Math.round(n).toLocaleString('ko-KR'); }
+// 은행내역에서 왔으면 합계(= 은행 출금액)를 고정하고 공급가액 · 부가세를 거꾸로 나눕니다
+var BANK_TOTAL = <?= $bankRow ? (int)round((float)$bankRow['out_amount']) : 0 ?>;
 function calcVat(){
+  if (BANK_TOTAL > 0) {
+    var tt = document.getElementById('ot').value;
+    var sp = tt === 'TAXABLE' ? Math.round(BANK_TOTAL / 1.1) : BANK_TOTAL;
+    document.getElementById('os').value = fmt(sp);
+    document.getElementById('ov').value = fmt(BANK_TOTAL - sp);
+    calcTotal();
+    return;
+  }
   var s = num(document.getElementById('os').value);
   var t = document.getElementById('ot').value;
   document.getElementById('ov').value = (t === 'TAXABLE') ? fmt(Math.round(s * 0.1)) : '0';
@@ -508,6 +549,7 @@ function catChanged(sel){
   var t = sel.options[sel.selectedIndex].dataset.tax;
   if (t) { document.getElementById('ot').value = t; calcVat(); }
 }
+if (BANK_TOTAL > 0) { calcVat(); }
 </script>
 <?php endif; ?>
 <?php layout_foot();
