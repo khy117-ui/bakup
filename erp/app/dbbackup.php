@@ -138,11 +138,18 @@ function dbbackup_run(string $by = 'auto'): array
         $dir = $c['dir']['backup'];
         // 백업 폴더(예 /backup/db)의 하위 폴더는 없으면 만듭니다 — 맨 위 공유폴더(backup)는 NAS 에서 미리
         [$code, , $err] = fs_dav('PUT', fs_dav_url('backup', $name), $tmp, null, 600);
-        if (in_array($code, [404, 409], true) && fs_dav_mkdirs_abs($dir)) {
+        if (in_array($code, [404, 405, 409], true) && fs_dav_mkdirs_abs($dir)) {
             [$code, , $err] = fs_dav('PUT', fs_dav_url('backup', $name), $tmp, null, 600);
         }
         if (!in_array($code, [200, 201, 204], true)) {
-            throw new RuntimeException('NAS 저장 실패 (HTTP ' . $code . ($err !== '' ? ' · ' . $err : '') . ') — ' . $dir . ' 폴더와 권한 확인');
+            $top = '/' . explode('/', trim($dir, '/'))[0];
+            $hint = [401 => 'NAS 계정 · 비밀번호가 틀림',
+                     403 => 'erpfile 계정에 ' . $top . ' 쓰기 권한이 없음 (제어판 → 공유 폴더 → ' . $top . ' → 권한)',
+                     404 => $top . ' 공유폴더가 NAS 에 없음 — 제어판 → 공유 폴더에서 만들어 주세요 (WebDAV 로는 공유폴더를 못 만듦)',
+                     405 => $top . ' 공유폴더가 NAS 에 없거나 erpfile 계정 권한이 없음 — 제어판 → 공유 폴더에서 만들고 읽기/쓰기 권한',
+                     409 => $dir . ' 의 상위 폴더가 없음 — ' . $top . ' 공유폴더 안에 하위 폴더를 만들어 주세요'][$code]
+                    ?? ($dir . ' 폴더와 권한 확인');
+            throw new RuntimeException('NAS 저장 실패 (HTTP ' . $code . ($err !== '' ? ' · ' . $err : '') . ') — ' . $hint);
         }
         $pdo->prepare("INSERT INTO db_backups (file_name, nas_path, size_bytes, sha256, tables_n, rows_n, seconds, status, message, trigger_by)
                        VALUES (?,?,?,?,?,?,?,'OK',?,?)")
