@@ -9,6 +9,15 @@ require_once APP_DIR . '/hawb.php';
 hawb_ensure_table();
 
 $eid = entity_id();
+$batch = (int)query('batch', '0');
+if ($batch > 0) {
+    // 항공편 하나의 송장을 모두 (적하목록 순서대로)
+    $st = db()->prepare('SELECT h.id FROM hawbs h
+                           JOIN hawb_batches b ON b.id = h.batch_id AND b.business_entity_id = ?
+                          WHERE h.batch_id = ? AND h.deleted_at IS NULL ORDER BY h.house_no, h.id');
+    $st->execute([$eid, $batch]);
+    $_GET['ids'] = implode(',', $st->fetchAll(PDO::FETCH_COLUMN));
+}
 $ids = array_values(array_unique(array_filter(array_map('intval', explode(',', (string)query('ids', ''))))));
 $ids = array_slice($ids, 0, 100);
 if (!$ids) { exit('인쇄할 HAWB 를 고르세요.'); }

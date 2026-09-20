@@ -28,7 +28,13 @@ $blank = [
     'vol_weight' => '', 'vol_divisor' => 6000, 'declared_value' => '', 'description' => '', 'remark' => '',
     'payment_by' => 'SHIPPER', 'check_to' => 'CASH',
     'charge_payment' => '', 'charge_other' => '', 'charge_duty' => '', 'charge_total' => '',
+    'batch_id' => 0, 'hsn' => '', 'actual_qty' => '', 'special_no' => '', 'homepage' => '',
+    'consignee_zip' => '', 'pcc_no' => '', 'consignee_name_ko' => '', 'consignee_addr_ko' => '',
+    'consignee_biz_no' => '', 'ecom_type' => '', 'order_no' => '', 'consignee_city' => '',
+    'shipper_addr_cn' => '', 'shipper_credit_no' => '',
 ];
+// 양식에 늘 같은 값이 들어가는 칸 (TUN · UNIW · 011 · 502 …) 은 미리 채워 둡니다
+$blank = array_merge($blank, HAWB_DEFAULTS);
 
 /** 폼에서 받는 칸 — 이 목록 그대로 저장합니다 */
 const HAWB_FORM_FIELDS = [
@@ -39,10 +45,21 @@ const HAWB_FORM_FIELDS = [
     'pieces', 'packing', 'weight', 'dim_l', 'dim_w', 'dim_h', 'vol_weight', 'vol_divisor',
     'declared_value', 'description', 'remark', 'payment_by', 'check_to',
     'charge_payment', 'charge_other', 'charge_duty', 'charge_total',
+    // 영문 통관목록 · 중문 적하목록 칸
+    'hsn', 'actual_qty', 'warehouse', 'notify', 'trade_code', 'sender_country', 'use_type',
+    'agent_code', 'special_no', 'homepage', 'allow_code', 'consignee_zip', 'pcc_no',
+    'consignee_name_ko', 'consignee_addr_ko', 'consignee_biz_no', 'ecom_type', 'order_no',
+    'consignee_city', 'shipper_addr_cn', 'shipper_city', 'shipper_country', 'shipper_credit_no',
+    'decl_type', 'trade_mode', 'cn_unit', 'cn_currency', 'cn_origin',
 ];
 /** 숫자로 저장하는 칸 — 빈 칸은 NULL 로 둡니다 */
 const HAWB_NUM_FIELDS = ['pieces', 'weight', 'dim_l', 'dim_w', 'dim_h', 'vol_weight',
-                         'declared_value', 'charge_payment', 'charge_other', 'charge_duty', 'charge_total'];
+                         'declared_value', 'charge_payment', 'charge_other', 'charge_duty',
+                         'charge_total', 'actual_qty', 'use_type'];
+/** 품목 한 줄에서 받는 칸 */
+const HAWB_ITEM_FIELDS = ['item_code', 'name_cn', 'name_en', 'spec', 'pieces', 'weight',
+                          'qty', 'unit', 'amount', 'currency', 'origin_country'];
+const HAWB_ITEM_NUM = ['pieces', 'weight', 'qty', 'amount'];
 
 // ---------------------------------------------------------------- 저장
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save') {
@@ -85,31 +102,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save') {
                 throw new RuntimeException('같은 송장번호의 HAWB 가 이미 있습니다. 번호를 확인하세요.');
             }
 
+            $batchId = (int)post('batch_id');
+            if ($batchId > 0) {
+                $chk = $pdo->prepare('SELECT id FROM hawb_batches WHERE id = ? AND business_entity_id = ? AND deleted_at IS NULL');
+                $chk->execute([$batchId, $eid]);
+                if (!$chk->fetchColumn()) { throw new RuntimeException('고른 항공편을 찾을 수 없습니다.'); }
+            }
+            $pdo->beginTransaction();
             if ($id > 0) {
                 $set = [];
                 foreach (HAWB_FORM_FIELDS as $f) { $set[] = "$f = ?"; }
                 $params = array_values($data);
+                $params[] = $batchId ?: null;
                 $params[] = $_SESSION['admin_id'] ?? null;
                 $params[] = $id;
                 $params[] = $eid;
                 $st = $pdo->prepare('UPDATE hawbs SET ' . implode(', ', $set)
-                    . ', updated_by = ?, updated_at = NOW() WHERE id = ? AND business_entity_id = ? AND deleted_at IS NULL');
+                    . ', batch_id = ?, updated_by = ?, updated_at = NOW()
+                       WHERE id = ? AND business_entity_id = ? AND deleted_at IS NULL');
                 $st->execute($params);
                 log_action('물류', 'UPDATE', 'hawbs', $id, (string)$data['house_no'], null, 'HAWB 수정');
                 flash('HAWB ' . $data['house_no'] . ' 을 저장했습니다.');
             } else {
-                $cols = array_merge(['business_entity_id', 'shipment_id'], HAWB_FORM_FIELDS, ['created_by']);
+                $cols = array_merge(['business_entity_id', 'shipment_id', 'batch_id'], HAWB_FORM_FIELDS, ['created_by']);
                 $ph   = implode(',', array_fill(0, count($cols), '?'));
-                $params = array_merge([$eid, (int)post('shipment_id') ?: null], array_values($data),
-                                      [$_SESSION['admin_id'] ?? null]);
+                $params = array_merge([$eid, (int)post('shipment_id') ?: null, $batchId ?: null],
+                                      array_values($data), [$_SESSION['admin_id'] ?? null]);
                 $st = $pdo->prepare('INSERT INTO hawbs (' . implode(',', $cols) . ") VALUES ($ph)");
                 $st->execute($params);
                 $id = (int)$pdo->lastInsertId();
                 log_action('물류', 'CREATE', 'hawbs', $id, (string)$data['house_no'], null, 'HAWB 등록');
                 flash('HAWB ' . $data['house_no'] . ' 을 등록했습니다. [인쇄] 로 비엘을 뽑을 수 있습니다.');
             }
+            // 품목 — 적은 줄로 통째로 바꿉니다 (중문 적하목록 · INVOICE 에 들어갑니다)
+            $pdo->prepare('DELETE FROM hawb_items WHERE hawb_id = ?')->execute([$id]);
+            $ins = $pdo->prepare('INSERT INTO hawb_items (hawb_id, line_no, ' . implode(',', HAWB_ITEM_FIELDS)
+                . ') VALUES (?,?,' . implode(',', array_fill(0, count(HAWB_ITEM_FIELDS), '?')) . ')');
+            $line = 0;
+            foreach ((array)($_POST['item'] ?? []) as $it) {
+                if (!is_array($it)) { continue; }
+                $vals = [];
+                foreach (HAWB_ITEM_FIELDS as $k) {
+                    $x = trim((string)($it[$k] ?? ''));
+                    $vals[] = in_array($k, HAWB_ITEM_NUM, true)
+                        ? ($x === '' ? null : (float)str_replace(',', '', $x)) : ($x === '' ? null : $x);
+                }
+                // 이름이 비어 있으면 빈 줄로 봅니다
+                if (($vals[1] ?? null) === null && ($vals[2] ?? null) === null) { continue; }
+                $ins->execute(array_merge([$id, ++$line], $vals));
+            }
+            $pdo->commit();
             redirect('?p=hawb_form&id=' . $id);
         } catch (Throwable $e) {
+            if (isset($pdo) && $pdo->inTransaction()) { $pdo->rollBack(); }
             if ($e instanceof RuntimeException) {
                 $err = $e->getMessage();
             } else {
@@ -131,6 +176,9 @@ if ($id > 0) {
         redirect('?p=hawb_list');
     }
     $cur = array_merge($blank, $row);
+    $st = db()->prepare('SELECT * FROM hawb_items WHERE hawb_id = ? ORDER BY line_no, id');
+    $st->execute([$id]);
+    $items = $st->fetchAll();
 } elseif (($sid = (int)query('shipment_id', '0')) > 0) {
     // 매출전표에서 값을 끌어와 채웁니다 — 저장 전까지는 아무것도 바뀌지 않습니다
     $pre = hawb_from_shipment($sid, $eid);
@@ -147,6 +195,21 @@ if ($err !== '' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $cur['id'] = $id;
 }
 
+if (!isset($items)) { $items = []; }
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err !== '') {
+    // 저장에 실패했으면 적어 둔 품목도 그대로 다시 보여 줍니다
+    $items = [];
+    foreach ((array)($_POST['item'] ?? []) as $it) { if (is_array($it)) { $items[] = $it; } }
+}
+if ($cur['batch_id'] ?? 0) { /* 이미 고른 항공편 */ } elseif (($qb = (int)query('batch_id', '0')) > 0) {
+    $cur['batch_id'] = $qb;
+}
+$batches = db()->prepare("SELECT id, flight_date, flight_no, mawb_no FROM hawb_batches
+                           WHERE business_entity_id = ? AND deleted_at IS NULL
+                           ORDER BY flight_date DESC, id DESC LIMIT 50");
+$batches->execute([$eid]);
+$batches = $batches->fetchAll();
+
 $v = static fn (string $k): string => h((string)($cur[$k] ?? ''));
 
 layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
@@ -156,7 +219,11 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
   <div class="crumb">물류관리 &gt; HAWB 발행 &gt; <?= $id > 0 ? '수정' : '등록' ?></div>
   <div class="right">
     <?php if ($id > 0): ?>
-      <a class="btn pri" href="?p=hawb_print&amp;ids=<?= $id ?>" target="_blank">인쇄 · PDF</a>
+      <a class="btn pri" href="?p=hawb_print&amp;ids=<?= $id ?>" target="_blank">비엘 인쇄 · PDF</a>
+      <a class="btn" href="?p=hawb_export&amp;type=inv&amp;id=<?= $id ?>">INVOICE 엑셀</a>
+      <?php if ((int)($cur['batch_id'] ?? 0) > 0): ?>
+        <a class="btn" href="?p=hawb_batches&amp;id=<?= (int)$cur['batch_id'] ?>">항공편 서류</a>
+      <?php endif; ?>
     <?php endif; ?>
     <a class="btn" href="?p=hawb_list">목록</a>
   </div>
@@ -182,6 +249,13 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
         <input type="text" id="mn" name="master_no" class="tnum" maxlength="50" value="<?= $v('master_no') ?>"></div>
       <div class="fw w1"><label for="sw">SEA Way Bill No</label>
         <input type="text" id="sw" name="sea_wb_no" class="tnum" maxlength="50" value="<?= $v('sea_wb_no') ?>"></div>
+      <div class="fw w2"><label for="bt">항공편 (적하목록)</label>
+        <select id="bt" name="batch_id">
+          <option value="">— 지정 안 함 —</option>
+          <?php foreach ($batches as $bt): ?>
+            <option value="<?= (int)$bt['id'] ?>"<?= (int)($cur['batch_id'] ?? 0) === (int)$bt['id'] ? ' selected' : '' ?>>
+              <?= h($bt['flight_date'] . ' · ' . $bt['flight_no'] . ' · ' . $bt['mawb_no']) ?></option>
+          <?php endforeach; ?></select></div>
       <div class="fw w1"><label for="st">구분</label>
         <select id="st" name="ship_type">
           <?php foreach (HAWB_TYPES as $k => $lab): ?>
@@ -270,6 +344,124 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
 </div>
 
 <div class="card">
+  <div class="ch">품목 <span style="font-weight:400;color:var(--ink3)">중문 적하목록 · INVOICE 에 줄 단위로 들어갑니다</span>
+    <button type="button" class="btn sm" style="margin-left:auto" id="additem">줄 추가</button></div>
+  <div class="cb" style="overflow-x:auto">
+    <table id="items">
+      <thead><tr>
+        <th style="width:110px">商品编号</th><th style="width:150px">중문 품명</th><th style="width:150px">영문 품명</th>
+        <th style="width:110px">规格</th><th style="width:70px">件数</th><th style="width:80px">重量</th>
+        <th style="width:70px">数量</th><th style="width:70px">单位</th><th style="width:90px">申报总价</th>
+        <th style="width:70px">币制</th><th style="width:70px">原产国</th><th class="c" style="width:40px"></th>
+      </tr></thead>
+      <tbody>
+      <?php $rowsN = max(count($items) + 1, 4);
+      for ($i = 0; $i < $rowsN; $i++): $it = $items[$i] ?? []; ?>
+        <tr>
+          <td><input type="text" name="item[<?= $i ?>][item_code]" value="<?= h((string)($it['item_code'] ?? '')) ?>"></td>
+          <td><input type="text" name="item[<?= $i ?>][name_cn]" value="<?= h((string)($it['name_cn'] ?? '')) ?>"></td>
+          <td><input type="text" name="item[<?= $i ?>][name_en]" value="<?= h((string)($it['name_en'] ?? '')) ?>"></td>
+          <td><input type="text" name="item[<?= $i ?>][spec]" value="<?= h((string)($it['spec'] ?? '')) ?>"></td>
+          <td><input type="text" class="tnum" style="text-align:right" name="item[<?= $i ?>][pieces]" value="<?= h(hawb_num($it['pieces'] ?? '')) ?>"></td>
+          <td><input type="text" class="tnum" style="text-align:right" name="item[<?= $i ?>][weight]" value="<?= h(hawb_num($it['weight'] ?? '')) ?>"></td>
+          <td><input type="text" class="tnum" style="text-align:right" name="item[<?= $i ?>][qty]" value="<?= h(hawb_num($it['qty'] ?? '')) ?>"></td>
+          <td><input type="text" name="item[<?= $i ?>][unit]" value="<?= h((string)($it['unit'] ?? $cur['cn_unit'])) ?>"></td>
+          <td><input type="text" class="tnum" style="text-align:right" name="item[<?= $i ?>][amount]" value="<?= h(hawb_num($it['amount'] ?? '')) ?>"></td>
+          <td><input type="text" name="item[<?= $i ?>][currency]" value="<?= h((string)($it['currency'] ?? $cur['cn_currency'])) ?>"></td>
+          <td><input type="text" name="item[<?= $i ?>][origin_country]" value="<?= h((string)($it['origin_country'] ?? $cur['cn_origin'])) ?>"></td>
+          <td class="c"><button type="button" class="btn sm rmitem" title="이 줄 비우기">×</button></td>
+        </tr>
+      <?php endfor; ?>
+      </tbody>
+    </table>
+    <div style="font-size:11.5px;color:var(--ink2);margin-top:8px">
+      중문·영문 품명이 둘 다 비면 저장하지 않습니다. 单位 <b>011</b>, 币制 <b>502</b>, 原产国 <b>133</b> 은 양식 기본값입니다.
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch">통관 정보 <span style="font-weight:400;color:var(--ink3)">영문 통관목록 · 중문 적하목록에 들어갑니다</span></div>
+  <div class="cb">
+    <div class="f" style="align-items:flex-end">
+      <div class="fw w1"><label for="hsn">HSN (일련번호)</label>
+        <input type="text" id="hsn" name="hsn" class="tnum" maxlength="20" value="<?= $v('hsn') ?>" placeholder="0001"></div>
+      <div class="fw w1"><label for="aq">실제수량</label>
+        <input type="text" id="aq" name="actual_qty" class="tnum" style="text-align:right" value="<?= $v('actual_qty') ?>"></div>
+      <div class="fw w1"><label for="wh">WAREHOUSE</label>
+        <input type="text" id="wh" name="warehouse" maxlength="20" value="<?= $v('warehouse') ?>"></div>
+      <div class="fw w1"><label for="tc">거래코드</label>
+        <select id="tc" name="trade_code">
+          <?php foreach (HAWB_TRADE_CODES as $k => $lab): ?>
+            <option value="<?= $k ?>"<?= (string)$cur['trade_code'] === $k ? ' selected' : '' ?>><?= h($lab) ?></option>
+          <?php endforeach; ?></select></div>
+      <div class="fw w1"><label for="ut">용도구분</label>
+        <select id="ut" name="use_type">
+          <?php foreach (HAWB_USE_TYPES as $k => $lab): ?>
+            <option value="<?= $k ?>"<?= (int)$cur['use_type'] === $k ? ' selected' : '' ?>><?= h($lab) ?></option>
+          <?php endforeach; ?></select></div>
+      <div class="fw w1"><label for="sc">발송국가코드</label>
+        <input type="text" id="sc" name="sender_country" maxlength="2" value="<?= $v('sender_country') ?>"></div>
+    </div>
+    <div class="f" style="align-items:flex-end;margin-top:8px">
+      <div class="fw w1"><label for="pcc">개인통관고유부호</label>
+        <input type="text" id="pcc" name="pcc_no" class="tnum" maxlength="30" value="<?= $v('pcc_no') ?>"></div>
+      <div class="fw w1"><label for="cz">수하인 우편번호</label>
+        <input type="text" id="cz" name="consignee_zip" class="tnum" maxlength="20" value="<?= $v('consignee_zip') ?>"></div>
+      <div class="fw w1"><label for="cbn">수하인 사업자번호</label>
+        <input type="text" id="cbn" name="consignee_biz_no" class="tnum" maxlength="30" value="<?= $v('consignee_biz_no') ?>"></div>
+      <div class="fw w1"><label for="ck">수하인 한글 상호</label>
+        <input type="text" id="ck" name="consignee_name_ko" maxlength="100" value="<?= $v('consignee_name_ko') ?>"></div>
+      <div class="fw w2"><label for="cak">수하인 한글 주소</label>
+        <input type="text" id="cak" name="consignee_addr_ko" maxlength="255" value="<?= $v('consignee_addr_ko') ?>"></div>
+    </div>
+    <div class="f" style="align-items:flex-end;margin-top:8px">
+      <div class="fw w1"><label for="ac">주선업자부호</label>
+        <input type="text" id="ac" name="agent_code" maxlength="20" value="<?= $v('agent_code') ?>"></div>
+      <div class="fw w1"><label for="al">통관허용품목</label>
+        <input type="text" id="al" name="allow_code" maxlength="20" value="<?= $v('allow_code') ?>"></div>
+      <div class="fw w1"><label for="sn">특별통관 지정번호</label>
+        <input type="text" id="sn" name="special_no" maxlength="30" value="<?= $v('special_no') ?>"></div>
+      <div class="fw w1"><label for="et">전자상거래 유형</label>
+        <select id="et" name="ecom_type">
+          <?php foreach (HAWB_ECOM_TYPES as $k => $lab): ?>
+            <option value="<?= $k ?>"<?= (string)$cur['ecom_type'] === (string)$k ? ' selected' : '' ?>><?= h($lab) ?></option>
+          <?php endforeach; ?></select></div>
+      <div class="fw w1"><label for="orn">주문번호</label>
+        <input type="text" id="orn" name="order_no" maxlength="50" value="<?= $v('order_no') ?>"></div>
+      <div class="fw w1"><label for="hp">홈페이지주소</label>
+        <input type="text" id="hp" name="homepage" maxlength="150" value="<?= $v('homepage') ?>"></div>
+    </div>
+    <div class="f" style="align-items:flex-end;margin-top:8px">
+      <div class="fw w1"><label for="nt">NOTIFY</label>
+        <input type="text" id="nt" name="notify" maxlength="100" value="<?= $v('notify') ?>"></div>
+      <div class="fw w1"><label for="cc">받는회사 도시 (중문)</label>
+        <input type="text" id="cc" name="consignee_city" maxlength="50" value="<?= $v('consignee_city') ?>"></div>
+      <div class="fw w2"><label for="sacn">보내는회사 주소 (중문)</label>
+        <input type="text" id="sacn" name="shipper_addr_cn" maxlength="255" value="<?= $v('shipper_addr_cn') ?>"></div>
+      <div class="fw w1"><label for="scr">发件公司社会信用代码</label>
+        <input type="text" id="scr" name="shipper_credit_no" class="tnum" maxlength="40" value="<?= $v('shipper_credit_no') ?>"></div>
+    </div>
+    <div class="f" style="align-items:flex-end;margin-top:8px">
+      <div class="fw w1"><label for="scy">发件人城市</label>
+        <input type="text" id="scy" name="shipper_city" maxlength="40" value="<?= $v('shipper_city') ?>"></div>
+      <div class="fw w1"><label for="sco">发件人国别</label>
+        <input type="text" id="sco" name="shipper_country" maxlength="10" value="<?= $v('shipper_country') ?>"></div>
+      <div class="fw w1"><label for="dt2">报关类别</label>
+        <input type="text" id="dt2" name="decl_type" maxlength="10" value="<?= $v('decl_type') ?>"></div>
+      <div class="fw w1"><label for="tmd">贸易方式</label>
+        <input type="text" id="tmd" name="trade_mode" maxlength="10" value="<?= $v('trade_mode') ?>"></div>
+      <div class="fw w1"><label for="cu">计量单位</label>
+        <input type="text" id="cu" name="cn_unit" maxlength="10" value="<?= $v('cn_unit') ?>"></div>
+      <div class="fw w1"><label for="ccy">币制</label>
+        <input type="text" id="ccy" name="cn_currency" maxlength="10" value="<?= $v('cn_currency') ?>"></div>
+      <div class="fw w1"><label for="cog">原产/消费国</label>
+        <input type="text" id="cog" name="cn_origin" maxlength="10" value="<?= $v('cn_origin') ?>"></div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
   <div class="ch">운임</div>
   <div class="cb">
     <div class="f" style="align-items:flex-end">
@@ -323,5 +515,23 @@ function sum(){
   t.value = v > 0 ? v.toLocaleString('ko-KR') : '';
 }
 document.getElementById('c4').addEventListener('input', function(){ this.dataset.touched = '1'; });
+// 품목 — 줄 추가 · 비우기
+(function () {
+  var tb = document.querySelector('#items tbody');
+  document.getElementById('additem').addEventListener('click', function () {
+    var last = tb.rows[tb.rows.length - 1], tr = last.cloneNode(true), n = tb.rows.length;
+    tr.querySelectorAll('input').forEach(function (i) {
+      i.name = i.name.replace(/item\[\d+\]/, 'item[' + n + ']');
+      if (!/\[(unit|currency|origin_country)\]$/.test(i.name)) { i.value = ''; }
+    });
+    tb.appendChild(tr);
+  });
+  tb.addEventListener('click', function (e) {
+    if (!e.target.classList.contains('rmitem')) { return; }
+    e.target.closest('tr').querySelectorAll('input').forEach(function (i) {
+      if (/\[(name_cn|name_en)\]$/.test(i.name) || !/\[(unit|currency|origin_country)\]$/.test(i.name)) { i.value = ''; }
+    });
+  });
+})();
 </script>
 <?php layout_foot();

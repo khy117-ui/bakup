@@ -26,10 +26,37 @@ const HAWB_CHECKS = ['CASH' => 'Cash', 'ONLINE' => 'On-line', 'CREDIT' => 'Credi
 /** 부피중량 나누는 수 — 서류마다 6000 · 5000 중에서 고릅니다 */
 const HAWB_DIVISORS = [6000 => '6000 (항공 일반)', 5000 => '5000 (특송 · 일부 항공사)'];
 
+/** 영문 통관목록의 거래코드 (진출입 방식) */
+const HAWB_TRADE_CODES = ['A' => 'A 전자상거래', 'D' => 'D 개인 일반물품',
+                          'E' => 'E 상용 견품', 'F' => 'F 상업서류'];
+/** 용도구분 */
+const HAWB_USE_TYPES = [1 => '1 개인', 2 => '2 회사'];
+/** 전자상거래 유형 */
+const HAWB_ECOM_TYPES = ['' => '— 없음 —', 'A' => 'A 직접구매', 'B' => 'B 구매대행',
+                         'C' => 'C 배송대행', 'Z' => 'Z 파악불가'];
+
+/**
+ * 양식에 늘 같은 값이 들어가는 칸 — 새로 만들 때 미리 채워 둡니다.
+ * 받은 엑셀 양식(NEW_Exp_air_freight_template)의 노란 칸 값 그대로입니다.
+ */
+const HAWB_DEFAULTS = [
+    'warehouse' => 'TUN', 'notify' => 'same as above', 'trade_code' => 'D',
+    'sender_country' => 'CN', 'use_type' => 1, 'agent_code' => 'UNIW', 'allow_code' => '62',
+    'cn_unit' => '011', 'cn_currency' => '502', 'cn_origin' => '133',
+    'shipper_country' => '142', 'shipper_city' => 'TAO', 'decl_type' => '3', 'trade_mode' => '3010',
+];
+/** 항공편(적하목록) 머리 부분 기본값 */
+const HAWB_BATCH_DEFAULTS = [
+    'io_flag' => 'E', 'transport_mode' => '5', 'port_code' => '4240',
+    'operator_code' => '3107966501', 'operator_name' => '上海帝昊贸易发展有限公司',
+];
+/** 적하목록 진출입 구분 */
+const HAWB_IO_FLAGS = ['E' => 'E 수출 (출항)', 'I' => 'I 수입 (입항)'];
+
 /** 표가 없으면 만듭니다 (세션당 한 번) */
 function hawb_ensure_table(): void
 {
-    if (!empty($_SESSION['schema_hawb_v2'])) { return; }
+    if (!empty($_SESSION['schema_hawb_v3'])) { return; }
     try {
         db()->exec("CREATE TABLE IF NOT EXISTS hawbs (
           id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -81,13 +108,90 @@ function hawb_ensure_table(): void
           KEY ix_hawb_ship (shipment_id),
           KEY ix_hawb_date (business_entity_id, on_board_date)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='항공 하우스 비엘 (HAWB)'");
-        // 이미 만들어 둔 표에는 나누는 수 칸이 없을 수 있습니다
-        $has = db()->query("SHOW COLUMNS FROM hawbs LIKE 'vol_divisor'")->fetch();
-        if (!$has) {
-            db()->exec('ALTER TABLE hawbs ADD COLUMN vol_divisor SMALLINT UNSIGNED NOT NULL DEFAULT 6000
-                          COMMENT \'부피중량 나누는 수 6000 / 5000\' AFTER vol_weight');
+        // 항공편(적하목록) — 송장 여러 건을 묶는 단위. 영문 · 중문 서류의 머리 부분입니다
+        db()->exec("CREATE TABLE IF NOT EXISTS hawb_batches (
+          id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          business_entity_id BIGINT UNSIGNED NOT NULL,
+          flight_date        DATE         NULL             COMMENT 'DATE/Time · 进出日期',
+          flight_no          VARCHAR(30)  NULL             COMMENT 'FLT NO · 运输工具航次',
+          mawb_no            VARCHAR(50)  NULL             COMMENT 'MAWB NO · 总运单号',
+          origin_port        VARCHAR(40)  NULL            COMMENT '起运港',
+          dest_port          VARCHAR(40)  NULL            COMMENT '抵运地',
+          io_flag            VARCHAR(2)   NOT NULL DEFAULT 'E' COMMENT '舱单进/出口标志',
+          transport_mode     VARCHAR(10)  NULL            COMMENT '运输方式 5',
+          port_code          VARCHAR(10)  NULL            COMMENT '进出口岸代码 4240',
+          operator_code      VARCHAR(40)  NULL            COMMENT '经营单位代码',
+          operator_name      VARCHAR(150) NULL            COMMENT '经营单位名称',
+          memo               VARCHAR(500) NULL,
+          created_by         BIGINT UNSIGNED NULL,
+          created_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_by         BIGINT UNSIGNED NULL,
+          updated_at         DATETIME     NULL,
+          deleted_at         DATETIME     NULL,
+          PRIMARY KEY (id),
+          KEY ix_hb_ent (business_entity_id, flight_date)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='항공편 적하목록'");
+
+        // 품목 — 중문 적하목록과 INVOICE 는 송장 하나에 품목 여러 줄이 붙습니다
+        db()->exec("CREATE TABLE IF NOT EXISTS hawb_items (
+          id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          hawb_id        BIGINT UNSIGNED NOT NULL,
+          line_no        SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+          item_code      VARCHAR(40)  NULL              COMMENT '商品编号附加编号',
+          name_cn        VARCHAR(150) NULL              COMMENT '中文货物名称',
+          name_en        VARCHAR(150) NULL              COMMENT '英文货物名称',
+          spec           VARCHAR(100) NULL              COMMENT '规格/型号',
+          pieces         DECIMAL(10,2) NULL             COMMENT '件数',
+          weight         DECIMAL(10,2) NULL             COMMENT '重量',
+          qty            DECIMAL(10,2) NULL             COMMENT '数量',
+          unit           VARCHAR(10)  NULL              COMMENT '计量单位 011',
+          amount         DECIMAL(15,2) NULL             COMMENT '申报总价',
+          currency       VARCHAR(10)  NULL              COMMENT '币制 502',
+          origin_country VARCHAR(10)  NULL              COMMENT '原产/消费国 133',
+          PRIMARY KEY (id),
+          KEY ix_hi_hawb (hawb_id, line_no),
+          CONSTRAINT fk_hi_hawb FOREIGN KEY (hawb_id) REFERENCES hawbs(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='HAWB 품목'");
+
+        // 뒤에 늘어난 칸은 있는지 보고 하나씩 붙입니다 (이미 쓰던 표를 건드리지 않으려고)
+        $cols = [];
+        foreach (db()->query('SHOW COLUMNS FROM hawbs')->fetchAll() as $c) { $cols[$c['Field']] = 1; }
+        $add = [
+            'vol_divisor'       => "SMALLINT UNSIGNED NOT NULL DEFAULT 6000 COMMENT '부피중량 나누는 수 6000 / 5000'",
+            'batch_id'          => "BIGINT UNSIGNED NULL COMMENT '항공편(적하목록)'",
+            'hsn'               => "VARCHAR(20) NULL COMMENT 'HSN 일련번호'",
+            'actual_qty'        => "INT NULL COMMENT '실제수량'",
+            'warehouse'         => "VARCHAR(20) NULL COMMENT 'WAREHOUSE'",
+            'notify'            => "VARCHAR(100) NULL COMMENT 'NOTIFY'",
+            'trade_code'        => "VARCHAR(2) NULL COMMENT '거래코드 A/D/E/F'",
+            'sender_country'    => "VARCHAR(2) NULL COMMENT '발송국가코드'",
+            'use_type'          => "TINYINT UNSIGNED NULL COMMENT '용도구분 1 개인 2 회사'",
+            'agent_code'        => "VARCHAR(20) NULL COMMENT '화물운송주선업자부호'",
+            'special_no'        => "VARCHAR(30) NULL COMMENT '특별통관거래대상지정번호'",
+            'homepage'          => "VARCHAR(150) NULL COMMENT '홈페이지주소'",
+            'allow_code'        => "VARCHAR(20) NULL COMMENT '통관허용품목'",
+            'consignee_zip'     => "VARCHAR(20) NULL COMMENT '수하인우편번호'",
+            'pcc_no'            => "VARCHAR(30) NULL COMMENT '개인통관고유부호'",
+            'consignee_name_ko' => "VARCHAR(100) NULL COMMENT '수하인 한글 상호'",
+            'consignee_addr_ko' => "VARCHAR(255) NULL COMMENT '수하인 한글 주소'",
+            'consignee_biz_no'  => "VARCHAR(30) NULL COMMENT '수하인사업자번호'",
+            'ecom_type'         => "VARCHAR(2) NULL COMMENT '전자상거래 유형'",
+            'order_no'          => "VARCHAR(50) NULL COMMENT '주문번호'",
+            'consignee_city'    => "VARCHAR(50) NULL COMMENT '收件公司城市'",
+            'shipper_addr_cn'   => "VARCHAR(255) NULL COMMENT '发件公司地址 (중문)'",
+            'shipper_city'      => "VARCHAR(40) NULL COMMENT '发件人城市'",
+            'shipper_country'   => "VARCHAR(10) NULL COMMENT '发件人国别'",
+            'shipper_credit_no' => "VARCHAR(40) NULL COMMENT '发件公司社会信用代码'",
+            'decl_type'         => "VARCHAR(10) NULL COMMENT '报关类别'",
+            'trade_mode'        => "VARCHAR(10) NULL COMMENT '贸易方式'",
+            'cn_unit'           => "VARCHAR(10) NULL COMMENT '计量单位'",
+            'cn_currency'       => "VARCHAR(10) NULL COMMENT '币制'",
+            'cn_origin'         => "VARCHAR(10) NULL COMMENT '原产/消费国'",
+        ];
+        foreach ($add as $name => $def) {
+            if (!isset($cols[$name])) { db()->exec("ALTER TABLE hawbs ADD COLUMN $name $def"); }
         }
-        $_SESSION['schema_hawb_v2'] = 1;
+        $_SESSION['schema_hawb_v3'] = 1;
     } catch (PDOException $e) {
         error_log('HAWB 표 준비 실패: ' . $e->getMessage());
     }

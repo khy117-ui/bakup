@@ -24,6 +24,7 @@ function layout_head(string $title, string $active): void
             ['shipments', '매출전표', true],
             ['awb_list', 'AWB 관리', true],
             ['hawb_list', 'HAWB 발행', true],
+            ['hawb_batches', '수입 서류', true],
             ['tracking', '화물추적', true],
             ['documents', '문서보관함', true],
         ]],
