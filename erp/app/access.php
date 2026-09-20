@@ -42,6 +42,9 @@ const ROUTE_PERMS = [
     'web_pickups'      => ['sales.voucher.read', 'sales.voucher.write'],   // 홈페이지 온라인 접수
     'awb_list'         => ['logi.awb.read', 'logi.awb.write'],
     'awb_label'        => ['logi.awb.read', 'logi.awb.write'],
+    'hawb_list'        => ['logi.awb.read', 'logi.awb.write'],   // 항공 하우스 비엘 (HAWB)
+    'hawb_form'        => ['logi.awb.read', 'logi.awb.write'],
+    'hawb_print'       => ['logi.awb.read', 'logi.awb.read'],
     'tracking'         => ['logi.tracking.read', 'logi.tracking.write'],
     'documents'        => ['logi.document.read', 'logi.document.write'],
     'file_download'    => ['logi.document.read', 'logi.document.write'],
@@ -96,6 +99,8 @@ const DELETE_ACTIONS = [
     // 매출전표 삭제 — 목록의 휴지통. 청구 · 입금 · 지급된 매입이 없을 때만 (shipments.php 에서 다시 확인)
     'shipments'        => ['delete' => ['label' => '매출전표 삭제', 'id_from' => 'post:id', 'reason' => 'reason',
                                         'name_sql' => 'SELECT awb_no FROM shipments WHERE id = ?']],
+    'hawb_list'        => ['delete' => ['label' => 'HAWB 삭제', 'id_from' => 'post:id', 'reason' => 'reason',
+                                        'name_sql' => 'SELECT house_no FROM hawbs WHERE id = ?']],
     'shipment_form'    => ['cancel' => ['label' => '매출전표 취소', 'id_from' => 'get:id', 'reason' => 'cancel_reason',
                                         'name_sql' => 'SELECT awb_no FROM shipments WHERE id = ?']],
     'invoice_view'     => ['cancel' => ['label' => '청구서 취소', 'id_from' => 'get:id', 'reason' => 'reason',

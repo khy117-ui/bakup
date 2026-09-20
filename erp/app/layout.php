@@ -23,6 +23,7 @@ function layout_head(string $title, string $active): void
             ['web_pickups', '온라인 접수', true],
             ['shipments', '매출전표', true],
             ['awb_list', 'AWB 관리', true],
+            ['hawb_list', 'HAWB 발행', true],
             ['tracking', '화물추적', true],
             ['documents', '문서보관함', true],
         ]],

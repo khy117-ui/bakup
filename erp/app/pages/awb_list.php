@@ -112,6 +112,7 @@ layout_head('AWB 관리', 'awb_list');
             : '<a href="?p=documents&amp;shipment_id=' . (int)$r['id'] . '" style="color:var(--ink3)">+</a>' ?></td>
         <td class="c">
           <a class="btn sm" href="?p=awb_label&amp;id=<?= (int)$r['id'] ?>" target="_blank">라벨</a>
+          <a class="btn sm" href="?p=hawb_form&amp;shipment_id=<?= (int)$r['id'] ?>" title="이 전표 내용으로 항공 하우스 비엘 만들기">HAWB</a>
           <a class="btn sm" href="?p=tracking&amp;shipment_id=<?= (int)$r['id'] ?>">추적</a>
         </td>
       </tr>
