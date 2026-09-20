@@ -274,7 +274,7 @@ ul, ol { padding: 0; list-style: none; }
 .hero { background: var(--ground); padding: 78px 0 64px; }
 .hero .container { display: grid; grid-template-columns: minmax(0, 1fr) 620px; gap: 64px; align-items: center; }
 .hero .container > * { min-width: 0; }
-.hero__tag { display: inline-flex; flex-wrap: wrap; max-width: 100%; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px; background: #fff; border: 1px solid var(--line); font-family: var(--font-en); font-size: 11px; font-weight: 700; letter-spacing: 2px; color: var(--blue); margin-bottom: 24px; }
+.hero__tag { display: inline-flex; flex-wrap: nowrap; white-space: nowrap; max-width: 100%; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px; background: #fff; border: 1px solid var(--line); font-family: var(--font-en); font-size: 11px; font-weight: 700; letter-spacing: 2px; color: var(--blue); margin-bottom: 24px; }
 .hero h1 { font-size: 56px; line-height: 1.2; font-weight: 900; color: var(--navy); letter-spacing: -1.5px; margin-bottom: 20px; }
 .hero__lead { font-size: 18px; color: var(--muted); margin-bottom: 26px; }
 .tool-card { padding: 10px; border-radius: 20px; background: #fff; border: 1px solid var(--line); box-shadow: 0 16px 40px rgba(11,42,91,.10); }
@@ -424,7 +424,8 @@ ul, ol { padding: 0; list-style: none; }
   .lnb .container { flex-wrap: wrap; }
   .subtabs { width: 100%; padding: 10px 0 12px; overflow-x: auto; }
   .grid--2, .grid--3, .grid--4, .grid--side, .grid--intro, .grid--aside-left, .grid--side-420, .grid--side-380, .grid--side-340, .grid--left-360, .grid--left-300 { grid-template-columns: 1fr; gap: 16px; }
-  .hero__tag { font-size: 10px; letter-spacing: 1px; }
+  .hero__tag { font-size: clamp(8px, 2.4vw, 10px); letter-spacing: .6px; gap: 6px; padding: 7px 12px; }
+  .hero__tag svg { flex: 0 0 auto; }
   .search-input { width: auto; }
   .subtabs { flex: 0 0 100%; }
   .grid--7 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
