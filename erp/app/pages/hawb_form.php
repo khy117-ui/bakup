@@ -25,7 +25,7 @@ $blank = [
     'shipper_name' => '', 'shipper_addr' => '', 'shipper_contact' => '', 'shipper_phone' => '',
     'consignee_name' => '', 'consignee_addr' => '', 'consignee_attn' => '', 'consignee_phone' => '',
     'pieces' => '', 'packing' => '', 'weight' => '', 'dim_l' => '', 'dim_w' => '', 'dim_h' => '',
-    'vol_weight' => '', 'declared_value' => '', 'description' => '', 'remark' => '',
+    'vol_weight' => '', 'vol_divisor' => 6000, 'declared_value' => '', 'description' => '', 'remark' => '',
     'payment_by' => 'SHIPPER', 'check_to' => 'CASH',
     'charge_payment' => '', 'charge_other' => '', 'charge_duty' => '', 'charge_total' => '',
 ];
@@ -36,7 +36,7 @@ const HAWB_FORM_FIELDS = [
     'origin', 'via', 'destination',
     'shipper_name', 'shipper_addr', 'shipper_contact', 'shipper_phone',
     'consignee_name', 'consignee_addr', 'consignee_attn', 'consignee_phone',
-    'pieces', 'packing', 'weight', 'dim_l', 'dim_w', 'dim_h', 'vol_weight',
+    'pieces', 'packing', 'weight', 'dim_l', 'dim_w', 'dim_h', 'vol_weight', 'vol_divisor',
     'declared_value', 'description', 'remark', 'payment_by', 'check_to',
     'charge_payment', 'charge_other', 'charge_duty', 'charge_total',
 ];
@@ -61,12 +61,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save') {
     $data['ship_type']  = array_key_exists((string)$data['ship_type'], HAWB_TYPES) ? $data['ship_type'] : 'PARCEL';
     $data['payment_by'] = array_key_exists((string)$data['payment_by'], HAWB_PAYERS) ? $data['payment_by'] : 'SHIPPER';
     $data['check_to']   = array_key_exists((string)$data['check_to'], HAWB_CHECKS) ? $data['check_to'] : 'CASH';
+    $data['vol_divisor'] = array_key_exists((int)$data['vol_divisor'], HAWB_DIVISORS) ? (int)$data['vol_divisor'] : 6000;
     if ($data['on_board_date'] !== null && !preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)$data['on_board_date'])) {
         $data['on_board_date'] = null;
     }
-    // 적어 두지 않았으면 가로×세로×높이÷6000 으로 채웁니다
+    // 적어 두지 않았으면 가로×세로×높이÷나누는 수 로 채웁니다
     if ($data['vol_weight'] === null) {
-        $data['vol_weight'] = hawb_vol_weight((float)$data['dim_l'], (float)$data['dim_w'], (float)$data['dim_h']);
+        $data['vol_weight'] = hawb_vol_weight((float)$data['dim_l'], (float)$data['dim_w'],
+                                              (float)$data['dim_h'], (int)$data['vol_divisor']);
     }
 
     if ($data['house_no'] === null) {
@@ -231,7 +233,7 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
 
 <div class="card">
   <div class="ch">화물
-    <span style="font-weight:400;color:var(--ink3)">부피중량 = 가로 × 세로 × 높이 ÷ 6000 (비우면 자동)</span></div>
+    <span style="font-weight:400;color:var(--ink3)">부피중량 = 가로 × 세로 × 높이 ÷ 나누는 수 (비우면 자동 계산)</span></div>
   <div class="cb">
     <div class="f" style="align-items:flex-end">
       <div class="fw w1"><label for="pc">개수 (Pickup C/T)</label>
@@ -250,6 +252,11 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
         <input type="text" id="dw" name="dim_w" class="tnum" style="text-align:right" value="<?= $v('dim_w') ?>" oninput="vol()"></div>
       <div class="fw w1"><label for="dh">높이 H (cm)</label>
         <input type="text" id="dh" name="dim_h" class="tnum" style="text-align:right" value="<?= $v('dim_h') ?>" oninput="vol()"></div>
+      <div class="fw w1"><label for="vd">나누는 수</label>
+        <select id="vd" name="vol_divisor" onchange="vol(true)">
+          <?php foreach (HAWB_DIVISORS as $k => $lab): ?>
+            <option value="<?= $k ?>"<?= (int)$cur['vol_divisor'] === $k ? ' selected' : '' ?>><?= h($lab) ?></option>
+          <?php endforeach; ?></select></div>
       <div class="fw w1"><label for="vw">부피중량 (KG)</label>
         <input type="text" id="vw" name="vol_weight" class="tnum" style="text-align:right" value="<?= $v('vol_weight') ?>"></div>
     </div>
@@ -297,12 +304,14 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
 
 <script>
 function n(v){ v = (v||'').toString().replace(/[^0-9.]/g,''); return v === '' ? 0 : parseFloat(v); }
-// 부피중량 — 손으로 적어 두었으면 건드리지 않습니다
-function vol(){
+// 부피중량 — 손으로 적어 두었으면 건드리지 않습니다 (나누는 수를 바꾸면 다시 계산합니다)
+function vol(force){
   var el = document.getElementById('vw');
-  if (el.dataset.touched) { return; }
+  if (el.dataset.touched && !force) { return; }
+  var div = parseFloat(document.getElementById('vd').value) || 6000;
   var v = n(document.getElementById('dl').value) * n(document.getElementById('dw').value)
-        * n(document.getElementById('dh').value) / 6000;
+        * n(document.getElementById('dh').value) / div;
+  if (force) { delete el.dataset.touched; }
   el.value = v > 0 ? (Math.round(v * 100) / 100) : '';
 }
 document.getElementById('vw').addEventListener('input', function(){ this.dataset.touched = '1'; });

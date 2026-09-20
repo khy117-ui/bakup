@@ -13,7 +13,8 @@ require_once APP_DIR . '/barcode.php';
  * 그대로 전산으로 옮긴 것입니다. 화면에 넣은 내용이 인쇄 양식에 들어가고,
  * 송장번호는 **CODE128** 바코드로 같이 찍힙니다.
  *
- * 부피중량은 가로 × 세로 × 높이 ÷ 6000 — 엑셀 양식의 식 그대로입니다.
+ * 부피중량은 가로 × 세로 × 높이 ÷ 나누는 수입니다. 항공은 6000, 특송·일부 항공사는 5000 을 쓰기에
+ * 건마다 골라서 적용합니다 (기본 6000 — 받은 엑셀 양식의 식).
  */
 
 /** 서류 / 소포 구분 */
@@ -22,11 +23,13 @@ const HAWB_TYPES = ['DOCUMENT' => 'Document', 'PARCEL' => 'Parcel'];
 const HAWB_PAYERS = ['SHIPPER' => 'Shipper', 'CONSIGNEE' => 'Consignee', 'THIRD' => 'Third Party'];
 /** 결제 방법 */
 const HAWB_CHECKS = ['CASH' => 'Cash', 'ONLINE' => 'On-line', 'CREDIT' => 'Credit'];
+/** 부피중량 나누는 수 — 서류마다 6000 · 5000 중에서 고릅니다 */
+const HAWB_DIVISORS = [6000 => '6000 (항공 일반)', 5000 => '5000 (특송 · 일부 항공사)'];
 
 /** 표가 없으면 만듭니다 (세션당 한 번) */
 function hawb_ensure_table(): void
 {
-    if (!empty($_SESSION['schema_hawb_v1'])) { return; }
+    if (!empty($_SESSION['schema_hawb_v2'])) { return; }
     try {
         db()->exec("CREATE TABLE IF NOT EXISTS hawbs (
           id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -55,7 +58,8 @@ function hawb_ensure_table(): void
           dim_l              DECIMAL(10,2) NULL,
           dim_w              DECIMAL(10,2) NULL,
           dim_h              DECIMAL(10,2) NULL,
-          vol_weight         DECIMAL(10,2) NULL            COMMENT 'L×W×H÷6000',
+          vol_weight         DECIMAL(10,2) NULL            COMMENT 'L×W×H÷나누는 수',
+          vol_divisor        SMALLINT UNSIGNED NOT NULL DEFAULT 6000 COMMENT '부피중량 나누는 수 6000 / 5000',
           declared_value     DECIMAL(15,2) NULL            COMMENT 'Value — 세관 신고가',
           description        VARCHAR(500) NULL             COMMENT 'Description of contents',
           remark             VARCHAR(500) NULL,
@@ -77,17 +81,31 @@ function hawb_ensure_table(): void
           KEY ix_hawb_ship (shipment_id),
           KEY ix_hawb_date (business_entity_id, on_board_date)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='항공 하우스 비엘 (HAWB)'");
-        $_SESSION['schema_hawb_v1'] = 1;
+        // 이미 만들어 둔 표에는 나누는 수 칸이 없을 수 있습니다
+        $has = db()->query("SHOW COLUMNS FROM hawbs LIKE 'vol_divisor'")->fetch();
+        if (!$has) {
+            db()->exec('ALTER TABLE hawbs ADD COLUMN vol_divisor SMALLINT UNSIGNED NOT NULL DEFAULT 6000
+                          COMMENT \'부피중량 나누는 수 6000 / 5000\' AFTER vol_weight');
+        }
+        $_SESSION['schema_hawb_v2'] = 1;
     } catch (PDOException $e) {
         error_log('HAWB 표 준비 실패: ' . $e->getMessage());
     }
 }
 
-/** 부피중량 = 가로 × 세로 × 높이 ÷ 6000 (엑셀 양식과 같은 식) */
-function hawb_vol_weight(?float $l, ?float $w, ?float $h): ?float
+/** 부피중량 = 가로 × 세로 × 높이 ÷ 나누는 수 (6000 또는 5000) */
+function hawb_vol_weight(?float $l, ?float $w, ?float $h, int $div = 6000): ?float
 {
     if (!$l || !$w || !$h) { return null; }
-    return round($l * $w * $h / 6000, 2);
+    if (!array_key_exists($div, HAWB_DIVISORS)) { $div = 6000; }
+    return round($l * $w * $h / $div, 2);
+}
+
+/** 이 건에 쓰는 나누는 수 — 값이 없거나 엉뚱하면 6000 */
+function hawb_divisor(array $h): int
+{
+    $d = (int)($h['vol_divisor'] ?? 0);
+    return array_key_exists($d, HAWB_DIVISORS) ? $d : 6000;
 }
 
 /** 숫자를 보기 좋게 — 8.40 → 8.4, 9.00 → 9 */
@@ -213,8 +231,9 @@ function hawb_render_form(array $h, ?string $logo, array $be): string
     $bc = trim((string)$h['house_no']) !== ''
         ? code128_svg((string)$h['house_no'], 46, 1.5, false) : '';
 
+    $div = hawb_divisor($h);
     $vol = $h['vol_weight'] !== null && $h['vol_weight'] !== ''
-        ? $h['vol_weight'] : hawb_vol_weight((float)$h['dim_l'], (float)$h['dim_w'], (float)$h['dim_h']);
+        ? $h['vol_weight'] : hawb_vol_weight((float)$h['dim_l'], (float)$h['dim_w'], (float)$h['dim_h'], $div);
 
     $dims = trim(hawb_num($h['dim_l']) . ' x ' . hawb_num($h['dim_w']) . ' x ' . hawb_num($h['dim_h']));
     $company = trim((string)($be['name_en'] ?? '')) !== '' ? (string)$be['name_en'] : 'GOOD POST CO.,LTD.';
@@ -285,7 +304,7 @@ function hawb_render_form(array $h, ?string $logo, array $be): string
           <div><span class="lb">H</span><span class="vl"><?= h(hawb_num($h['dim_h'])) ?></span></div>
         </div>
         <div class="volline">
-          <span><?= $dims !== 'x  x' ? h($dims) : '&nbsp;&nbsp;&nbsp;x&nbsp;&nbsp;&nbsp;x&nbsp;&nbsp;' ?> / 6000</span>
+          <span><?= $dims !== 'x  x' ? h($dims) : '&nbsp;&nbsp;&nbsp;x&nbsp;&nbsp;&nbsp;x&nbsp;&nbsp;' ?> / <?= $div ?></span>
           <span class="vol">Volumetric Weight <b><?= h(hawb_num($vol)) ?></b> KG</span>
         </div>
       </div>

@@ -27,6 +27,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'paste') {
         'origin'        => trim(post('origin')) ?: null,
         'destination'   => trim(post('destination')) ?: null,
         'ship_type'     => array_key_exists(post('ship_type'), HAWB_TYPES) ? post('ship_type') : 'PARCEL',
+        'vol_divisor'   => array_key_exists((int)post('vol_divisor'), HAWB_DIVISORS) ? (int)post('vol_divisor') : 6000,
     ];
     if (!$rows) {
         $err = '읽을 줄이 없습니다. 엑셀에서 자료 줄(머리글 제외)을 복사해 붙여 넣으세요.';
@@ -38,8 +39,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'paste') {
             $ins = $pdo->prepare(
                 'INSERT INTO hawbs (business_entity_id, house_no, master_no, ship_type, on_board_date, flight_no,
                                     origin, destination, shipper_name, shipper_addr, consignee_name, consignee_addr,
-                                    consignee_phone, description, pieces, packing, weight, declared_value, created_by)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+                                    consignee_phone, description, pieces, packing, weight, declared_value,
+                                    vol_divisor, created_by)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
             $made = 0; $skip = [];
             foreach ($rows as $r) {
                 if (!preg_match('/^[\x20-\x7E]+$/', $r['house_no'])) {
@@ -55,7 +57,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'paste') {
                     $r['shipper_name'] ?: null, $r['shipper_addr'] ?: null,
                     $r['consignee_name'] ?: null, $r['consignee_addr'] ?: null, $r['consignee_phone'] ?: null,
                     $r['description'] ?: null, $num($r['pieces']), $r['packing'] ?: null,
-                    $num($r['weight']), $num($r['declared_value']), $_SESSION['admin_id'] ?? null,
+                    $num($r['weight']), $num($r['declared_value']), $common['vol_divisor'],
+                    $_SESSION['admin_id'] ?? null,
                 ]);
                 $made++;
             }
@@ -138,6 +141,10 @@ layout_head('HAWB 발행', 'hawb_list');
         <input type="text" id="pog" name="origin" maxlength="40" placeholder="QINGDAO"></div>
       <div class="fw w1"><label for="pde">Destination</label>
         <input type="text" id="pde" name="destination" maxlength="40" placeholder="SEOUL"></div>
+      <div class="fw w1"><label for="pvd">부피중량 나누는 수</label>
+        <select id="pvd" name="vol_divisor">
+          <?php foreach (HAWB_DIVISORS as $k => $lab): ?><option value="<?= $k ?>"><?= h($lab) ?></option><?php endforeach; ?>
+        </select></div>
       <div class="fw w1"><label for="pst">구분</label>
         <select id="pst" name="ship_type">
           <?php foreach (HAWB_TYPES as $k => $lab): ?><option value="<?= $k ?>"><?= h($lab) ?></option><?php endforeach; ?>
