@@ -242,12 +242,12 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
     <span style="font-weight:400;color:var(--ink3)">송장번호가 바코드(CODE128)로 찍힙니다</span></div>
   <div class="cb">
     <div class="f" style="align-items:flex-end">
-      <div class="fw w1"><label for="hn">송장번호 (House No) *</label>
+      <div class="fw w1"><label for="hn">송장번호 * <span style="font-weight:400;color:var(--ink3)">House No · 分运单号</span></label>
         <input type="text" id="hn" name="house_no" class="tnum" required maxlength="50"
                value="<?= $v('house_no') ?>" placeholder="26091890"></div>
-      <div class="fw w1"><label for="mn">Master Number</label>
+      <div class="fw w1"><label for="mn">마스터 운송장 <span style="font-weight:400;color:var(--ink3)">Master · 总运单号</span></label>
         <input type="text" id="mn" name="master_no" class="tnum" maxlength="50" value="<?= $v('master_no') ?>"></div>
-      <div class="fw w1"><label for="sw">SEA Way Bill No</label>
+      <div class="fw w1"><label for="sw">해상 운송장 <span style="font-weight:400;color:var(--ink3)">SEA Way Bill No</span></label>
         <input type="text" id="sw" name="sea_wb_no" class="tnum" maxlength="50" value="<?= $v('sea_wb_no') ?>"></div>
       <div class="fw w2"><label for="bt">항공편 (적하목록)</label>
         <select id="bt" name="batch_id">
@@ -263,15 +263,15 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
           <?php endforeach; ?></select></div>
     </div>
     <div class="f" style="align-items:flex-end;margin-top:8px">
-      <div class="fw w1"><label for="ob">On Board Date</label>
+      <div class="fw w1"><label for="ob">출항일 <span style="font-weight:400;color:var(--ink3)">On Board Date · 进出日期</span></label>
         <input type="date" id="ob" name="on_board_date" value="<?= $v('on_board_date') ?>"></div>
-      <div class="fw w1"><label for="fl">Flight No</label>
+      <div class="fw w1"><label for="fl">항공편명 <span style="font-weight:400;color:var(--ink3)">Flight No · 航次</span></label>
         <input type="text" id="fl" name="flight_no" maxlength="30" value="<?= $v('flight_no') ?>" placeholder="KE857"></div>
-      <div class="fw w1"><label for="og">Origin</label>
+      <div class="fw w1"><label for="og">출발지 <span style="font-weight:400;color:var(--ink3)">Origin · 起运港</span></label>
         <input type="text" id="og" name="origin" maxlength="40" value="<?= $v('origin') ?>" placeholder="QINGDAO"></div>
-      <div class="fw w1"><label for="vi">Via</label>
+      <div class="fw w1"><label for="vi">경유지 <span style="font-weight:400;color:var(--ink3)">Via</span></label>
         <input type="text" id="vi" name="via" maxlength="40" value="<?= $v('via') ?>"></div>
-      <div class="fw w1"><label for="de">Destination</label>
+      <div class="fw w1"><label for="de">도착지 <span style="font-weight:400;color:var(--ink3)">Destination · 抵运地</span></label>
         <input type="text" id="de" name="destination" maxlength="40" value="<?= $v('destination') ?>" placeholder="SEOUL"></div>
     </div>
   </div>
@@ -281,25 +281,25 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
   <div class="ch">보내는 분 / 받는 분</div>
   <div class="cb">
     <div class="f">
-      <div class="fw w2"><label for="sn">From (Shipper) — 상호 · 이름</label>
+      <div class="fw w2"><label for="sn">보내는 분 (상호 · 이름) <span style="font-weight:400;color:var(--ink3)">From (Shipper) · 发件公司名</span></label>
         <input type="text" id="sn" name="shipper_name" maxlength="150" value="<?= $v('shipper_name') ?>"></div>
-      <div class="fw w2"><label for="cn">To (Consignee) — 상호 · 이름</label>
+      <div class="fw w2"><label for="cn">받는 분 (상호 · 이름) <span style="font-weight:400;color:var(--ink3)">To (Consignee) · 收件公司名</span></label>
         <input type="text" id="cn" name="consignee_name" maxlength="150" value="<?= $v('consignee_name') ?>"></div>
     </div>
     <div class="f" style="margin-top:8px">
-      <div class="fw w2"><label for="sa">보내는 분 주소</label>
+      <div class="fw w2"><label for="sa">보내는 분 주소 <span style="font-weight:400;color:var(--ink3)">发件公司地址</span></label>
         <textarea id="sa" name="shipper_addr" rows="3" maxlength="500"><?= $v('shipper_addr') ?></textarea></div>
-      <div class="fw w2"><label for="ca">받는 분 주소</label>
+      <div class="fw w2"><label for="ca">받는 분 주소 <span style="font-weight:400;color:var(--ink3)">收件公司地址</span></label>
         <textarea id="ca" name="consignee_addr" rows="3" maxlength="500"><?= $v('consignee_addr') ?></textarea></div>
     </div>
     <div class="f" style="align-items:flex-end;margin-top:8px">
-      <div class="fw w1"><label for="sc">Send By (담당자)</label>
+      <div class="fw w1"><label for="sc">보내는 분 담당자 <span style="font-weight:400;color:var(--ink3)">Send By</span></label>
         <input type="text" id="sc" name="shipper_contact" maxlength="100" value="<?= $v('shipper_contact') ?>"></div>
-      <div class="fw w1"><label for="sp">보내는 분 전화</label>
+      <div class="fw w1"><label for="sp">보내는 분 전화 <span style="font-weight:400;color:var(--ink3)">发件公司电话</span></label>
         <input type="text" id="sp" name="shipper_phone" maxlength="50" value="<?= $v('shipper_phone') ?>"></div>
       <div class="fw w1"><label for="cat">Attention Of (받는 담당자)</label>
         <input type="text" id="cat" name="consignee_attn" maxlength="100" value="<?= $v('consignee_attn') ?>"></div>
-      <div class="fw w1"><label for="cp">받는 분 전화</label>
+      <div class="fw w1"><label for="cp">받는 분 전화 <span style="font-weight:400;color:var(--ink3)">收件公司电话</span></label>
         <input type="text" id="cp" name="consignee_phone" maxlength="50" value="<?= $v('consignee_phone') ?>"></div>
     </div>
   </div>
@@ -310,13 +310,13 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
     <span style="font-weight:400;color:var(--ink3)">부피중량 = 가로 × 세로 × 높이 ÷ 나누는 수 (비우면 자동 계산)</span></div>
   <div class="cb">
     <div class="f" style="align-items:flex-end">
-      <div class="fw w1"><label for="pc">개수 (Pickup C/T)</label>
+      <div class="fw w1"><label for="pc">개수 <span style="font-weight:400;color:var(--ink3)">Pickup C/T · 件数</span></label>
         <input type="text" id="pc" name="pieces" class="tnum" style="text-align:right" value="<?= $v('pieces') ?>"></div>
-      <div class="fw w1"><label for="pk">Packing</label>
+      <div class="fw w1"><label for="pk">포장 <span style="font-weight:400;color:var(--ink3)">Packing</span></label>
         <input type="text" id="pk" name="packing" maxlength="30" value="<?= $v('packing') ?>" placeholder="CTN / BOX"></div>
-      <div class="fw w1"><label for="wt">실중량 (KG)</label>
+      <div class="fw w1"><label for="wt">실중량 (KG) <span style="font-weight:400;color:var(--ink3)">重量</span></label>
         <input type="text" id="wt" name="weight" class="tnum" style="text-align:right" value="<?= $v('weight') ?>"></div>
-      <div class="fw w1"><label for="dv">Value (신고가)</label>
+      <div class="fw w1"><label for="dv">신고가 <span style="font-weight:400;color:var(--ink3)">Value</span></label>
         <input type="text" id="dv" name="declared_value" class="tnum" style="text-align:right" value="<?= $v('declared_value') ?>"></div>
     </div>
     <div class="f" style="align-items:flex-end;margin-top:8px">
@@ -335,9 +335,9 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
         <input type="text" id="vw" name="vol_weight" class="tnum" style="text-align:right" value="<?= $v('vol_weight') ?>"></div>
     </div>
     <div class="f" style="margin-top:8px">
-      <div class="fw w2"><label for="ds">Description of contents</label>
+      <div class="fw w2"><label for="ds">내용물 <span style="font-weight:400;color:var(--ink3)">Description of contents</span></label>
         <textarea id="ds" name="description" rows="2" maxlength="500"><?= $v('description') ?></textarea></div>
-      <div class="fw w2"><label for="rm">Remark &amp; Information</label>
+      <div class="fw w2"><label for="rm">비고 <span style="font-weight:400;color:var(--ink3)">Remark &amp; Information</span></label>
         <textarea id="rm" name="remark" rows="2" maxlength="500"><?= $v('remark') ?></textarea></div>
     </div>
   </div>
@@ -347,12 +347,22 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
   <div class="ch">품목 <span style="font-weight:400;color:var(--ink3)">중문 적하목록 · INVOICE 에 줄 단위로 들어갑니다</span>
     <button type="button" class="btn sm" style="margin-left:auto" id="additem">줄 추가</button></div>
   <div class="cb" style="overflow-x:auto">
+    <!-- 중문 칸 이름은 한글 아래에 작게 — 세관 양식과 대조하기 쉽게 -->
+    <style>#items .cnh { font-weight:400; font-size:10.5px; color:var(--ink3); margin-top:1px }</style>
     <table id="items">
       <thead><tr>
-        <th style="width:110px">商品编号</th><th style="width:150px">중문 품명</th><th style="width:150px">영문 품명</th>
-        <th style="width:110px">规格</th><th style="width:70px">件数</th><th style="width:80px">重量</th>
-        <th style="width:70px">数量</th><th style="width:70px">单位</th><th style="width:90px">申报总价</th>
-        <th style="width:70px">币制</th><th style="width:70px">原产国</th><th class="c" style="width:40px"></th>
+        <th style="width:120px">상품번호<div class="cnh">商品编号</div></th>
+        <th style="width:150px">중문 품명<div class="cnh">中文货物名称</div></th>
+        <th style="width:150px">영문 품명<div class="cnh">英文货物名称</div></th>
+        <th style="width:110px">규격<div class="cnh">规格 / 型号</div></th>
+        <th style="width:70px">건수<div class="cnh">件数</div></th>
+        <th style="width:80px">중량<div class="cnh">重量</div></th>
+        <th style="width:70px">수량<div class="cnh">数量</div></th>
+        <th style="width:70px">단위<div class="cnh">计量单位</div></th>
+        <th style="width:95px">금액<div class="cnh">申报总价</div></th>
+        <th style="width:70px">화폐<div class="cnh">币制</div></th>
+        <th style="width:75px">원산지<div class="cnh">原产国</div></th>
+        <th class="c" style="width:40px"></th>
       </tr></thead>
       <tbody>
       <?php $rowsN = max(count($items) + 1, 4);
@@ -384,11 +394,11 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
   <div class="ch">통관 정보 <span style="font-weight:400;color:var(--ink3)">영문 통관목록 · 중문 적하목록에 들어갑니다</span></div>
   <div class="cb">
     <div class="f" style="align-items:flex-end">
-      <div class="fw w1"><label for="hsn">HSN (일련번호)</label>
+      <div class="fw w1"><label for="hsn">일련번호 <span style="font-weight:400;color:var(--ink3)">HSN</span></label>
         <input type="text" id="hsn" name="hsn" class="tnum" maxlength="20" value="<?= $v('hsn') ?>" placeholder="0001"></div>
-      <div class="fw w1"><label for="aq">실제수량</label>
+      <div class="fw w1"><label for="aq">실제수량 <span style="font-weight:400;color:var(--ink3)">数量</span></label>
         <input type="text" id="aq" name="actual_qty" class="tnum" style="text-align:right" value="<?= $v('actual_qty') ?>"></div>
-      <div class="fw w1"><label for="wh">WAREHOUSE</label>
+      <div class="fw w1"><label for="wh">보세창고 <span style="font-weight:400;color:var(--ink3)">WAREHOUSE</span></label>
         <input type="text" id="wh" name="warehouse" maxlength="20" value="<?= $v('warehouse') ?>"></div>
       <div class="fw w1"><label for="tc">거래코드</label>
         <select id="tc" name="trade_code">
@@ -400,8 +410,8 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
           <?php foreach (HAWB_USE_TYPES as $k => $lab): ?>
             <option value="<?= $k ?>"<?= (int)$cur['use_type'] === $k ? ' selected' : '' ?>><?= h($lab) ?></option>
           <?php endforeach; ?></select></div>
-      <div class="fw w1"><label for="sc">발송국가코드</label>
-        <input type="text" id="sc" name="sender_country" maxlength="2" value="<?= $v('sender_country') ?>"></div>
+      <div class="fw w1"><label for="sndc">발송국가 코드 <span style="font-weight:400;color:var(--ink3)">发货国代码</span></label>
+        <input type="text" id="sndc" name="sender_country" maxlength="2" value="<?= $v('sender_country') ?>"></div>
     </div>
     <div class="f" style="align-items:flex-end;margin-top:8px">
       <div class="fw w1"><label for="pcc">개인통관고유부호</label>
@@ -420,8 +430,8 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
         <input type="text" id="ac" name="agent_code" maxlength="20" value="<?= $v('agent_code') ?>"></div>
       <div class="fw w1"><label for="al">통관허용품목</label>
         <input type="text" id="al" name="allow_code" maxlength="20" value="<?= $v('allow_code') ?>"></div>
-      <div class="fw w1"><label for="sn">특별통관 지정번호</label>
-        <input type="text" id="sn" name="special_no" maxlength="30" value="<?= $v('special_no') ?>"></div>
+      <div class="fw w1"><label for="spn">특별통관 지정번호 <span style="font-weight:400;color:var(--ink3)">特殊通关编号</span></label>
+        <input type="text" id="spn" name="special_no" maxlength="30" value="<?= $v('special_no') ?>"></div>
       <div class="fw w1"><label for="et">전자상거래 유형</label>
         <select id="et" name="ecom_type">
           <?php foreach (HAWB_ECOM_TYPES as $k => $lab): ?>
@@ -433,29 +443,29 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
         <input type="text" id="hp" name="homepage" maxlength="150" value="<?= $v('homepage') ?>"></div>
     </div>
     <div class="f" style="align-items:flex-end;margin-top:8px">
-      <div class="fw w1"><label for="nt">NOTIFY</label>
+      <div class="fw w1"><label for="nt">통지처 <span style="font-weight:400;color:var(--ink3)">NOTIFY</span></label>
         <input type="text" id="nt" name="notify" maxlength="100" value="<?= $v('notify') ?>"></div>
-      <div class="fw w1"><label for="cc">받는회사 도시 (중문)</label>
+      <div class="fw w1"><label for="cc">받는회사 도시 <span style="font-weight:400;color:var(--ink3)">收件公司城市</span></label>
         <input type="text" id="cc" name="consignee_city" maxlength="50" value="<?= $v('consignee_city') ?>"></div>
-      <div class="fw w2"><label for="sacn">보내는회사 주소 (중문)</label>
+      <div class="fw w2"><label for="sacn">보내는회사 주소 <span style="font-weight:400;color:var(--ink3)">发件公司地址</span></label>
         <input type="text" id="sacn" name="shipper_addr_cn" maxlength="255" value="<?= $v('shipper_addr_cn') ?>"></div>
-      <div class="fw w1"><label for="scr">发件公司社会信用代码</label>
+      <div class="fw w1"><label for="scr">보내는회사 신용코드 <span style="font-weight:400;color:var(--ink3)">发件公司社会信用代码</span></label>
         <input type="text" id="scr" name="shipper_credit_no" class="tnum" maxlength="40" value="<?= $v('shipper_credit_no') ?>"></div>
     </div>
     <div class="f" style="align-items:flex-end;margin-top:8px">
-      <div class="fw w1"><label for="scy">发件人城市</label>
+      <div class="fw w1"><label for="scy">보내는 분 도시 <span style="font-weight:400;color:var(--ink3)">发件人城市</span></label>
         <input type="text" id="scy" name="shipper_city" maxlength="40" value="<?= $v('shipper_city') ?>"></div>
-      <div class="fw w1"><label for="sco">发件人国别</label>
+      <div class="fw w1"><label for="sco">보내는 분 국가 <span style="font-weight:400;color:var(--ink3)">发件人国别</span></label>
         <input type="text" id="sco" name="shipper_country" maxlength="10" value="<?= $v('shipper_country') ?>"></div>
-      <div class="fw w1"><label for="dt2">报关类别</label>
+      <div class="fw w1"><label for="dt2">통관 종류 <span style="font-weight:400;color:var(--ink3)">报关类别</span></label>
         <input type="text" id="dt2" name="decl_type" maxlength="10" value="<?= $v('decl_type') ?>"></div>
-      <div class="fw w1"><label for="tmd">贸易方式</label>
+      <div class="fw w1"><label for="tmd">무역 방식 <span style="font-weight:400;color:var(--ink3)">贸易方式</span></label>
         <input type="text" id="tmd" name="trade_mode" maxlength="10" value="<?= $v('trade_mode') ?>"></div>
-      <div class="fw w1"><label for="cu">计量单位</label>
+      <div class="fw w1"><label for="cu">계량 단위 <span style="font-weight:400;color:var(--ink3)">计量单位</span></label>
         <input type="text" id="cu" name="cn_unit" maxlength="10" value="<?= $v('cn_unit') ?>"></div>
-      <div class="fw w1"><label for="ccy">币制</label>
+      <div class="fw w1"><label for="ccy">화폐 <span style="font-weight:400;color:var(--ink3)">币制</span></label>
         <input type="text" id="ccy" name="cn_currency" maxlength="10" value="<?= $v('cn_currency') ?>"></div>
-      <div class="fw w1"><label for="cog">原产/消费国</label>
+      <div class="fw w1"><label for="cog">원산지 · 소비국 <span style="font-weight:400;color:var(--ink3)">原产/消费国</span></label>
         <input type="text" id="cog" name="cn_origin" maxlength="10" value="<?= $v('cn_origin') ?>"></div>
     </div>
   </div>
@@ -465,23 +475,23 @@ layout_head($id > 0 ? 'HAWB 수정' : 'HAWB 등록', 'hawb_list');
   <div class="ch">운임</div>
   <div class="cb">
     <div class="f" style="align-items:flex-end">
-      <div class="fw w1"><label for="pb">Payment (누가 냄)</label>
+      <div class="fw w1"><label for="pb">운임 부담 <span style="font-weight:400;color:var(--ink3)">Payment</span></label>
         <select id="pb" name="payment_by">
           <?php foreach (HAWB_PAYERS as $k => $lab): ?>
             <option value="<?= $k ?>"<?= $cur['payment_by'] === $k ? ' selected' : '' ?>><?= h($lab) ?></option>
           <?php endforeach; ?></select></div>
-      <div class="fw w1"><label for="ct">Check To (결제 방법)</label>
+      <div class="fw w1"><label for="ct">결제 방법 <span style="font-weight:400;color:var(--ink3)">Check To</span></label>
         <select id="ct" name="check_to">
           <?php foreach (HAWB_CHECKS as $k => $lab): ?>
             <option value="<?= $k ?>"<?= $cur['check_to'] === $k ? ' selected' : '' ?>><?= h($lab) ?></option>
           <?php endforeach; ?></select></div>
-      <div class="fw w1"><label for="c1">Payment Charge</label>
+      <div class="fw w1"><label for="c1">운임 <span style="font-weight:400;color:var(--ink3)">Payment Charge</span></label>
         <input type="text" id="c1" name="charge_payment" class="tnum" style="text-align:right" value="<?= $v('charge_payment') ?>" oninput="sum()"></div>
-      <div class="fw w1"><label for="c2">Other Charge</label>
+      <div class="fw w1"><label for="c2">기타비용 <span style="font-weight:400;color:var(--ink3)">Other Charge</span></label>
         <input type="text" id="c2" name="charge_other" class="tnum" style="text-align:right" value="<?= $v('charge_other') ?>" oninput="sum()"></div>
-      <div class="fw w1"><label for="c3">Duty &amp; Tax</label>
+      <div class="fw w1"><label for="c3">관세 · 세금 <span style="font-weight:400;color:var(--ink3)">Duty &amp; Tax</span></label>
         <input type="text" id="c3" name="charge_duty" class="tnum" style="text-align:right" value="<?= $v('charge_duty') ?>" oninput="sum()"></div>
-      <div class="fw w1"><label for="c4">Total Charge</label>
+      <div class="fw w1"><label for="c4">합계 <span style="font-weight:400;color:var(--ink3)">Total Charge</span></label>
         <input type="text" id="c4" name="charge_total" class="tnum" style="text-align:right;font-weight:700" value="<?= $v('charge_total') ?>"></div>
     </div>
   </div>

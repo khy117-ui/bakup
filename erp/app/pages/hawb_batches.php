@@ -144,28 +144,28 @@ layout_head('수입 서류 · 항공편', 'hawb_batches');
     <div class="f" style="align-items:flex-end">
       <div class="fw w1"><label for="fd">항공편 날짜 *</label>
         <input type="date" id="fd" name="flight_date" required value="<?= $v('flight_date') ?>"></div>
-      <div class="fw w1"><label for="fn">FLT NO (航次)</label>
+      <div class="fw w1"><label for="fn">항공편명 <span style="font-weight:400;color:var(--ink3)">FLT NO · 航次</span></label>
         <input type="text" id="fn" name="flight_no" maxlength="30" value="<?= $v('flight_no') ?>" placeholder="GI4217"></div>
-      <div class="fw w1"><label for="mw">MAWB NO (总运单号)</label>
+      <div class="fw w1"><label for="mw">마스터 운송장 <span style="font-weight:400;color:var(--ink3)">MAWB · 总运单号</span></label>
         <input type="text" id="mw" name="mawb_no" class="tnum" maxlength="50" value="<?= $v('mawb_no') ?>"></div>
-      <div class="fw w1"><label for="op">起运港 (출발지)</label>
+      <div class="fw w1"><label for="op">출발지 <span style="font-weight:400;color:var(--ink3)">起运港</span></label>
         <input type="text" id="op" name="origin_port" maxlength="40" value="<?= $v('origin_port') ?>" placeholder="QINGDAO"></div>
-      <div class="fw w1"><label for="dp">抵运地 (도착지)</label>
+      <div class="fw w1"><label for="dp">도착지 <span style="font-weight:400;color:var(--ink3)">抵运地</span></label>
         <input type="text" id="dp" name="dest_port" maxlength="40" value="<?= $v('dest_port') ?>" placeholder="INCHEON"></div>
     </div>
     <div class="f" style="align-items:flex-end;margin-top:8px">
-      <div class="fw w1"><label for="io">进/出口标志</label>
+      <div class="fw w1"><label for="io">수출입 구분 <span style="font-weight:400;color:var(--ink3)">进/出口标志</span></label>
         <select id="io" name="io_flag">
           <?php foreach (HAWB_IO_FLAGS as $k => $lab): ?>
             <option value="<?= $k ?>"<?= (string)($f['io_flag'] ?? 'E') === $k ? ' selected' : '' ?>><?= h($lab) ?></option>
           <?php endforeach; ?></select></div>
-      <div class="fw w1"><label for="tm">运输方式</label>
+      <div class="fw w1"><label for="tm">운송방식 <span style="font-weight:400;color:var(--ink3)">运输方式</span></label>
         <input type="text" id="tm" name="transport_mode" maxlength="10" value="<?= $v('transport_mode') ?>"></div>
-      <div class="fw w1"><label for="pc">进出口岸代码</label>
+      <div class="fw w1"><label for="pc">출입항 코드 <span style="font-weight:400;color:var(--ink3)">进出口岸代码</span></label>
         <input type="text" id="pc" name="port_code" maxlength="10" value="<?= $v('port_code') ?>"></div>
-      <div class="fw w1"><label for="oc">经营单位代码</label>
+      <div class="fw w1"><label for="oc">경영단위 코드 <span style="font-weight:400;color:var(--ink3)">经营单位代码</span></label>
         <input type="text" id="oc" name="operator_code" maxlength="40" value="<?= $v('operator_code') ?>"></div>
-      <div class="fw w2"><label for="on">经营单位名称</label>
+      <div class="fw w2"><label for="on">경영단위 이름 <span style="font-weight:400;color:var(--ink3)">经营单位名称</span></label>
         <input type="text" id="on" name="operator_name" maxlength="150" value="<?= $v('operator_name') ?>"></div>
     </div>
     <div class="fw" style="margin-top:8px"><label for="mm">메모</label>
