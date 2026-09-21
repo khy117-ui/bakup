@@ -831,6 +831,10 @@ CREATE TABLE tax_invoices (
   grand_total        DECIMAL(15,2) NOT NULL DEFAULT 0,
   status             VARCHAR(20) NOT NULL DEFAULT 'DRAFT'
                      COMMENT 'DRAFT/ISSUED/SENT/CANCELLED/FAILED',
+  issued_at          DATETIME NULL                     COMMENT '발행 처리 시각',
+  revision           INT UNSIGNED NOT NULL DEFAULT 1   COMMENT '같은 청구서의 몇 번째 발행본인지 (1 = 처음)',
+  reissue_reason     VARCHAR(255) NULL                 COMMENT '재발행 · 수정발행 사유',
+  replaced_by        BIGINT UNSIGNED NULL              COMMENT '이 문서를 대체(재발행 · 수정)한 새 문서 id',
   sent_at            DATETIME NULL,
   remark             VARCHAR(255) NULL,
   created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

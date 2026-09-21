@@ -18,6 +18,115 @@ $err = '';
 $STATUS = ['DRAFT' => ['작성중', 'b-warn'], 'ISSUED' => ['발행', 'b-ok'],
            'SENT' => ['전송완료', 'b-ok'], 'CANCELLED' => ['취소', 'b-err'],
            'FAILED' => ['실패', 'b-err']];
+// 수정세금계산서 사유 코드 (국세청 기준). 착오정정 계열은 (-)원본 + (+)정정본 두 장, 공급가액 변동은 차액 한 장
+$MODIFY_REASONS = ['01' => '기재사항 착오·정정', '02' => '공급가액 변동', '03' => '환입',
+                   '04' => '계약의 해제', '05' => '내국신용장 사후개설', '06' => '착오에 의한 이중발급'];
+$KIND_OF_DOC = ['TAX' => 'TAXABLE', 'ZERO' => 'ZERO', 'EXEMPT' => 'EXEMPT'];   // 문서 종류 → 세금구분
+
+schema_upgrade_tax_invoices();   // 재발행 컬럼(issued_at · revision · reissue_reason · replaced_by) 보강
+
+/** 청구서 + 거래처 (세금계산서를 만들 때 필요한 값) */
+function tax_load_invoice(int $invId, int $eid): ?array
+{
+    $st = db()->prepare(
+        'SELECT i.*, c.name_ko, c.business_number, c.representative, c.address_ko,
+                c.business_type, c.business_item, c.tax_email, c.email
+           FROM invoices i JOIN companies c ON c.id = i.company_id
+          WHERE i.id = ? AND i.business_entity_id = ? AND i.deleted_at IS NULL');
+    $st->execute([$invId, $eid]);
+    return $st->fetch() ?: null;
+}
+
+/**
+ * 청구서의 현재 전표 · 조정항목으로 세금계산서 품목 줄을 세금구분별로 만듭니다.
+ * 돌려주는 값: ['ZERO' => [[공급일, 품목명, 공급가액, 세액], ...], 'TAXABLE' => [...], 'EXEMPT' => [...]]
+ */
+function tax_lines_from_invoice(PDO $pdo, array $inv): array
+{
+    $labels = charge_labels();
+    $ships = $pdo->prepare(
+        "SELECT s.id, s.awb_no, s.voucher_date, ch.tax_type,
+                GROUP_CONCAT(DISTINCT ch.charge_type ORDER BY ch.line_no SEPARATOR ',') AS types,
+                SUM(ch.supply_amount) AS supply, SUM(ch.tax_amount) AS tax
+           FROM invoice_shipments xs
+           JOIN shipments s ON s.id = xs.shipment_id
+           JOIN shipment_charges ch ON ch.shipment_id = s.id
+          WHERE xs.invoice_id = ?
+          GROUP BY s.id, s.awb_no, s.voucher_date, ch.tax_type, xs.line_no
+          ORDER BY xs.line_no");
+    $ships->execute([(int)$inv['id']]);
+    $lines = ['ZERO' => [], 'TAXABLE' => [], 'EXEMPT' => []];
+    foreach ($ships->fetchAll() as $s) {
+        if (!isset($lines[$s['tax_type']]) || ((float)$s['supply'] == 0.0 && (float)$s['tax'] == 0.0)) {
+            continue;
+        }
+        $names = array_map(fn($c) => $labels[$c] ?? $c, array_unique(explode(',', (string)$s['types'])));
+        $lines[$s['tax_type']][] = [$s['voucher_date'], implode('·', $names) . ' ' . $s['awb_no'],
+                                    (float)$s['supply'], (float)$s['tax']];
+    }
+    // 청구서 조정 항목(할인 · 추가 등)도 그 세금구분 쪽에 한 줄씩
+    $adj = $pdo->prepare('SELECT item_name, supply_amount, tax_type, tax_amount FROM invoice_items
+                           WHERE invoice_id = ? ORDER BY line_no');
+    $adj->execute([(int)$inv['id']]);
+    foreach ($adj->fetchAll() as $a) {
+        if (isset($lines[$a['tax_type']]) && ((float)$a['supply_amount'] != 0.0 || (float)$a['tax_amount'] != 0.0)) {
+            $lines[$a['tax_type']][] = [$inv['invoice_date'], (string)$a['item_name'],
+                                        (float)$a['supply_amount'], (float)$a['tax_amount']];
+        }
+    }
+    return $lines;
+}
+
+/**
+ * 세금계산서 한 장을 품목과 함께 넣습니다. 돌려주는 값: [id, 문서번호]
+ *   $tt    : 세금구분 ZERO / TAXABLE / EXEMPT  (문서 종류는 여기서 정해집니다)
+ *   $lines : [[공급일, 품목명, 공급가액, 세액], ...]
+ *   $opt   : revision · original_id · modify_reason · remark · reissue_reason
+ */
+function tax_invoice_insert(PDO $pdo, int $eid, array $inv, string $date, string $tt, array $lines, array $opt = []): array
+{
+    $kinds = ['ZERO' => ['ZERO', '영세율'], 'TAXABLE' => ['TAX', '과세'], 'EXEMPT' => ['EXEMPT', '면세']];
+    [$docType, $spec] = $kinds[$tt];
+    $sup = array_sum(array_column($lines, 2));
+    $vat = $tt === 'TAXABLE' ? array_sum(array_column($lines, 3)) : 0.0;
+    $no = next_doc_no('TAX', 'GPA-T-', '-');
+    $pdo->prepare(
+        "INSERT INTO tax_invoices
+           (business_entity_id, doc_no, company_id, invoice_id, issue_date,
+            doc_type, modify_reason, original_id, buyer_biz_no, buyer_name, buyer_rep, buyer_address,
+            buyer_biz_type, buyer_biz_item, buyer_email,
+            supply_total, tax_total, grand_total, status, revision, reissue_reason, remark, created_by)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'DRAFT',?,?,?,?)")
+        ->execute([
+            $eid, $no, (int)$inv['company_id'], (int)$inv['id'], $date, $docType,
+            $opt['modify_reason'] ?? null, $opt['original_id'] ?? null,
+            $inv['business_number'], $inv['name_ko'], $inv['representative'],
+            $inv['address_ko'], $inv['business_type'], $inv['business_item'],
+            $inv['tax_email'] ?: $inv['email'],
+            $sup, $vat, $sup + $vat, (int)($opt['revision'] ?? 1),
+            $opt['reissue_reason'] ?? null, $opt['remark'] ?? null, $_SESSION['admin_id'] ?? null,
+        ]);
+    $tid = (int)$pdo->lastInsertId();
+    $ins = $pdo->prepare(
+        'INSERT INTO tax_invoice_items
+           (tax_invoice_id, line_no, supply_date, item_name, spec, qty, unit_price, supply_amount, tax_amount)
+         VALUES (?,?,?,?,?,1,?,?,?)');
+    $n = 0;
+    foreach ($lines as [$d, $name, $amt, $tax]) {
+        $ins->execute([$tid, ++$n, $d, mb_substr($name, 0, 200), $spec, $amt, $amt, $tt === 'TAXABLE' ? $tax : 0.0]);
+    }
+    return [$tid, $no];
+}
+
+/** 로그에 남길 세금계산서 요약 한 줄 */
+function tax_snapshot(array $t): string
+{
+    return sprintf('%s %s · 공급가액 %s · 세액 %s · 합계 %s · 작성일 %s · 상태 %s · %d차%s',
+        tax_doc_label((string)$t['doc_type']), $t['doc_no'], number_format((float)$t['supply_total']),
+        number_format((float)$t['tax_total']), number_format((float)$t['grand_total']), $t['issue_date'],
+        $t['status'], (int)($t['revision'] ?? 1),
+        !empty($t['nts_approval_no']) ? ' · 승인번호 ' . $t['nts_approval_no'] : '');
+}
 
 // ---------------------------------------------------------------- 청구서에서 생성
 // 한 청구서에 영세율 · 과세 · 면세가 섞여 있으면 종류별로 따로 만듭니다 (한 장에 섞을 수 없음)
@@ -28,13 +137,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'create') {
     $invId = (int)post('invoice_id');
     $date  = post('issue_date', date('Y-m-d'));
 
-    $st = db()->prepare(
-        'SELECT i.*, c.name_ko, c.business_number, c.representative, c.address_ko,
-                c.business_type, c.business_item, c.tax_email, c.email
-           FROM invoices i JOIN companies c ON c.id = i.company_id
-          WHERE i.id = ? AND i.business_entity_id = ? AND i.deleted_at IS NULL');
-    $st->execute([$invId, $eid]);
-    $inv = $st->fetch();
+    $inv = tax_load_invoice($invId, $eid);
 
     if (!$inv) {
         $err = '청구서를 찾을 수 없습니다.';
@@ -58,74 +161,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'create') {
             try {
                 $pdo->beginTransaction();
 
-                // 품목 — 전표마다 세금구분별로 한 줄 (항목 이름은 비용 종류로)
-                $labels = charge_labels();
-                $ships = $pdo->prepare(
-                    "SELECT s.id, s.awb_no, s.voucher_date, ch.tax_type,
-                            GROUP_CONCAT(DISTINCT ch.charge_type ORDER BY ch.line_no SEPARATOR ',') AS types,
-                            SUM(ch.supply_amount) AS supply, SUM(ch.tax_amount) AS tax
-                       FROM invoice_shipments xs
-                       JOIN shipments s ON s.id = xs.shipment_id
-                       JOIN shipment_charges ch ON ch.shipment_id = s.id
-                      WHERE xs.invoice_id = ?
-                      GROUP BY s.id, s.awb_no, s.voucher_date, ch.tax_type, xs.line_no
-                      ORDER BY xs.line_no");
-                $ships->execute([$invId]);
-                $lines = ['ZERO' => [], 'TAXABLE' => [], 'EXEMPT' => []];
-                foreach ($ships->fetchAll() as $s) {
-                    if (!isset($lines[$s['tax_type']]) || ((float)$s['supply'] == 0.0 && (float)$s['tax'] == 0.0)) {
-                        continue;
-                    }
-                    $names = array_map(fn($c) => $labels[$c] ?? $c, array_unique(explode(',', (string)$s['types'])));
-                    $lines[$s['tax_type']][] = [$s['voucher_date'], implode('·', $names) . ' ' . $s['awb_no'],
-                                                (float)$s['supply'], (float)$s['tax']];
-                }
-                // 청구서 조정 항목(할인 · 추가 등)도 그 세금구분 쪽에 한 줄씩
-                $adj = $pdo->prepare('SELECT item_name, supply_amount, tax_type, tax_amount FROM invoice_items
-                                       WHERE invoice_id = ? ORDER BY line_no');
-                $adj->execute([$invId]);
-                foreach ($adj->fetchAll() as $a) {
-                    if (isset($lines[$a['tax_type']]) && ((float)$a['supply_amount'] != 0.0 || (float)$a['tax_amount'] != 0.0)) {
-                        $lines[$a['tax_type']][] = [$inv['invoice_date'], (string)$a['item_name'],
-                                                    (float)$a['supply_amount'], (float)$a['tax_amount']];
-                    }
-                }
-
-                $kinds = ['ZERO' => ['ZERO', '영세율'], 'TAXABLE' => ['TAX', '과세'], 'EXEMPT' => ['EXEMPT', '면세']];
-                $insT = $pdo->prepare(
-                    "INSERT INTO tax_invoices
-                       (business_entity_id, doc_no, company_id, invoice_id, issue_date,
-                        doc_type, buyer_biz_no, buyer_name, buyer_rep, buyer_address,
-                        buyer_biz_type, buyer_biz_item, buyer_email,
-                        supply_total, tax_total, grand_total, status, created_by)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'DRAFT',?)");
-                $insI = $pdo->prepare(
-                    'INSERT INTO tax_invoice_items
-                       (tax_invoice_id, line_no, supply_date, item_name, spec, qty,
-                        unit_price, supply_amount, tax_amount)
-                     VALUES (?,?,?,?,?,1,?,?,?)');
+                $lines = tax_lines_from_invoice($pdo, $inv);
                 $made = [];
-                foreach ($kinds as $tt => [$docType, $spec]) {
+                foreach (['ZERO', 'TAXABLE', 'EXEMPT'] as $tt) {
                     if (!$lines[$tt]) { continue; }
                     $sup = array_sum(array_column($lines[$tt], 2));
                     $vat = $tt === 'TAXABLE' ? array_sum(array_column($lines[$tt], 3)) : 0.0;
                     if ($sup == 0.0 && $vat == 0.0) { continue; }
-                    $no = next_doc_no('TAX', 'GPA-T-', '-');
-                    $insT->execute([
-                        $eid, $no, (int)$inv['company_id'], $invId, $date, $docType,
-                        $inv['business_number'], $inv['name_ko'], $inv['representative'],
-                        $inv['address_ko'], $inv['business_type'], $inv['business_item'],
-                        $inv['tax_email'] ?: $inv['email'],
-                        $sup, $vat, $sup + $vat, $_SESSION['admin_id'] ?? null,
-                    ]);
-                    $tid = (int)$pdo->lastInsertId();
-                    $n = 0;
-                    foreach ($lines[$tt] as [$d, $name, $amt, $tax]) {
-                        $insI->execute([$tid, ++$n, $d, mb_substr($name, 0, 200), $spec, $amt, $amt,
-                                        $tt === 'TAXABLE' ? $tax : 0.0]);
-                    }
+                    [$tid, $no] = tax_invoice_insert($pdo, $eid, $inv, $date, $tt, $lines[$tt]);
+                    $docType = ['ZERO' => 'ZERO', 'TAXABLE' => 'TAX', 'EXEMPT' => 'EXEMPT'][$tt];
                     log_action('세금계산서', 'CREATE', 'tax_invoices', $tid, $no, null,
-                               tax_doc_label($docType) . ' · 청구서 ' . $inv['invoice_no'] . ' · 품목 ' . $n . '건');
+                               tax_doc_label($docType) . ' · 청구서 ' . $inv['invoice_no'] . ' · 품목 ' . count($lines[$tt]) . '건');
                     $made[] = [$tid, $no, tax_doc_label($docType)];
                 }
                 if (!$made) {
@@ -142,6 +188,127 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'create') {
                 error_log('세금계산서 생성 실패: ' . $e->getMessage());
                 $err = $e instanceof RuntimeException ? $e->getMessage() : '만들지 못했습니다.';
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- 재발행 · 수정세금계산서
+// 청구서를 고쳐 재발행한 뒤(또는 내용 착오 때) 세금계산서를 다시 만듭니다.
+//   · 국세청 전송 전(승인번호 없음): 청구서의 현재 금액으로 새 문서를 만들고 이전 문서는 취소(대체) 처리
+//   · 국세청 전송 후(승인번호 있음): 원본은 그대로 두고 수정세금계산서를 만듭니다
+//       - 착오정정 계열(01 · 03 · 04 · 05 · 06): (-) 원본 취소분 + (+) 정정본  두 장
+//       - 02 공급가액 변동: 차액만 한 장
+//   어느 경우든 사유가 필수이고, 이전 · 이후 금액이 작업로그에 남습니다.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'reissue') {
+    csrf_check();
+    $tid  = (int)post('id');
+    $why  = trim(post('reason'));
+    $code = post('modify_reason', '01');
+    $date = post('issue_date', date('Y-m-d'));
+    $st = db()->prepare('SELECT * FROM tax_invoices WHERE id = ? AND business_entity_id = ? AND deleted_at IS NULL');
+    $st->execute([$tid, $eid]);
+    $t = $st->fetch();
+    $inv = $t && $t['invoice_id'] ? tax_load_invoice((int)$t['invoice_id'], $eid) : null;
+    $tt = $t ? ($KIND_OF_DOC[$t['doc_type']] ?? null) : null;
+
+    if (!$t) {
+        $err = '세금계산서를 찾을 수 없습니다.';
+    } elseif ($t['status'] === 'CANCELLED') {
+        $err = '취소된 문서는 재발행할 수 없습니다. 대체 문서가 있으면 그 문서에서 하세요.';
+    } elseif (!empty($t['replaced_by'])) {
+        $err = '이미 다른 문서로 대체(재발행)된 문서입니다.';
+    } elseif (!$inv) {
+        $err = '연결된 청구서가 없어 재발행할 수 없습니다.';
+    } elseif ($inv['status'] === 'CANCELLED') {
+        $err = '청구서가 취소되어 있습니다.';
+    } elseif ($tt === null) {
+        $err = '이 문서 종류는 재발행을 지원하지 않습니다.';
+    } elseif (mb_strlen($why) < 2) {
+        $err = '재발행 사유를 적어 주세요.';
+    } elseif (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+        $err = '작성일자를 입력하세요.';
+    } elseif (!isset($MODIFY_REASONS[$code])) {
+        $err = '수정 사유 코드가 올바르지 않습니다.';
+    } else {
+        $pdo = db();
+        try {
+            $pdo->beginTransaction();
+            $lines = tax_lines_from_invoice($pdo, $inv)[$tt];
+            $newSup = array_sum(array_column($lines, 2));
+            $newTax = $tt === 'TAXABLE' ? array_sum(array_column($lines, 3)) : 0.0;
+            if (!$lines || ($newSup == 0.0 && $newTax == 0.0)) {
+                throw new RuntimeException('청구서에 ' . tax_doc_label((string)$t['doc_type']) . ' 대상 금액이 없습니다. 청구서를 확인하세요.');
+            }
+            $sent   = $t['status'] === 'SENT' || trim((string)$t['nts_approval_no']) !== '';
+            $before = tax_snapshot($t);
+            $rev    = (int)($t['revision'] ?? 1) + 1;
+            $made   = [];
+
+            if (!$sent) {
+                // 국세청 전송 전 — 새로 만들고 이전 문서는 취소(대체)
+                [$nid, $nno] = tax_invoice_insert($pdo, $eid, $inv, $date, $tt, $lines,
+                    ['revision' => $rev, 'original_id' => null, 'reissue_reason' => $why,
+                     'remark' => '재발행 (' . $t['doc_no'] . ' 대체)']);
+                $pdo->prepare("UPDATE tax_invoices SET status = 'CANCELLED', replaced_by = ?, reissue_reason = ? WHERE id = ?")
+                    ->execute([$nid, $why, $tid]);
+                $made[] = [$nid, $nno];
+                log_action('세금계산서', 'CANCEL', 'tax_invoices', $tid, (string)$t['doc_no'], $before,
+                           '재발행으로 대체 → ' . $nno, $why);
+                $nt = $pdo->prepare('SELECT * FROM tax_invoices WHERE id = ?'); $nt->execute([$nid]);
+                log_action('세금계산서', 'CREATE', 'tax_invoices', $nid, $nno, $before,
+                           '재발행 ' . $rev . '차 · ' . tax_snapshot($nt->fetch()), $why);
+                $msg = '세금계산서를 재발행했습니다 (' . $rev . '차, ' . $nno . '). 이전 문서 ' . $t['doc_no'] . ' 는 취소(대체) 처리했습니다.'
+                     . ' 내용을 확인하고 발행하세요.';
+            } else {
+                // 국세청 전송 후 — 수정세금계산서
+                $memo = '수정세금계산서 (' . $MODIFY_REASONS[$code] . ') · 원본 ' . $t['doc_no'] . ($t['nts_approval_no'] ? ' 승인 ' . $t['nts_approval_no'] : '');
+                if ($code === '02') {
+                    $dSup = $newSup - (float)$t['supply_total'];
+                    $dTax = $newTax - (float)$t['tax_total'];
+                    if (abs($dSup) < 0.5 && abs($dTax) < 0.5) {
+                        throw new RuntimeException('원본과 금액 차이가 없습니다. 공급가액 변동이 아니면 다른 사유를 고르세요.');
+                    }
+                    [$nid, $nno] = tax_invoice_insert($pdo, $eid, $inv, $date, $tt,
+                        [[$date, '공급가액 변동분 (원본 ' . $t['doc_no'] . ')', $dSup, $dTax]],
+                        ['revision' => $rev, 'original_id' => $tid, 'modify_reason' => $code, 'reissue_reason' => $why, 'remark' => $memo]);
+                    $made[] = [$nid, $nno];
+                } else {
+                    // (-) 원본 취소분: 원본 품목을 그대로 음수로
+                    $it = $pdo->prepare('SELECT supply_date, item_name, supply_amount, tax_amount FROM tax_invoice_items
+                                          WHERE tax_invoice_id = ? ORDER BY line_no');
+                    $it->execute([$tid]);
+                    $neg = [];
+                    foreach ($it->fetchAll() as $r) {
+                        $neg[] = [$r['supply_date'] ?: $date, (string)$r['item_name'], -(float)$r['supply_amount'], -(float)$r['tax_amount']];
+                    }
+                    [$nid1, $nno1] = tax_invoice_insert($pdo, $eid, $inv, $date, $tt, $neg,
+                        ['revision' => $rev, 'original_id' => $tid, 'modify_reason' => $code, 'reissue_reason' => $why,
+                         'remark' => $memo . ' · 취소분(-)']);
+                    [$nid, $nno] = tax_invoice_insert($pdo, $eid, $inv, $date, $tt, $lines,
+                        ['revision' => $rev, 'original_id' => $tid, 'modify_reason' => $code, 'reissue_reason' => $why,
+                         'remark' => $memo . ' · 정정본(+)']);
+                    $made[] = [$nid1, $nno1];
+                    $made[] = [$nid, $nno];
+                }
+                $pdo->prepare('UPDATE tax_invoices SET replaced_by = ?, reissue_reason = ? WHERE id = ?')
+                    ->execute([$nid, $why, $tid]);
+                log_action('세금계산서', 'UPDATE', 'tax_invoices', $tid, (string)$t['doc_no'], $before,
+                           '수정세금계산서 발행 (' . $MODIFY_REASONS[$code] . ') → ' . implode(', ', array_column($made, 1)), $why);
+                foreach ($made as [$mid, $mno]) {
+                    $nt = $pdo->prepare('SELECT * FROM tax_invoices WHERE id = ?'); $nt->execute([$mid]);
+                    log_action('세금계산서', 'CREATE', 'tax_invoices', $mid, $mno, $before,
+                               '수정세금계산서 · ' . tax_snapshot($nt->fetch()), $why);
+                }
+                $msg = '수정세금계산서 ' . count($made) . '장을 만들었습니다 (' . implode(', ', array_column($made, 1)) . ').'
+                     . ' 홈택스 [수정발급] 메뉴에서 원본 승인번호로 발급한 뒤 승인번호를 기록하세요.';
+            }
+            $pdo->commit();
+            flash($msg);
+            redirect('?p=tax_invoices&id=' . $made[count($made) - 1][0]);
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) { $pdo->rollBack(); }
+            error_log('세금계산서 재발행 실패: ' . $e->getMessage());
+            $err = $e instanceof RuntimeException ? $e->getMessage() : '재발행하지 못했습니다.';
         }
     }
 }
@@ -210,11 +377,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(post('act'), ['issue', 'ca
     } elseif (post('act') === 'issue') {
         $nts = post('nts_approval_no');
         db()->prepare(
-            "UPDATE tax_invoices SET status = ?, nts_approval_no = ?, sent_at = NOW()
+            "UPDATE tax_invoices SET status = ?, nts_approval_no = ?, sent_at = NOW(), issued_at = COALESCE(issued_at, NOW())
               WHERE id = ?")
             ->execute([$nts !== '' ? 'SENT' : 'ISSUED', $nts ?: null, $tid]);
         log_action('세금계산서', 'ISSUE', 'tax_invoices', $tid, (string)$t['doc_no'],
-                   (string)$t['status'], $nts !== '' ? 'SENT ' . $nts : 'ISSUED');
+                   tax_snapshot($t), ($nts !== '' ? 'SENT ' . $nts : 'ISSUED') . ' · ' . (int)($t['revision'] ?? 1) . '차');
         flash($nts !== '' ? '승인번호를 기록하고 전송완료로 표시했습니다.' : '발행 처리했습니다.');
         redirect('?p=tax_invoices&id=' . $tid);
     } else {
@@ -237,8 +404,13 @@ $id = (int)query('id', '0');
 $cur = null; $items = [];
 if ($id > 0) {
     $st = db()->prepare(
-        'SELECT t.*, i.invoice_no FROM tax_invoices t
+        'SELECT t.*, i.invoice_no, i.status AS inv_status, i.issue_count AS inv_issue_count, i.issued_at AS inv_issued_at,
+                i.zero_supply AS inv_zero, i.taxable_supply AS inv_taxable, i.exempt_supply AS inv_exempt, i.tax_total AS inv_tax,
+                o.doc_no AS original_no, r.doc_no AS replaced_no
+           FROM tax_invoices t
            LEFT JOIN invoices i ON i.id = t.invoice_id
+           LEFT JOIN tax_invoices o ON o.id = t.original_id
+           LEFT JOIN tax_invoices r ON r.id = t.replaced_by
           WHERE t.id = ? AND t.business_entity_id = ? AND t.deleted_at IS NULL');
     $st->execute([$id, $eid]);
     $cur = $st->fetch();
@@ -249,6 +421,36 @@ if ($id > 0) {
         $items = $st->fetchAll();
     }
 }
+$mismatch = null;      // 청구서의 현재 금액과 이 문서 금액이 다르면 [문서 공급가액, 문서 세액, 청구서 공급가액, 청구서 세액]
+$children = [];        // 이 문서를 원본으로 만든 수정세금계산서들
+$history  = [];
+$canReissue = false;
+if ($cur) {
+    $kind = $KIND_OF_DOC[$cur['doc_type']] ?? null;
+    $active = $cur['status'] !== 'CANCELLED' && empty($cur['replaced_by']);
+    $canReissue = $active && $cur['invoice_id'] && $kind !== null && ($cur['inv_status'] ?? '') !== 'CANCELLED';
+    if ($active && $kind !== null && $cur['invoice_id'] && empty($cur['original_id'])) {
+        $invSup = ['ZERO' => (float)$cur['inv_zero'], 'TAXABLE' => (float)$cur['inv_taxable'], 'EXEMPT' => (float)$cur['inv_exempt']][$kind];
+        $invTax = $kind === 'TAXABLE' ? (float)$cur['inv_tax'] : 0.0;
+        if (abs($invSup - (float)$cur['supply_total']) > 0.5 || abs($invTax - (float)$cur['tax_total']) > 0.5) {
+            $mismatch = [(float)$cur['supply_total'], (float)$cur['tax_total'], $invSup, $invTax];
+        }
+    }
+    $st = db()->prepare('SELECT id, doc_no, status, supply_total, tax_total, modify_reason, remark FROM tax_invoices
+                          WHERE original_id = ? AND deleted_at IS NULL ORDER BY id');
+    $st->execute([$id]);
+    $children = $st->fetchAll();
+    // 변경 이력 — 이 문서와 원본 · 대체 · 수정 문서의 로그를 함께
+    $ids = array_values(array_unique(array_filter(array_merge([$id, (int)$cur['original_id'], (int)$cur['replaced_by']],
+                                                               array_map(fn($c) => (int)$c['id'], $children)))));
+    $st = db()->prepare("SELECT * FROM activity_logs WHERE ref_table = 'tax_invoices' AND ref_id IN ("
+                        . implode(',', array_fill(0, count($ids), '?')) . ') ORDER BY id DESC LIMIT 100');
+    $st->execute($ids);
+    $history = $st->fetchAll();
+}
+$ACT = ['CREATE' => ['만듦', 'b-ok'], 'UPDATE' => ['수정', 'b-info'], 'DELETE' => ['삭제', 'b-err'],
+        'CANCEL' => ['취소', 'b-err'], 'ISSUE' => ['발행', 'b-info'], 'PRINT' => ['출력', 'b-warn'],
+        'EXPORT' => ['내보내기', 'b-warn'], 'DOWNLOAD' => ['다운로드', 'b-warn']];
 
 $kw  = query('kw');
 $sel = query('status');
@@ -307,8 +509,35 @@ layout_head('전자세금계산서', 'tax_invoices');
     <?php [$lab,$cls] = $STATUS[$cur['status']] ?? [$cur['status'],'b-info']; ?>
     <span class="badge <?= $cls ?>"><?= h($lab) ?></span>
     <span class="badge <?= $cur['doc_type'] === 'TAX' ? 'b-info' : 'b-warn' ?>"><?= h(tax_doc_label((string)$cur['doc_type'])) ?></span>
+    <?php if ((int)($cur['revision'] ?? 1) > 1): ?><span class="badge b-info">재발행 <?= (int)$cur['revision'] ?>차</span><?php endif; ?>
+    <?php if (!empty($cur['original_id'])): ?>
+      <span class="badge b-warn">수정세금계산서<?= !empty($cur['modify_reason']) ? ' · ' . h($MODIFY_REASONS[$cur['modify_reason']] ?? $cur['modify_reason']) : '' ?></span>
+      <a href="?p=tax_invoices&amp;id=<?= (int)$cur['original_id'] ?>" style="font-size:12px">원본 <?= h((string)$cur['original_no']) ?></a>
+    <?php endif; ?>
+    <?php if (!empty($cur['replaced_by'])): ?>
+      <span class="badge b-err">대체됨</span>
+      <a href="?p=tax_invoices&amp;id=<?= (int)$cur['replaced_by'] ?>" style="font-size:12px">→ <?= h((string)$cur['replaced_no']) ?></a>
+    <?php endif; ?>
     <a class="btn sm" style="margin-left:auto" href="?p=tax_invoices">목록</a>
   </div>
+  <?php if ($mismatch): ?>
+  <div class="msg err" style="margin:10px 12px 0">
+    청구서 <?= h((string)$cur['invoice_no']) ?> 의 현재 금액과 다릅니다 —
+    이 문서 공급가액 <b class="tnum"><?= money($mismatch[0]) ?></b> · 세액 <b class="tnum"><?= money($mismatch[1]) ?></b>
+    / 청구서 공급가액 <b class="tnum"><?= money($mismatch[2]) ?></b> · 세액 <b class="tnum"><?= money($mismatch[3]) ?></b>.
+    <?= (int)($cur['inv_issue_count'] ?? 0) > 1 ? '청구서가 ' . (int)$cur['inv_issue_count'] . '회차로 재발행되었습니다. ' : '' ?>
+    아래 <b>[재발행]</b> 으로 세금계산서를 다시 만드세요.
+  </div>
+  <?php endif; ?>
+  <?php if ($children): ?>
+  <div class="msg" style="margin:10px 12px 0;background:var(--info-bg);color:var(--info-fg)">
+    이 문서로 만든 수정세금계산서:
+    <?php foreach ($children as $c): ?>
+      <a href="?p=tax_invoices&amp;id=<?= (int)$c['id'] ?>" class="tnum"><?= h($c['doc_no']) ?></a>
+      (<?= money($c['supply_total']) ?> / <?= money($c['tax_total']) ?> · <?= h($STATUS[$c['status']][0] ?? $c['status']) ?>)
+    <?php endforeach; ?>
+  </div>
+  <?php endif; ?>
   <div class="cb f" style="gap:24px">
     <div><div style="font-size:11px;color:var(--ink2)">공급받는자</div>
       <div style="font-weight:600"><?= h($cur['buyer_name']) ?></div></div>
@@ -362,6 +591,31 @@ layout_head('전자세금계산서', 'tax_invoices');
         <button class="btn pri">발행 처리</button>
       </form>
     <?php endif; ?>
+    <?php if ($canReissue): $sentDoc = $cur['status'] === 'SENT' || trim((string)$cur['nts_approval_no']) !== ''; ?>
+      <form method="post" class="f" style="align-items:flex-end;gap:8px;flex-basis:100%;padding:10px 0;border-top:1px dashed var(--line)"
+            onsubmit="return confirm('<?= $sentDoc
+                ? '국세청에 전송된 문서입니다. 원본은 그대로 두고 수정세금계산서를 만듭니다. 계속할까요?'
+                : '청구서의 현재 금액으로 세금계산서를 다시 만들고, 이 문서는 취소(대체) 처리합니다. 계속할까요?' ?>');">
+        <?= csrf_field() ?>
+        <input type="hidden" name="act" value="reissue">
+        <input type="hidden" name="id" value="<?= (int)$cur['id'] ?>">
+        <div class="fw w1"><label>작성일자</label><input type="date" name="issue_date" value="<?= h(date('Y-m-d')) ?>"></div>
+        <?php if ($sentDoc): ?>
+        <div class="fw w2"><label>수정 사유 (국세청)</label>
+          <select name="modify_reason">
+            <?php foreach ($MODIFY_REASONS as $k => $v): ?><option value="<?= $k ?>"><?= $k ?> <?= h($v) ?></option><?php endforeach; ?>
+          </select></div>
+        <?php endif; ?>
+        <div class="fw gr" style="min-width:240px"><label><?= $sentDoc ? '수정 발행' : '재발행' ?> 사유 *</label>
+          <input type="text" name="reason" required placeholder="예) 청구서 운임 정정으로 금액 변경"></div>
+        <button class="btn <?= $mismatch ? 'pri' : '' ?>"><?= $sentDoc ? '수정세금계산서 발행' : '재발행' ?></button>
+        <div style="flex-basis:100%;font-size:11.5px;color:var(--ink3)">
+          <?= $sentDoc
+              ? '착오정정 계열 사유는 (-)원본 취소분과 (+)정정본 두 장, 공급가액 변동은 차액 한 장이 만들어집니다. 홈택스 [수정발급] 메뉴에서 원본 승인번호로 발급하세요.'
+              : '아직 국세청에 보내지 않은 문서라 새 문서로 바꿉니다. 이전 문서는 취소(대체) 상태로 남고 이력에서 볼 수 있습니다.' ?>
+        </div>
+      </form>
+    <?php endif; ?>
     <?php if ($cur['status'] !== 'CANCELLED'): ?>
       <form method="post" class="f" style="align-items:flex-end;gap:8px;margin-left:auto"
             onsubmit="return confirm('세금계산서를 취소 처리합니다.');">
@@ -374,6 +628,42 @@ layout_head('전자세금계산서', 'tax_invoices');
       </form>
     <?php endif; ?>
   </div>
+</div>
+
+<div class="card">
+  <div class="ch">변경 이력
+    <span style="font-weight:400;color:var(--ink3)">발행 · 재발행 · 수정 · 취소가 이전값 → 이후값과 사유로 남습니다 (원본 · 대체 · 수정 문서 포함)</span>
+    <a class="btn sm" style="margin-left:auto" href="?p=activity_log&amp;module=<?= h(rawurlencode('세금계산서')) ?>&amp;kw=<?= h(rawurlencode($cur['doc_no'])) ?>">전체 작업로그</a>
+  </div>
+  <?php if (!$history): ?>
+    <div class="empty">기록이 없습니다.</div>
+  <?php else: ?>
+  <table>
+    <thead><tr>
+      <th style="width:130px">일시</th><th style="width:90px">담당</th><th style="width:90px">구분</th>
+      <th style="width:150px">문서</th><th>내용 (이전 → 이후)</th><th style="width:180px">사유</th>
+    </tr></thead>
+    <tbody>
+    <?php foreach ($history as $hrow): [$al, $ac] = $ACT[$hrow['action']] ?? [$hrow['action'], 'b-info']; ?>
+      <tr>
+        <td class="tnum" style="font-size:11.5px"><?= h(substr((string)$hrow['created_at'], 0, 16)) ?></td>
+        <td><?= h($hrow['admin_name']) ?></td>
+        <td><span class="badge <?= $ac ?>"><?= h($al) ?></span></td>
+        <td class="tnum" style="font-size:11.5px"><?= h((string)$hrow['ref_label']) ?></td>
+        <td style="font-size:11.5px;line-height:1.5;word-break:break-all">
+          <?php if ($hrow['before_value'] !== null && $hrow['before_value'] !== ''): ?>
+            <div style="color:var(--ink3)">이전: <?= h(mb_substr((string)$hrow['before_value'], 0, 300)) ?></div>
+          <?php endif; ?>
+          <?php if ($hrow['after_value'] !== null && $hrow['after_value'] !== ''): ?>
+            <div>이후: <?= h(mb_substr((string)$hrow['after_value'], 0, 300)) ?></div>
+          <?php endif; ?>
+        </td>
+        <td style="font-size:11.5px"><?= h((string)$hrow['reason']) ?></td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  <?php endif; ?>
 </div>
 <?php endif; ?>
 
@@ -473,7 +763,10 @@ layout_head('전자세금계산서', 'tax_invoices');
         <td class="r tnum"><?= money($r['supply_total']) ?></td>
         <td class="r tnum"><?= money($r['tax_total']) ?></td>
         <td class="tnum" style="font-size:11.5px"><?= h($r['nts_approval_no'] ?: '-') ?></td>
-        <td class="c"><span class="badge <?= $cls ?>"><?= h($lab) ?></span></td>
+        <td class="c"><span class="badge <?= $cls ?>"><?= h($lab) ?></span>
+          <?php if ((int)($r['revision'] ?? 1) > 1): ?><div style="font-size:10.5px;color:var(--ink3)">재발행 <?= (int)$r['revision'] ?>차</div><?php endif; ?>
+          <?php if (!empty($r['original_id'])): ?><div style="font-size:10.5px;color:#6B4700">수정분</div><?php endif; ?>
+          <?php if (!empty($r['replaced_by'])): ?><div style="font-size:10.5px;color:var(--err-fg)">대체됨</div><?php endif; ?></td>
         <td class="c"><a class="btn sm" href="?p=tax_invoices&amp;id=<?= (int)$r['id'] ?>">열기</a></td>
       </tr>
     <?php endforeach; ?>

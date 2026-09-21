@@ -82,6 +82,10 @@ function hometax_rows(PDO $pdo, int $eid, array $ids): array
             $skip[$no] = tax_doc_label((string)$t['doc_type']) . '는 이 양식으로 발급할 수 없습니다 (전자계산서 양식 따로)';
             continue;
         }
+        if (!empty($t['original_id'])) {
+            $skip[$no] = '수정세금계산서 — 홈택스 [수정발급] 메뉴에서 원본 승인번호로 직접 발급하세요';
+            continue;
+        }
         $buyerNo = ht_digits($t['buyer_biz_no']);
         if (!in_array(strlen($buyerNo), [10, 13], true)) {
             $skip[$no] = '공급받는자 사업자등록번호가 10자리가 아님 (' . $t['buyer_biz_no'] . ')';

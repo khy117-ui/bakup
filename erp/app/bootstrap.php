@@ -474,6 +474,44 @@ function schema_upgrade_invoices(): void
 }
 
 /**
+ * 세금계산서 재발행용 컬럼을 DB 에 붙입니다 (issued_at · revision · reissue_reason · replaced_by).
+ * 이미 있으면 아무것도 안 합니다. 기록용 SQL: sql/23_tax_invoice_reissue.sql
+ */
+function schema_upgrade_tax_invoices(): void
+{
+    if (!empty($_SESSION['schema_tax_invoices_v1'])) { return; }
+    $pdo = db();
+    $has = function (string $col) use ($pdo): bool {
+        $st = $pdo->prepare('SELECT COUNT(*) FROM information_schema.COLUMNS
+                              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = \'tax_invoices\' AND COLUMN_NAME = ?');
+        $st->execute([$col]);
+        return (int)$st->fetchColumn() > 0;
+    };
+    try {
+        if (!$has('issued_at')) {
+            $pdo->exec("ALTER TABLE tax_invoices ADD COLUMN issued_at DATETIME NULL
+                          COMMENT '발행 처리 시각' AFTER status");
+            $pdo->exec("UPDATE tax_invoices SET issued_at = COALESCE(sent_at, created_at) WHERE status IN ('ISSUED','SENT')");
+        }
+        if (!$has('revision')) {
+            $pdo->exec("ALTER TABLE tax_invoices ADD COLUMN revision INT UNSIGNED NOT NULL DEFAULT 1
+                          COMMENT '같은 청구서의 몇 번째 발행본인지 (1 = 처음)' AFTER issued_at");
+        }
+        if (!$has('reissue_reason')) {
+            $pdo->exec("ALTER TABLE tax_invoices ADD COLUMN reissue_reason VARCHAR(255) NULL
+                          COMMENT '재발행 · 수정발행 사유(자유 입력)' AFTER revision");
+        }
+        if (!$has('replaced_by')) {
+            $pdo->exec("ALTER TABLE tax_invoices ADD COLUMN replaced_by BIGINT UNSIGNED NULL
+                          COMMENT '이 문서를 대체(재발행 · 수정)한 새 문서 id' AFTER reissue_reason");
+        }
+        $_SESSION['schema_tax_invoices_v1'] = 1;
+    } catch (Throwable $e) {
+        error_log('schema_upgrade_tax_invoices: ' . $e->getMessage());
+    }
+}
+
+/**
  * 청구서 금액을 저장하지 않고 현재 값으로만 계산해 돌려줍니다 (재발행 필요 여부 판단용).
  * 전표 금액이 청구서 발행 뒤에 바뀌면 저장된 합계와 달라집니다.
  */

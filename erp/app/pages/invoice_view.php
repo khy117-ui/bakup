@@ -56,8 +56,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 log_action('청구', 'ISSUE', 'invoices', $id, $inv['invoice_no'],
                            $first ? null : $before, $after, $first ? null : $why);
                 $pdo->commit();
+                $taxNote = '';
+                if (!$first) {
+                    $tx = $pdo->prepare("SELECT COUNT(*) FROM tax_invoices WHERE invoice_id = ? AND deleted_at IS NULL AND status <> 'CANCELLED' AND replaced_by IS NULL");
+                    try { $tx->execute([$id]); if ((int)$tx->fetchColumn() > 0) { $taxNote = ' 이 청구서로 만든 세금계산서가 있습니다. [전자세금계산서] 에서 재발행하세요.'; } }
+                    catch (PDOException $e) { /* replaced_by 컬럼이 아직 없으면 넘어감 */ }
+                }
                 flash($first ? '청구서를 발행했습니다.'
-                             : '청구서를 재발행했습니다 (' . ((int)$inv['issue_count'] + 1) . '회차). 인보이스를 다시 출력해 보내세요.');
+                             : '청구서를 재발행했습니다 (' . ((int)$inv['issue_count'] + 1) . '회차). 인보이스를 다시 출력해 보내세요.' . $taxNote);
                 redirect('?p=invoice_view&id=' . $id);
             }
 
