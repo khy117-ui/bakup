@@ -48,6 +48,8 @@ foreach ($docTypes as $t) { if ($t['code'] === 'ETC') { $docDefault = (int)$t['i
 $in = [
     'company_id' => '', 'carrier_id' => '', 'voucher_date' => date('Y-m-d'),
     'ship_date' => '', 'trade_type' => 'EXPORT', 'dest_city' => '', 'origin_city' => '',
+    // 원가격 — 가격표가 없는 운송사(EMS 등)는 여기에 직접 넣습니다. 할인 · 유류할증은 그대로 적용됩니다
+    'snap_base_price' => '',
     'actual_weight' => '', 'volume_weight' => '', 'package_count' => '',
     'remark' => '', 'sales_team' => '', 'sales_rep' => '', 'status' => 'CONFIRMED',
     // AWB 번호 — auto 저장할 때 자동 부여 / manual 직접 입력 (운송사 번호 등)
@@ -78,6 +80,8 @@ if ($id > 0) {
                 $in[$k] = (string)($cur[$k] ?? '');
             }
         }
+        // 가격표에서 가져온 단가면 '직접입력' 칸은 비워 둡니다 (그래야 다시 저장할 때도 가격표를 봅니다)
+        if (!empty($cur['snap_rate_table_id'])) { $in['snap_base_price'] = ''; }
         $st = db()->prepare(
             'SELECT charge_type, item_name, supply_amount, tax_type
                FROM shipment_charges WHERE shipment_id = ? ORDER BY line_no');
@@ -287,6 +291,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
             $cw = max($aw, $vw);
             $trade = $in['trade_type'] === 'IMPORT' ? 'IMPORT' : 'EXPORT';
 
+            // 단가 스냅샷 — 그때의 원가격 · 할인율 · 유류할증을 전표에 굳혀 둡니다 (나중에 가격표가 바뀌어도 전표는 그대로)
+            require_once APP_DIR . '/ratecalc.php';
+            $manualBase = $in['snap_base_price'] !== ''
+                ? (float)str_replace(',', '', $in['snap_base_price']) : null;
+            $Q = rate_quote((int)$in['carrier_id'], (int)$in['company_id'], $trade, $in['voucher_date'],
+                            $cw, $in['dest_city'] !== '' ? (string)dest_country_of($dests, $in['dest_city']) : '',
+                            0, $manualBase);
+            $snap = $Q['ok']
+                ? [$Q['base'], $Q['disc'], $Q['disc_amt'], $Q['after'], $Q['fuel'], $Q['fuel_amt'], $Q['supply']]
+                : [$manualBase, null, null, null, null, null, null];
+            // 가격표에서 가져왔으면 어느 표였는지 남깁니다. 직접 넣은 값이면 NULL —
+            // 다시 열었을 때 '직접입력' 칸에 가격표 값이 잘못 남지 않게 하는 표시이기도 합니다
+            $snap[] = ($manualBase === null && $Q['ok'] && !empty($Q['table']['tid'])) ? (int)$Q['table']['tid'] : null;
+
             if ($id > 0) {
                 $before = snapshot($id);
                 $st = $pdo->prepare(
@@ -295,6 +313,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
                             trade_type = ?, dest_city = ?, dest_country = ?,
                             origin_city = ?, origin_country = ?, actual_weight = ?, volume_weight = ?,
                             charge_weight = ?, package_count = ?, sales_team = ?, sales_rep = ?,
+                            snap_base_price = ?, snap_discount_rate = ?, snap_discount_amt = ?,
+                            snap_discounted = ?, snap_fuel_rate = ?, snap_fuel_amt = ?,
+                            snap_supply_price = ?, snap_rate_table_id = ?, snap_taken_at = NOW(),
                             remark = ?, updated_by = ?
                       WHERE id = ? AND business_entity_id = ?');
                 $st->execute([
@@ -308,6 +329,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
                     $in['package_count'] !== '' ? (int)$in['package_count'] : null,
                     $in['sales_team'] !== '' ? $in['sales_team'] : null,
                     $in['sales_rep'] !== '' ? $in['sales_rep'] : null,
+                    $snap[0], $snap[1], $snap[2], $snap[3], $snap[4], $snap[5], $snap[6], $snap[7],
                     $in['remark'] !== '' ? $in['remark'] : null,
                     $_SESSION['admin_id'] ?? null, $id, $eid,
                 ]);
@@ -333,8 +355,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
                         ship_date, trade_type, carrier_id, dest_city, dest_country,
                         origin_city, origin_country,
                         actual_weight, volume_weight, charge_weight, package_count,
+                        snap_base_price, snap_discount_rate, snap_discount_amt, snap_discounted,
+                        snap_fuel_rate, snap_fuel_amt, snap_supply_price, snap_rate_table_id, snap_taken_at,
                         status, sales_team, sales_rep, remark, created_by)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,\'CONFIRMED\',?,?,?,?)');
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW(),\'CONFIRMED\',?,?,?,?)');
                 $st->execute([
                     $eid, (int)$in['company_id'], $awb, $manual ? 'MANUAL' : 'HOUSE', $in['voucher_date'],
                     $in['ship_date'] !== '' ? $in['ship_date'] : null, $trade,
@@ -345,6 +369,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
                     $in['origin_city'] !== '' ? dest_country_of($dests, $in['origin_city']) : null,
                     $aw > 0 ? $aw : null, $vw > 0 ? $vw : null, $cw > 0 ? $cw : null,
                     $in['package_count'] !== '' ? (int)$in['package_count'] : null,
+                    $snap[0], $snap[1], $snap[2], $snap[3], $snap[4], $snap[5], $snap[6], $snap[7],
                     $in['sales_team'] !== '' ? $in['sales_team'] : null,
                     $in['sales_rep'] !== '' ? $in['sales_rep'] : null,
                     $in['remark'] !== '' ? $in['remark'] : null,
@@ -598,6 +623,11 @@ layout_head($title, 'shipments');
       <input type="text" name="actual_weight" class="tnum" value="<?= h($in['actual_weight']) ?>"></div>
     <div class="fw w1"><label>부피중량 (kg)</label>
       <input type="text" name="volume_weight" class="tnum" value="<?= h($in['volume_weight']) ?>"></div>
+    <div class="fw w1"><label>EMS · 단가 직접입력
+        <span style="font-weight:400;color:var(--ink3)">원가격</span></label>
+      <input type="text" name="snap_base_price" class="tnum" style="text-align:right"
+             value="<?= h($in['snap_base_price'] !== '' ? (string)(int)round((float)$in['snap_base_price']) : '') ?>"
+             placeholder="63,700"></div>
     <div class="fw w1"><label>수량 (PCS)</label>
       <input type="text" name="package_count" class="tnum" value="<?= h($in['package_count']) ?>"></div>
     <div class="fw w1"><label>영업팀</label>
@@ -612,6 +642,8 @@ layout_head($title, 'shipments');
   </div>
   <div class="cb" style="border-top:1px solid var(--line2);font-size:11.5px;color:var(--ink3)">
     청구중량은 실중량과 부피중량 중 큰 값이 자동으로 들어갑니다.
+    <b>EMS · 단가 직접입력</b>에 원가격을 넣으면 가격표를 찾지 않고 그 금액에 업체 할인율과 유류할증을 적용합니다
+    (가격표가 등록된 운송사는 비워 두세요 — 가격표에서 저절로 가져옵니다).
   </div>
 </div>
 
@@ -693,9 +725,12 @@ layout_head($title, 'shipments');
       var t = d.table || {};
       box.innerHTML =
         '<table style="width:auto;min-width:420px"><tbody>'
-        + '<tr><td>원가격 (가격표)</td><td class="r tnum"><b>' + money(d.base) + '</b> 원</td>'
-        + '<td style="color:var(--ink3);font-size:11.5px">Zone ' + d.zone + ' · '
-        + esc(t.weight_from) + '~' + esc(t.weight_to) + 'kg · ' + esc(t.name || '') + '</td></tr>'
+        + '<tr><td>원가격 (' + esc(d.base_src || '가격표') + ')</td><td class="r tnum"><b>' + money(d.base) + '</b> 원</td>'
+        + '<td style="color:var(--ink3);font-size:11.5px">'
+        + (d.base_src === '직접 입력'
+            ? '직접 넣은 금액에 할인 · 유류할증만 적용합니다'
+            : 'Zone ' + d.zone + ' · ' + esc(t.weight_from) + '~' + esc(t.weight_to) + 'kg · ' + esc(t.name || ''))
+        + '</td></tr>'
         + '<tr><td>할인 ' + d.disc + '%</td><td class="r tnum">- ' + money(d.disc_amt) + ' 원</td>'
         + '<td style="color:var(--ink3);font-size:11.5px">' + esc(d.disc_src) + '</td></tr>'
         + '<tr><td>할인 후 운임</td><td class="r tnum">' + money(d.after) + ' 원</td><td></td></tr>'
@@ -718,10 +753,14 @@ layout_head($title, 'shipments');
         carrier_id: val('carrier_id'), company_id: val('company_id'),
         trade_type: val('trade_type'), on_date: val('voucher_date'),
         dest_city: val('dest_city'),
-        actual_weight: val('actual_weight'), volume_weight: val('volume_weight')
+        actual_weight: val('actual_weight'), volume_weight: val('volume_weight'),
+        base: val('snap_base_price')
       });
       if (!val('carrier_id')) { box.textContent = '운송사를 먼저 고르세요.'; return; }
-      if (!val('actual_weight') && !val('volume_weight')) { box.textContent = '중량을 먼저 넣으세요.'; return; }
+      if (!val('actual_weight') && !val('volume_weight') && !val('snap_base_price')) {
+        box.textContent = '중량을 넣거나, EMS 처럼 가격표가 없으면 원가격을 직접 넣으세요.';
+        return;
+      }
       box.textContent = '불러오는 중…';
       fetch('?' + q.toString(), { credentials: 'same-origin', cache: 'no-store' })
         .then(function (r) { return r.ok ? r.json() : null; })
@@ -730,11 +769,14 @@ layout_head($title, 'shipments');
     }
     document.getElementById('rate-go').addEventListener('click', load);
     // 운송사 · 도착지 · 중량을 바꾸면 저절로 다시 계산합니다
-    ['carrier_id', 'dest_city', 'actual_weight', 'volume_weight', 'company_id', 'trade_type'].forEach(function (n) {
+    ['carrier_id', 'dest_city', 'actual_weight', 'volume_weight', 'company_id', 'trade_type', 'snap_base_price'].forEach(function (n) {
       var e = document.querySelector('[name="' + n + '"]');
-      if (e) { e.addEventListener('change', function () { if (val('carrier_id') && (val('actual_weight') || val('volume_weight'))) { load(); } }); }
+      if (!e) { return; }
+      e.addEventListener('change', function () {
+        if (val('carrier_id') && (val('actual_weight') || val('volume_weight') || val('snap_base_price'))) { load(); }
+      });
     });
-    if (val('carrier_id') && (val('actual_weight') || val('volume_weight'))) { load(); }
+    if (val('carrier_id') && (val('actual_weight') || val('volume_weight') || val('snap_base_price'))) { load(); }
   })();
 
   // 종류를 고르면 회사 기준 세금구분으로 (운송 = 영세율, 핸드링 · 도큐멘트 · 국내운송 · 창고 · 검사 · 통관 = 과세)

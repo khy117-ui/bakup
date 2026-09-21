@@ -16,10 +16,12 @@ if (!defined('APP_DIR')) { http_response_code(403); exit('Forbidden'); }
 /**
  * @param  float  $cw      청구중량 (실중량과 부피중량 중 큰 값)
  * @param  string $country 도착 국가코드 (Zone 을 찾을 때 씀). 비우면 $zoneNo 로
+ * @param  ?float $manualBase 원가격을 직접 넣은 경우 (EMS 처럼 가격표가 아직 없는 운송사).
+ *                            이 값이 있으면 가격표를 찾지 않고 할인 · 유류할증만 계산합니다.
  * @return array  ok · why[] · zone · base · disc · disc_amt · after · fuel · fuel_amt · supply …
  */
 function rate_quote(int $carrierId, ?int $companyId, string $tradeType, string $day,
-                    float $cw, string $country = '', int $zoneNo = 0): array
+                    float $cw, string $country = '', int $zoneNo = 0, ?float $manualBase = null): array
 {
     $why = [];
     $R = ['ok' => false, 'why' => [], 'cw' => $cw,
@@ -28,9 +30,18 @@ function rate_quote(int $carrierId, ?int $companyId, string $tradeType, string $
           'fuel' => 0.0, 'fuel_amt' => 0.0, 'fuel_src' => '유류할증 없음 (0%)',
           'fuel_basis' => 'AFTER_DISCOUNT', 'fuel_applied' => true, 'supply' => null];
 
+    $R['base_src'] = '가격표';
     if ($carrierId <= 0) { $R['why'] = ['운송사를 고르세요.']; return $R; }
-    if ($cw <= 0)        { $R['why'] = ['중량을 넣으세요.']; return $R; }
+    if ($cw <= 0 && $manualBase === null) { $R['why'] = ['중량을 넣으세요.']; return $R; }
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $day)) { $day = date('Y-m-d'); }
+
+    // 원가격을 직접 넣었으면 Zone · 가격표를 건너뜁니다 (EMS 처럼 가격표가 아직 없는 경우)
+    if ($manualBase !== null && $manualBase > 0) {
+        $R['base'] = $manualBase;
+        $R['base_src'] = '직접 입력';
+        $R['zone_src'] = '가격표를 쓰지 않음';
+        return rate_quote_apply($R, $carrierId, $companyId, $tradeType, $day, $manualBase);
+    }
 
     // 1) Zone — 국가코드로 찾거나 직접 받은 번호로
     $zone = $zoneNo;
@@ -80,6 +91,13 @@ function rate_quote(int $carrierId, ?int $companyId, string $tradeType, string $
     $R['base'] = $base;
     $R['table'] = $rateTable;
 
+    return rate_quote_apply($R, $carrierId, $companyId, $tradeType, $day, $base, $why);
+}
+
+/** 원가격이 정해진 뒤 — 할인 → 유류할증 → 공급가격 */
+function rate_quote_apply(array $R, int $carrierId, ?int $companyId, string $tradeType,
+                          string $day, ?float $base, array $why = []): array
+{
     // 3) 할인율 — 거래처별. 없으면 0%
     $disc = 0.0; $fuelApplied = true;
     if ($companyId) {

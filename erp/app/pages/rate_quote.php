@@ -37,6 +37,9 @@ if ($country === '' && $destCity !== '') {
     }
 }
 
-$R = rate_quote($carrierId, $companyId, $trade, $day, $cw, $country, $zone);
+// 원가격을 직접 넣었으면 (EMS 처럼 가격표가 없는 경우) 가격표를 찾지 않습니다
+$manual = (float)str_replace(',', '', query('base', '0'));
+$R = rate_quote($carrierId, $companyId, $trade, $day, $cw, $country, $zone,
+                $manual > 0 ? $manual : null);
 $R['country'] = strtoupper($country);
 echo json_encode($R, JSON_UNESCAPED_UNICODE);
