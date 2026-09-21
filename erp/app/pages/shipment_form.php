@@ -432,6 +432,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
             $after = snapshot($sid);
             log_action('매출전표', $id > 0 ? 'UPDATE' : 'CREATE', 'shipments', $sid, $awb,
                        $before, $after, $id > 0 ? $reason : null);
+            // 이미 청구서에 수록된 전표를 고쳤으면 청구서에 '내용 바뀜' 표시를 남깁니다 (청구서 화면에서 재발행)
+            $billNote = '';
+            if ($id > 0 && $before !== $after) {
+                $bi = $pdo->prepare("SELECT i.id, i.invoice_no FROM invoice_shipments xs
+                                       JOIN invoices i ON i.id = xs.invoice_id
+                                      WHERE xs.shipment_id = ? AND i.status <> 'CANCELLED' AND i.deleted_at IS NULL LIMIT 1");
+                $bi->execute([$sid]);
+                if ($biRow = $bi->fetch()) {
+                    try {
+                        $pdo->prepare('UPDATE invoices SET changed_at = NOW() WHERE id = ?')->execute([(int)$biRow['id']]);
+                    } catch (PDOException $e) { /* changed_at 컬럼이 아직 없으면 넘어감 */ }
+                    log_action('청구', 'UPDATE', 'invoices', (int)$biRow['id'], (string)$biRow['invoice_no'],
+                               null, '수록 전표 ' . $awb . ' 내용 변경 — 재발행 필요', $id > 0 ? $reason : null);
+                    $billNote = ' 이 전표는 청구서 ' . $biRow['invoice_no'] . ' 에 수록되어 있습니다. 금액이 바뀌었으면 청구서 화면에서 [재발행] 하세요.';
+                }
+            }
             $pdo->commit();
 
             // 새 전표와 같이 고른 관련서류 — 전표가 저장된 뒤에 올립니다
@@ -463,7 +479,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
             } catch (PDOException $e) {
                 error_log('전표 자동 추적 등록 실패: ' . $e->getMessage());
             }
-            flash('매출전표 ' . $awb . ' 을 ' . ($id > 0 ? '수정' : '등록') . '했습니다.' . $docMsg . $trkMsg);
+            flash('매출전표 ' . $awb . ' 을 ' . ($id > 0 ? '수정' : '등록') . '했습니다.' . $docMsg . $trkMsg . $billNote);
             // 서류를 같이 올렸으면 그 전표로 가서 목록을 보여줍니다
             redirect($files ? '?p=shipment_form&id=' . $sid : '?p=shipments');
         } catch (PDOException $e) {

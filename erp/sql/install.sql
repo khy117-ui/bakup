@@ -750,6 +750,10 @@ CREATE TABLE invoices (
   balance            DECIMAL(15,2) NOT NULL DEFAULT 0  COMMENT '미수금 = grand_total - paid_amount',
   status             VARCHAR(20) NOT NULL DEFAULT 'DRAFT'
                      COMMENT 'DRAFT/ISSUED/PARTIAL/PAID/OVERDUE/CANCELLED',
+  issued_at          DATETIME NULL                     COMMENT '마지막 발행(재발행) 시각',
+  issue_count        INT UNSIGNED NOT NULL DEFAULT 0   COMMENT '발행 횟수 (2 이상이면 재발행됨)',
+  reissue_reason     VARCHAR(255) NULL                 COMMENT '마지막 재발행 사유',
+  changed_at         DATETIME NULL                     COMMENT '발행 뒤 내용이 바뀐 시각 (재발행 필요 표시용)',
   bank_account_id    BIGINT UNSIGNED NULL              COMMENT '인보이스에 찍을 입금계좌',
   remark             TEXT NULL,
   created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

@@ -434,6 +434,101 @@ function next_doc_no(string $kind, string $prefix, string $sep = '', ?int $entit
 }
 
 /**
+ * 청구서 재발행용 컬럼을 DB 에 붙입니다 (issued_at · issue_count · reissue_reason).
+ * 이미 있으면 아무것도 안 합니다. 기록용 SQL: sql/22_invoice_reissue.sql
+ */
+function schema_upgrade_invoices(): void
+{
+    if (!empty($_SESSION['schema_invoices_v1'])) { return; }
+    $pdo = db();
+    $has = function (string $col) use ($pdo): bool {
+        $st = $pdo->prepare('SELECT COUNT(*) FROM information_schema.COLUMNS
+                              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = \'invoices\' AND COLUMN_NAME = ?');
+        $st->execute([$col]);
+        return (int)$st->fetchColumn() > 0;
+    };
+    try {
+        if (!$has('issued_at')) {
+            $pdo->exec("ALTER TABLE invoices ADD COLUMN issued_at DATETIME NULL
+                          COMMENT '마지막 발행(재발행) 시각' AFTER status");
+        }
+        if (!$has('issue_count')) {
+            $pdo->exec("ALTER TABLE invoices ADD COLUMN issue_count INT UNSIGNED NOT NULL DEFAULT 0
+                          COMMENT '발행 횟수 (2 이상이면 재발행됨)' AFTER issued_at");
+            // 이미 발행된 청구서는 1회 발행으로 봅니다
+            $pdo->exec("UPDATE invoices SET issue_count = 1, issued_at = COALESCE(issued_at, updated_at)
+                         WHERE status <> 'DRAFT' AND issue_count = 0");
+        }
+        if (!$has('reissue_reason')) {
+            $pdo->exec("ALTER TABLE invoices ADD COLUMN reissue_reason VARCHAR(255) NULL
+                          COMMENT '마지막 재발행 사유' AFTER issue_count");
+        }
+        if (!$has('changed_at')) {
+            $pdo->exec("ALTER TABLE invoices ADD COLUMN changed_at DATETIME NULL
+                          COMMENT '발행 뒤 내용(전표 · 조정항목 · 날짜)이 바뀐 시각 — 재발행 필요 표시용' AFTER reissue_reason");
+        }
+        $_SESSION['schema_invoices_v1'] = 1;
+    } catch (Throwable $e) {
+        error_log('schema_upgrade_invoices: ' . $e->getMessage());
+    }
+}
+
+/**
+ * 청구서 금액을 저장하지 않고 현재 값으로만 계산해 돌려줍니다 (재발행 필요 여부 판단용).
+ * 전표 금액이 청구서 발행 뒤에 바뀌면 저장된 합계와 달라집니다.
+ */
+function invoice_live_totals(int $invoiceId): array
+{
+    $pdo = db();
+    $st = $pdo->prepare(
+        'SELECT COALESCE(SUM(t.zero_supply),0) AS z, COALESCE(SUM(t.taxable_supply),0) AS t,
+                COALESCE(SUM(t.exempt_supply),0) AS e, COALESCE(SUM(t.tax_total),0) AS v
+           FROM invoice_shipments xs
+           JOIN v_shipment_totals t ON t.shipment_id = xs.shipment_id
+          WHERE xs.invoice_id = ?');
+    $st->execute([$invoiceId]);
+    $s = $st->fetch() ?: ['z'=>0,'t'=>0,'e'=>0,'v'=>0];
+    $st = $pdo->prepare(
+        'SELECT COALESCE(SUM(CASE WHEN tax_type = \'ZERO\'    THEN supply_amount END),0) AS z,
+                COALESCE(SUM(CASE WHEN tax_type = \'TAXABLE\' THEN supply_amount END),0) AS t,
+                COALESCE(SUM(CASE WHEN tax_type = \'EXEMPT\'  THEN supply_amount END),0) AS e,
+                COALESCE(SUM(tax_amount),0) AS v
+           FROM invoice_items WHERE invoice_id = ?');
+    $st->execute([$invoiceId]);
+    $a = $st->fetch() ?: ['z'=>0,'t'=>0,'e'=>0,'v'=>0];
+    $zero = (float)$s['z'] + (float)$a['z'];
+    $taxable = (float)$s['t'] + (float)$a['t'];
+    $exempt = (float)$s['e'] + (float)$a['e'];
+    $vat = (float)$s['v'] + (float)$a['v'];
+    return ['zero_supply' => $zero, 'taxable_supply' => $taxable, 'exempt_supply' => $exempt,
+            'tax_total' => $vat, 'grand_total' => $zero + $taxable + $exempt + $vat];
+}
+
+/** 로그에 남길 청구서 요약 한 줄 (금액 · 전표 수 · 조정항목 수 · 날짜) */
+function invoice_snapshot(int $invoiceId): string
+{
+    $pdo = db();
+    $st = $pdo->prepare('SELECT invoice_date, due_date, period_from, period_to, zero_supply, taxable_supply,
+                                exempt_supply, tax_total, grand_total, status, issue_count, remark
+                           FROM invoices WHERE id = ?');
+    $st->execute([$invoiceId]);
+    $i = $st->fetch();
+    if (!$i) { return ''; }
+    $st = $pdo->prepare('SELECT COUNT(*) FROM invoice_shipments WHERE invoice_id = ?');
+    $st->execute([$invoiceId]);
+    $ships = (int)$st->fetchColumn();
+    $st = $pdo->prepare('SELECT COUNT(*) FROM invoice_items WHERE invoice_id = ?');
+    $st->execute([$invoiceId]);
+    $items = (int)$st->fetchColumn();
+    return sprintf('합계 %s (영세 %s · 과세 %s · 면세 %s · VAT %s) · 전표 %d건 · 조정 %d건 · 청구일 %s · 기한 %s · 기간 %s~%s · 상태 %s · 발행 %d회%s',
+        number_format((float)$i['grand_total']), number_format((float)$i['zero_supply']),
+        number_format((float)$i['taxable_supply']), number_format((float)$i['exempt_supply']),
+        number_format((float)$i['tax_total']), $ships, $items, $i['invoice_date'], $i['due_date'] ?: '-',
+        $i['period_from'], $i['period_to'], $i['status'], (int)($i['issue_count'] ?? 0),
+        $i['remark'] !== null && $i['remark'] !== '' ? ' · 비고 ' . mb_substr((string)$i['remark'], 0, 60) : '');
+}
+
+/**
  * 청구서 금액을 다시 계산해 저장합니다.
  *
  * 합계를 화면에서 더하지 않고 여기 한 곳에서만 만듭니다.

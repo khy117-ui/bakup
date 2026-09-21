@@ -3,6 +3,7 @@ require_once APP_DIR . '/layout.php';
 
 $eid = entity_id();
 $err = '';
+schema_upgrade_invoices();   // 재발행 컬럼(issued_at · issue_count · changed_at) 보강
 
 // ---------------------------------------------------------------- 청구서 생성
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'create') {
@@ -259,7 +260,10 @@ layout_head('청구관리', 'billing');
         <td class="r tnum"><?= money($i['paid_amount']) ?></td>
         <td class="r tnum" style="color:<?= $i['balance']>0?'var(--err-fg)':'var(--ink3)' ?>">
           <?= money($i['balance']) ?></td>
-        <td class="c"><span class="badge <?= $cls ?>"><?= h($lab) ?></span></td>
+        <td class="c"><span class="badge <?= $cls ?>"><?= h($lab) ?></span>
+          <?php if ((int)($i['issue_count'] ?? 0) > 1): ?><div style="font-size:10.5px;color:var(--ink3)">재발행 <?= (int)$i['issue_count'] ?>회</div><?php endif; ?>
+          <?php if ($i['status'] !== 'DRAFT' && $i['status'] !== 'CANCELLED' && !empty($i['changed_at']) && (empty($i['issued_at']) || $i['changed_at'] > $i['issued_at'])): ?>
+            <div style="font-size:10.5px;color:var(--err-fg)">수정됨 · 재발행 필요</div><?php endif; ?></td>
         <td class="c"><a class="btn sm" href="?p=invoice_view&amp;id=<?= (int)$i['id'] ?>">열기</a></td>
       </tr>
     <?php endforeach; ?>

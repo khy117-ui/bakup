@@ -4,6 +4,7 @@ require_once APP_DIR . '/layout.php';
 $eid = entity_id();
 $id  = (int)query('id', '0');
 $err = '';
+schema_upgrade_invoices();   // 재발행 컬럼(issued_at · issue_count · reissue_reason · changed_at) 보강
 
 $st = db()->prepare(
     'SELECT i.*, c.name_ko, c.company_code, c.business_number, c.representative,
@@ -26,12 +27,67 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $pdo = db();
 
     try {
-        if ($act === 'issue' && $inv['status'] === 'DRAFT') {
-            $pdo->prepare("UPDATE invoices SET status = 'ISSUED' WHERE id = ?")->execute([$id]);
-            invoice_recalc($id);
-            log_action('청구', 'ISSUE', 'invoices', $id, $inv['invoice_no']);
-            flash('청구서를 발행했습니다.');
-            redirect('?p=invoice_view&id=' . $id);
+        // 발행 뒤에 내용을 고쳤을 때 청구서에 '내용 바뀜' 표시 (재발행 필요)
+        $touch = function () use ($pdo, $id, $inv): void {
+            if ($inv['status'] !== 'DRAFT') {
+                $pdo->prepare('UPDATE invoices SET changed_at = NOW() WHERE id = ?')->execute([$id]);
+            }
+        };
+
+        if ($act === 'issue' && $inv['status'] !== 'CANCELLED') {
+            // 처음 발행(DRAFT → ISSUED) 과 재발행(이미 발행된 청구서를 고친 뒤 다시 발행) 을 같이 처리합니다.
+            // 재발행은 사유가 필수이고, 이전 · 이후 금액이 로그에 남습니다.
+            $first = $inv['status'] === 'DRAFT';
+            $why   = trim(post('reason'));
+            if (!$first && mb_strlen($why) < 2) {
+                $err = '재발행 사유를 적어 주세요. (예: 운임 정정, 조정항목 추가)';
+            } else {
+                $pdo->beginTransaction();
+                $before = invoice_snapshot($id);
+                if ($first) {
+                    $pdo->prepare("UPDATE invoices SET status = 'ISSUED' WHERE id = ?")->execute([$id]);
+                }
+                invoice_recalc($id);   // 전표 · 조정항목의 현재 금액으로 합계를 다시 계산
+                $pdo->prepare('UPDATE invoices
+                                  SET issued_at = NOW(), issue_count = issue_count + 1,
+                                      reissue_reason = ?, changed_at = NULL
+                                WHERE id = ?')->execute([$first ? null : $why, $id]);
+                $after = invoice_snapshot($id);
+                log_action('청구', 'ISSUE', 'invoices', $id, $inv['invoice_no'],
+                           $first ? null : $before, $after, $first ? null : $why);
+                $pdo->commit();
+                flash($first ? '청구서를 발행했습니다.'
+                             : '청구서를 재발행했습니다 (' . ((int)$inv['issue_count'] + 1) . '회차). 인보이스를 다시 출력해 보내세요.');
+                redirect('?p=invoice_view&id=' . $id);
+            }
+
+        } elseif ($act === 'edit_head') {
+            // 청구일 · 지급기한 · 대상기간 · 비고 수정 (발행 뒤에도 가능 — 로그에 이전 · 이후가 남고 재발행이 필요해집니다)
+            $idate = post('invoice_date');
+            $due   = post('due_date');
+            $pf    = post('period_from');
+            $pt    = post('period_to');
+            $why   = trim(post('reason'));
+            $ok = fn($d) => (bool)preg_match('/^\d{4}-\d{2}-\d{2}$/', $d);
+            if (!$ok($idate) || !$ok($pf) || !$ok($pt) || ($due !== '' && !$ok($due))) {
+                $err = '날짜 형식이 올바르지 않습니다.';
+            } elseif ($pf > $pt) {
+                $err = '대상기간 시작이 종료보다 늦습니다.';
+            } elseif ($inv['status'] !== 'DRAFT' && mb_strlen($why) < 2) {
+                $err = '발행된 청구서를 고칠 때는 수정 사유를 적어 주세요.';
+            } else {
+                $pdo->beginTransaction();
+                $before = invoice_snapshot($id);
+                $pdo->prepare('UPDATE invoices SET invoice_date = ?, due_date = ?, period_from = ?, period_to = ?, remark = ?
+                                WHERE id = ?')
+                    ->execute([$idate, $due !== '' ? $due : null, $pf, $pt, post('remark') !== '' ? post('remark') : null, $id]);
+                $touch();
+                $after = invoice_snapshot($id);
+                log_action('청구', 'UPDATE', 'invoices', $id, $inv['invoice_no'], $before, $after, $why !== '' ? $why : null);
+                $pdo->commit();
+                flash('청구서 내용을 수정했습니다.' . ($inv['status'] !== 'DRAFT' ? ' 인보이스에 반영하려면 [재발행] 하세요.' : ''));
+                redirect('?p=invoice_view&id=' . $id);
+            }
 
         } elseif ($act === 'cancel') {
             $why = post('reason');
@@ -67,11 +123,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ->execute([$id, $sid]);
             $pdo->prepare("UPDATE shipments SET status = 'CONFIRMED'
                             WHERE id = ? AND status = 'BILLED'")->execute([$sid]);
+            $before = invoice_snapshot($id);
             invoice_recalc($id);
+            $touch();
+            $sa = $pdo->prepare('SELECT awb_no FROM shipments WHERE id = ?');
+            $sa->execute([$sid]);
             log_action('청구', 'UPDATE', 'invoices', $id, $inv['invoice_no'],
-                       null, '전표 제외 shipment_id=' . $sid);
+                       $before, '전표 제외 ' . ($sa->fetchColumn() ?: ('#' . $sid)) . ' → ' . invoice_snapshot($id),
+                       trim(post('reason')) !== '' ? trim(post('reason')) : null);
             $pdo->commit();
-            flash('전표를 청구서에서 뺐습니다.');
+            flash('전표를 청구서에서 뺐습니다.' . ($inv['status'] !== 'DRAFT' ? ' 인보이스에 반영하려면 [재발행] 하세요.' : ''));
             redirect('?p=invoice_view&id=' . $id);
 
         } elseif ($act === 'add_item') {
@@ -93,18 +154,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         tax_amount, total_amount, remark)
                      VALUES (?,?,?,?,?,?,?,?)')
                     ->execute([$id, $ln, $name, $amt, $tt, $tax, $amt + $tax, post('remark') ?: null]);
+                $before = invoice_snapshot($id);
                 invoice_recalc($id);
+                $touch();
                 log_action('청구', 'UPDATE', 'invoices', $id, $inv['invoice_no'],
-                           null, '조정항목 추가 ' . $name . ' ' . number_format($amt));
-                flash('조정항목을 추가했습니다.');
+                           $before, '조정항목 추가 ' . $name . ' ' . number_format($amt) . ' → ' . invoice_snapshot($id),
+                           post('remark') !== '' ? post('remark') : null);
+                flash('조정항목을 추가했습니다.' . ($inv['status'] !== 'DRAFT' ? ' 인보이스에 반영하려면 [재발행] 하세요.' : ''));
                 redirect('?p=invoice_view&id=' . $id);
             }
 
         } elseif ($act === 'drop_item') {
+            $it = $pdo->prepare('SELECT item_name, supply_amount FROM invoice_items WHERE invoice_id = ? AND id = ?');
+            $it->execute([$id, (int)post('iid')]);
+            $itRow = $it->fetch();
+            $before = invoice_snapshot($id);
             $pdo->prepare('DELETE FROM invoice_items WHERE invoice_id = ? AND id = ?')
                 ->execute([$id, (int)post('iid')]);
             invoice_recalc($id);
-            flash('조정항목을 뺐습니다.');
+            $touch();
+            log_action('청구', 'UPDATE', 'invoices', $id, $inv['invoice_no'], $before,
+                       '조정항목 삭제 ' . ($itRow ? $itRow['item_name'] . ' ' . number_format((float)$itRow['supply_amount']) : '#' . (int)post('iid'))
+                       . ' → ' . invoice_snapshot($id));
+            flash('조정항목을 뺐습니다.' . ($inv['status'] !== 'DRAFT' ? ' 인보이스에 반영하려면 [재발행] 하세요.' : ''));
             redirect('?p=invoice_view&id=' . $id);
         }
     } catch (Throwable $e) {
@@ -159,6 +231,29 @@ $pays = $st->fetchAll();
 
 [$lab, $cls] = invoice_state($inv);
 $editable = in_array($inv['status'], ['DRAFT', 'ISSUED', 'PARTIAL'], true);
+$issued   = !in_array($inv['status'], ['DRAFT', 'CANCELLED'], true);
+$canHead  = $inv['status'] !== 'CANCELLED';
+
+// 발행 뒤에 바뀐 것이 있는지 — 저장된 합계와 현재 전표 · 조정항목으로 계산한 합계가 다르거나, 내용 변경 표시가 발행 시각보다 뒤이면
+$live = invoice_live_totals($id);
+$diffAmt = abs((float)$live['grand_total'] - (float)$inv['grand_total']) > 0.5;
+$changedAfter = !empty($inv['changed_at']) && (empty($inv['issued_at']) || $inv['changed_at'] > $inv['issued_at']);
+$needsReissue = $issued && ($diffAmt || $changedAfter);
+
+// 변경 이력 — 이 청구서에 남은 로그 + 수록 전표의 수정 로그
+$sids = array_map(fn($r) => (int)$r['sid'], $ships);
+$hsql = "SELECT l.* FROM activity_logs l WHERE (l.ref_table = 'invoices' AND l.ref_id = ?)";
+$hp = [$id];
+if ($sids) {
+    $hsql .= " OR (l.ref_table = 'shipments' AND l.ref_id IN (" . implode(',', array_fill(0, count($sids), '?')) . ") AND l.created_at >= ?)";
+    $hp = array_merge($hp, $sids, [(string)$inv['created_at']]);
+}
+$st = db()->prepare($hsql . ' ORDER BY l.id DESC LIMIT 100');
+$st->execute($hp);
+$history = $st->fetchAll();
+$ACT = ['CREATE' => ['만듦', 'b-ok'], 'UPDATE' => ['수정', 'b-info'], 'DELETE' => ['삭제', 'b-err'],
+        'CANCEL' => ['취소', 'b-err'], 'ISSUE' => ['발행', 'b-info'], 'PRINT' => ['출력', 'b-warn'],
+        'EXPORT' => ['내보내기', 'b-warn'], 'DOWNLOAD' => ['다운로드', 'b-warn']];
 
 layout_head('청구서 ' . $inv['invoice_no'], 'billing');
 ?>
@@ -174,11 +269,31 @@ layout_head('청구서 ' . $inv['invoice_no'], 'billing');
         <?= csrf_field() ?><input type="hidden" name="act" value="issue">
         <button class="btn pri">발행</button>
       </form>
+    <?php elseif ($issued): ?>
+      <form method="post" style="display:inline-flex;gap:6px;align-items:center"
+            onsubmit="return confirm('현재 전표 · 조정항목 금액으로 청구서를 다시 발행합니다. 이전 금액과 사유는 변경 이력에 남습니다. 계속할까요?');">
+        <?= csrf_field() ?><input type="hidden" name="act" value="issue">
+        <input type="text" name="reason" required placeholder="재발행 사유 (필수)" style="width:200px">
+        <button class="btn <?= $needsReissue ? 'pri' : '' ?>">재발행</button>
+      </form>
     <?php endif; ?>
   </div>
 </div>
 
 <?php if ($err !== ''): ?><div class="msg err"><?= h($err) ?></div><?php endif; ?>
+<?php if ($needsReissue): ?>
+  <div class="msg err">
+    발행 뒤에 내용이 바뀌었습니다.
+    <?php if ($diffAmt): ?>
+      저장된 합계 <b class="tnum"><?= money($inv['grand_total']) ?></b> → 현재 계산 <b class="tnum"><?= money($live['grand_total']) ?></b>.
+    <?php endif; ?>
+    <?php if ($changedAfter): ?>
+      마지막 변경 <span class="tnum"><?= h(substr((string)$inv['changed_at'], 0, 16)) ?></span>
+      (발행 <span class="tnum"><?= h(substr((string)$inv['issued_at'], 0, 16)) ?></span>).
+    <?php endif; ?>
+    오른쪽 위 <b>[재발행]</b> 을 눌러 인보이스에 반영하세요. 재발행 전에는 출력물에 이전 금액이 나갑니다.
+  </div>
+<?php endif; ?>
 
 <div class="kpis">
   <div class="kpi"><div class="lab">영세율 / 과세</div>
@@ -194,7 +309,34 @@ layout_head('청구서 ' . $inv['invoice_no'], 'billing');
       <span style="color:<?= $inv['balance']>0?'var(--err-fg)':'var(--ok-fg)' ?>"><?= money($inv['balance']) ?></span>
     </div>
     <div class="sub">지급기한 <?= $inv['due_date'] ? h($inv['due_date']) : '미지정' ?></div></div>
+  <div class="kpi"><div class="lab">발행</div>
+    <div class="val tnum" style="font-size:18px"><?= (int)($inv['issue_count'] ?? 0) ?>회
+      <?php if ((int)($inv['issue_count'] ?? 0) > 1): ?><span style="font-size:12px;font-weight:600;color:var(--ink2)"> (재발행 <?= (int)$inv['issue_count'] - 1 ?>회)</span><?php endif; ?></div>
+    <div class="sub"><?= !empty($inv['issued_at']) ? '최종 발행 ' . h(substr((string)$inv['issued_at'], 0, 16)) : '아직 발행 전' ?>
+      <?php if (!empty($inv['reissue_reason'])): ?> · 사유: <?= h($inv['reissue_reason']) ?><?php endif; ?></div></div>
 </div>
+
+<?php if ($canHead): ?>
+<div class="card">
+  <div class="ch">청구서 내용 수정
+    <span style="font-weight:400;color:var(--ink3)">청구일 · 지급기한 · 대상기간 · 비고<?= $issued ? ' — 발행된 청구서는 수정 사유가 남고 [재발행] 이 필요합니다' : '' ?></span>
+  </div>
+  <div class="cb">
+    <form method="post" class="f" style="align-items:flex-end">
+      <?= csrf_field() ?>
+      <input type="hidden" name="act" value="edit_head">
+      <div class="fw w1"><label>청구일</label><input type="date" name="invoice_date" value="<?= h($inv['invoice_date']) ?>" required></div>
+      <div class="fw w1"><label>지급기한</label><input type="date" name="due_date" value="<?= h((string)$inv['due_date']) ?>"></div>
+      <div class="fw w1"><label>대상기간 시작</label><input type="date" name="period_from" value="<?= h($inv['period_from']) ?>" required></div>
+      <div class="fw w1"><label>대상기간 종료</label><input type="date" name="period_to" value="<?= h($inv['period_to']) ?>" required></div>
+      <div class="fw gr" style="min-width:200px"><label>비고 (인보이스 하단)</label><input type="text" name="remark" value="<?= h((string)$inv['remark']) ?>"></div>
+      <div class="fw gr" style="min-width:200px"><label>수정 사유<?= $issued ? ' *' : '' ?></label>
+        <input type="text" name="reason" <?= $issued ? 'required' : '' ?> placeholder="예) 지급기한 연장 요청"></div>
+      <button class="btn">저장</button>
+    </form>
+  </div>
+</div>
+<?php endif; ?>
 
 <div class="card">
   <div class="ch">거래처</div>
@@ -245,7 +387,8 @@ layout_head('청구서 ' . $inv['invoice_no'], 'billing');
             <?= csrf_field() ?>
             <input type="hidden" name="act" value="drop_ship">
             <input type="hidden" name="sid" value="<?= (int)$s['sid'] ?>">
-            <button class="btn sm">빼기</button>
+            <input type="hidden" name="reason" value="">
+            <button class="btn sm" onclick="this.form.reason.value = prompt('전표를 빼는 사유 (비워도 됩니다)') || '';">빼기</button>
           </form>
         </td>
         <?php endif; ?>
@@ -341,6 +484,42 @@ layout_head('청구서 ' . $inv['invoice_no'], 'billing');
         <td class="tnum" style="font-size:11.5px">
           <?= h(($p['bank_name'] ?? '') . ' ' . ($p['account_no'] ?? '')) ?></td>
         <td class="r tnum" style="font-weight:700"><?= money($p['amount']) ?></td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  <?php endif; ?>
+</div>
+
+<div class="card">
+  <div class="ch">변경 이력
+    <span style="font-weight:400;color:var(--ink3)">발행 · 재발행 · 내용 수정 · 전표/조정항목 변경이 이전값 → 이후값과 사유로 남습니다. 수록 전표의 수정도 함께 보입니다.</span>
+    <a class="btn sm" style="margin-left:auto" href="?p=activity_log&amp;kw=<?= h(rawurlencode($inv['invoice_no'])) ?>">전체 작업로그</a>
+  </div>
+  <?php if (!$history): ?>
+    <div class="empty">기록이 없습니다.</div>
+  <?php else: ?>
+  <table>
+    <thead><tr>
+      <th style="width:130px">일시</th><th style="width:90px">담당</th><th style="width:110px">구분</th>
+      <th style="width:150px">대상</th><th>내용 (이전 → 이후)</th><th style="width:180px">사유</th>
+    </tr></thead>
+    <tbody>
+    <?php foreach ($history as $hrow): [$al, $ac] = $ACT[$hrow['action']] ?? [$hrow['action'], 'b-info']; ?>
+      <tr>
+        <td class="tnum" style="font-size:11.5px"><?= h(substr((string)$hrow['created_at'], 0, 16)) ?></td>
+        <td><?= h($hrow['admin_name']) ?></td>
+        <td><span class="badge <?= $ac ?>"><?= h($hrow['module']) ?> <?= h($al) ?></span></td>
+        <td class="tnum" style="font-size:11.5px"><?= h((string)$hrow['ref_label']) ?></td>
+        <td style="font-size:11.5px;line-height:1.5;word-break:break-all">
+          <?php if ($hrow['before_value'] !== null && $hrow['before_value'] !== ''): ?>
+            <div style="color:var(--ink3)">이전: <?= h(mb_substr((string)$hrow['before_value'], 0, 400)) ?></div>
+          <?php endif; ?>
+          <?php if ($hrow['after_value'] !== null && $hrow['after_value'] !== ''): ?>
+            <div>이후: <?= h(mb_substr((string)$hrow['after_value'], 0, 400)) ?></div>
+          <?php endif; ?>
+        </td>
+        <td style="font-size:11.5px"><?= h((string)$hrow['reason']) ?></td>
       </tr>
     <?php endforeach; ?>
     </tbody>
