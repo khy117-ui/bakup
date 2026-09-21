@@ -47,7 +47,7 @@ foreach ($docTypes as $t) { if ($t['code'] === 'ETC') { $docDefault = (int)$t['i
 
 $in = [
     'company_id' => '', 'carrier_id' => '', 'voucher_date' => date('Y-m-d'),
-    'ship_date' => '', 'trade_type' => 'EXPORT', 'dest_city' => '',
+    'ship_date' => '', 'trade_type' => 'EXPORT', 'dest_city' => '', 'origin_city' => '',
     'actual_weight' => '', 'volume_weight' => '', 'package_count' => '',
     'remark' => '', 'sales_team' => '', 'sales_rep' => '', 'status' => 'CONFIRMED',
     // AWB 번호 — auto 저장할 때 자동 부여 / manual 직접 입력 (운송사 번호 등)
@@ -292,7 +292,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
                 $st = $pdo->prepare(
                     'UPDATE shipments
                         SET company_id = ?, carrier_id = ?, voucher_date = ?, ship_date = ?,
-                            trade_type = ?, dest_city = ?, dest_country = ?, actual_weight = ?, volume_weight = ?,
+                            trade_type = ?, dest_city = ?, dest_country = ?,
+                            origin_city = ?, origin_country = ?, actual_weight = ?, volume_weight = ?,
                             charge_weight = ?, package_count = ?, sales_team = ?, sales_rep = ?,
                             remark = ?, updated_by = ?
                       WHERE id = ? AND business_entity_id = ?');
@@ -301,6 +302,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
                     $in['ship_date'] !== '' ? $in['ship_date'] : null, $trade,
                     $in['dest_city'] !== '' ? $in['dest_city'] : null,
                     $in['dest_city'] !== '' ? dest_country_of($dests, $in['dest_city']) : null,
+                    $in['origin_city'] !== '' ? $in['origin_city'] : null,
+                    $in['origin_city'] !== '' ? dest_country_of($dests, $in['origin_city']) : null,
                     $aw > 0 ? $aw : null, $vw > 0 ? $vw : null, $cw > 0 ? $cw : null,
                     $in['package_count'] !== '' ? (int)$in['package_count'] : null,
                     $in['sales_team'] !== '' ? $in['sales_team'] : null,
@@ -328,15 +331,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
                     'INSERT INTO shipments
                        (business_entity_id, company_id, awb_no, awb_source, voucher_date,
                         ship_date, trade_type, carrier_id, dest_city, dest_country,
+                        origin_city, origin_country,
                         actual_weight, volume_weight, charge_weight, package_count,
                         status, sales_team, sales_rep, remark, created_by)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,\'CONFIRMED\',?,?,?,?)');
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,\'CONFIRMED\',?,?,?,?)');
                 $st->execute([
                     $eid, (int)$in['company_id'], $awb, $manual ? 'MANUAL' : 'HOUSE', $in['voucher_date'],
                     $in['ship_date'] !== '' ? $in['ship_date'] : null, $trade,
                     (int)$in['carrier_id'],
                     $in['dest_city'] !== '' ? $in['dest_city'] : null,
                     $in['dest_city'] !== '' ? dest_country_of($dests, $in['dest_city']) : null,
+                    $in['origin_city'] !== '' ? $in['origin_city'] : null,
+                    $in['origin_city'] !== '' ? dest_country_of($dests, $in['origin_city']) : null,
                     $aw > 0 ? $aw : null, $vw > 0 ? $vw : null, $cw > 0 ? $cw : null,
                     $in['package_count'] !== '' ? (int)$in['package_count'] : null,
                     $in['sales_team'] !== '' ? $in['sales_team'] : null,
@@ -569,6 +575,23 @@ layout_head($title, 'shipments');
         <input type="text" name="dest_city" value="<?= h($in['dest_city']) ?>" placeholder="LOS ANGELES">
         <small style="color:var(--ink3)">기준정보 &gt; 도착지 관리를 한 번 열면 목록에서 고를 수 있습니다.</small>
       <?php endif; ?></div>
+    <div class="fw w2"><label>출고지 <span style="font-weight:400;color:var(--ink3)">보내는 곳</span></label>
+      <?php if ($dests): ?>
+        <?php $orgKnown = $in['origin_city'] === ''
+            || count(array_filter($dests, fn($d) => strcasecmp((string)$d['name'], $in['origin_city']) === 0)) > 0; ?>
+        <select name="origin_city" data-search="출고지 · 한글 이름 · 국가코드">
+          <option value="">선택 안 함</option>
+          <?php if (!$orgKnown): ?>
+            <option value="<?= h($in['origin_city']) ?>" selected><?= h($in['origin_city']) ?> (목록에 없음)</option>
+          <?php endif; ?>
+          <?php foreach ($dests as $d): ?>
+            <option value="<?= h($d['name']) ?>"<?= strcasecmp((string)$d['name'], $in['origin_city']) === 0 ? ' selected' : '' ?>>
+              <?= h($d['name'] . ($d['name_ko'] ? ' · ' . $d['name_ko'] : '')) ?><?= $d['country_code'] ? ' (' . h($d['country_code']) . ')' : '' ?></option>
+          <?php endforeach; ?>
+        </select>
+      <?php else: ?>
+        <input type="text" name="origin_city" value="<?= h($in['origin_city']) ?>" placeholder="SEOUL">
+      <?php endif; ?></div>
   </div>
   <div class="cb f" style="border-top:1px solid var(--line2)">
     <div class="fw w1"><label>실중량 (kg)</label>
@@ -589,6 +612,17 @@ layout_head($title, 'shipments');
   </div>
   <div class="cb" style="border-top:1px solid var(--line2);font-size:11.5px;color:var(--ink3)">
     청구중량은 실중량과 부피중량 중 큰 값이 자동으로 들어갑니다.
+  </div>
+</div>
+
+<!-- 단가 도우미 — 운송사 가격표의 원가격을 불러와 할인 · 유류할증까지 계산해 보여 줍니다 -->
+<div class="card" id="ratecard">
+  <div class="ch">단가 자동계산
+    <span style="font-weight:400;color:var(--ink3)">운송사 가격표의 원가격에 업체 할인율 · 유류할증을 적용합니다</span>
+    <button type="button" class="btn sm" id="rate-go" style="margin-left:auto">단가 불러오기</button>
+  </div>
+  <div class="cb" id="rate-box" style="font-size:12.5px;color:var(--ink3)">
+    거래처 · 운송사 · 도착지 · 중량을 넣으면 여기에 원가격이 나옵니다.
   </div>
 </div>
 
@@ -627,6 +661,82 @@ layout_head($title, 'shipments');
     </tbody>
   </table>
   <script>
+  // 단가 자동계산 — 가격표의 원가격 → 할인 → 유류할증 → 적용운임
+  (function () {
+    var box = document.getElementById('rate-box');
+    if (!box) { return; }
+    function val(n) { var e = document.querySelector('[name="' + n + '"]'); return e ? e.value : ''; }
+    function money(n) { return Math.round(n).toLocaleString('ko-KR'); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+    function fill(amount, name) {
+      // 첫 줄(운송) 금액 칸에 넣습니다 — 이미 적힌 값이 있으면 물어보고 덮어씁니다
+      var amt = document.querySelector('input[name="line[0][supply_amount]"]');
+      var item = document.querySelector('input[name="line[0][item_name]"]');
+      if (!amt) { return; }
+      if (amt.value.trim() !== '' && !confirm('첫 줄에 이미 ' + amt.value + ' 이 적혀 있습니다. 덮어쓸까요?')) { return; }
+      amt.value = money(amount);
+      if (item && item.value.trim() === '') { item.value = name; }
+      amt.focus();
+    }
+
+    function show(d) {
+      if (!d) { box.innerHTML = '<span style="color:#B3261E">단가를 불러오지 못했습니다.</span>'; return; }
+      if (!d.ok) {
+        box.innerHTML = '<b style="color:#B3261E">계산할 수 없습니다.</b><br>'
+          + (d.why && d.why.length ? d.why.map(esc).join('<br>') : '조건을 확인하세요.')
+          + '<br><span style="font-size:11.5px">가격표는 <a href="?p=rate_table" target="_blank">특송 기본가격표</a>, '
+          + '할인율은 <a href="?p=company_terms" target="_blank">업체별 할인율</a>에서 넣습니다.</span>';
+        return;
+      }
+      var t = d.table || {};
+      box.innerHTML =
+        '<table style="width:auto;min-width:420px"><tbody>'
+        + '<tr><td>원가격 (가격표)</td><td class="r tnum"><b>' + money(d.base) + '</b> 원</td>'
+        + '<td style="color:var(--ink3);font-size:11.5px">Zone ' + d.zone + ' · '
+        + esc(t.weight_from) + '~' + esc(t.weight_to) + 'kg · ' + esc(t.name || '') + '</td></tr>'
+        + '<tr><td>할인 ' + d.disc + '%</td><td class="r tnum">- ' + money(d.disc_amt) + ' 원</td>'
+        + '<td style="color:var(--ink3);font-size:11.5px">' + esc(d.disc_src) + '</td></tr>'
+        + '<tr><td>할인 후 운임</td><td class="r tnum">' + money(d.after) + ' 원</td><td></td></tr>'
+        + '<tr><td>유류할증 ' + d.fuel + '%</td><td class="r tnum">+ ' + money(d.fuel_amt) + ' 원</td>'
+        + '<td style="color:var(--ink3);font-size:11.5px">' + esc(d.fuel_src)
+        + (d.fuel_applied ? '' : ' · 이 거래처는 유류할증 제외') + '</td></tr>'
+        + '<tr style="background:#F7FAFB"><td><b>적용 운임</b></td>'
+        + '<td class="r tnum"><b style="font-size:15px">' + money(d.supply) + '</b> 원</td>'
+        + '<td><button type="button" class="btn sm pri" id="rate-fill">운임 줄에 넣기</button></td></tr>'
+        + '</tbody></table>'
+        + '<div style="font-size:11.5px;margin-top:6px">청구중량 ' + d.cw + 'kg 기준입니다. '
+        + '금액은 넣은 뒤 손으로 고칠 수 있습니다.</div>';
+      var b = document.getElementById('rate-fill');
+      if (b) { b.addEventListener('click', function () { fill(d.supply, val('dest_city') ? 'EXPRESS ' + val('dest_city') : '운임'); }); }
+    }
+
+    function load() {
+      var q = new URLSearchParams({
+        p: 'rate_quote',
+        carrier_id: val('carrier_id'), company_id: val('company_id'),
+        trade_type: val('trade_type'), on_date: val('voucher_date'),
+        dest_city: val('dest_city'),
+        actual_weight: val('actual_weight'), volume_weight: val('volume_weight')
+      });
+      if (!val('carrier_id')) { box.textContent = '운송사를 먼저 고르세요.'; return; }
+      if (!val('actual_weight') && !val('volume_weight')) { box.textContent = '중량을 먼저 넣으세요.'; return; }
+      box.textContent = '불러오는 중…';
+      fetch('?' + q.toString(), { credentials: 'same-origin', cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(show)
+        .catch(function () { box.innerHTML = '<span style="color:#B3261E">불러오지 못했습니다.</span>'; });
+    }
+    document.getElementById('rate-go').addEventListener('click', load);
+    // 운송사 · 도착지 · 중량을 바꾸면 저절로 다시 계산합니다
+    ['carrier_id', 'dest_city', 'actual_weight', 'volume_weight', 'company_id', 'trade_type'].forEach(function (n) {
+      var e = document.querySelector('[name="' + n + '"]');
+      if (e) { e.addEventListener('change', function () { if (val('carrier_id') && (val('actual_weight') || val('volume_weight'))) { load(); } }); }
+    });
+    if (val('carrier_id') && (val('actual_weight') || val('volume_weight'))) { load(); }
+  })();
+
   // 종류를 고르면 회사 기준 세금구분으로 (운송 = 영세율, 핸드링 · 도큐멘트 · 국내운송 · 창고 · 검사 · 통관 = 과세)
   document.querySelectorAll('select.ctype').forEach(function (s) {
     s.addEventListener('change', function () {

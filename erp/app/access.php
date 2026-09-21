@@ -36,6 +36,7 @@ const ROUTE_PERMS = [
     'statements'       => ['sales.statement.read', 'sales.statement.write'],
     'statement_print'  => ['sales.statement.read', 'sales.statement.write'],
     'rate_calculator'  => ['sales.calc.use', 'sales.calc.use'],
+    'rate_quote'       => ['sales.voucher.read', 'sales.voucher.read'],  // 매출전표의 단가 자동계산 (JSON)
 
     'shipments'        => ['sales.voucher.read', 'sales.voucher.write'],
     'shipment_form'    => ['sales.voucher.read', 'sales.voucher.write'],

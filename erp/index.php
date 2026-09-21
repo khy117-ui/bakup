@@ -27,6 +27,7 @@ $routes = [
     'rate_table'   => 'rate_table.php',
     'company_terms'=> 'company_terms.php',
     'rate_calculator' => 'rate_calculator.php',
+    'rate_quote'   => 'rate_quote.php',
     'quotations'   => 'quotations.php',
     'quotation_form' => 'quotation_form.php',
     'quotation_print'=> 'quotation_print.php',
