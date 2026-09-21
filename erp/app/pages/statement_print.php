@@ -80,7 +80,14 @@ $stampUri = entity_stamp_data_uri($be ?: null);   // 사업자 관리에서 올�
 <div class="sheet">
   <div class="bar">
     <button class="btn" onclick="window.print()">인쇄 / PDF 저장</button>
+    <a class="btn" href="?p=statements&amp;id=<?= (int)$sm['id'] ?>">명세서 화면</a>
     <a class="btn" href="?p=statements">돌아가기</a>
+    <?php $liveS = statement_live_totals((int)$sm['id']);
+          if (abs($liveS['grand_total'] - (float)$sm['grand_total']) > 0.5): ?>
+      <span style="font-size:12px;color:#A32020;align-self:center">수록 전표 금액이 바뀌었습니다 — 명세서 화면에서 [재발행] 하세요</span>
+    <?php elseif ((int)($sm['revision'] ?? 1) > 1): ?>
+      <span style="font-size:12px;color:#4E6273;align-self:center">재발행 REV. <?= (int)$sm['revision'] ?> · 최종 발행 <?= h(substr((string)$sm['issued_at'], 0, 16)) ?></span>
+    <?php endif; ?>
     <?php if (!$stampUri): // 화면에만 보이는 안내 (인쇄 · PDF 에는 안 나옴) ?>
       <a class="btn" style="border-color:#E4B9B9;color:#A32020" href="?p=business_entity&amp;id=<?= (int)($be['id'] ?? 0) ?>#stamp">직인 미등록 — 사업자 관리에서 올리기</a>
     <?php endif; ?>
@@ -90,6 +97,9 @@ $stampUri = entity_stamp_data_uri($be ?: null);   // 사업자 관리에서 올�
   <div class="tnum" style="text-align:center;margin:8px 0 20px;font-size:12px;color:#4E6273">
     <?= h($sm['statement_no']) ?> &nbsp;·&nbsp; <?= h($sm['statement_date']) ?>
     &nbsp;·&nbsp; 대상기간 <?= h($sm['period_from']) ?> ~ <?= h($sm['period_to']) ?>
+    <?php if ((int)($sm['revision'] ?? 1) > 1): ?>
+      &nbsp;·&nbsp; REV. <?= (int)$sm['revision'] ?> (<?= h(substr((string)$sm['issued_at'], 0, 10)) ?>)
+    <?php endif; ?>
   </div>
 
   <div style="display:flex;gap:10px;margin-bottom:16px">

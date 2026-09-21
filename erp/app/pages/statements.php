@@ -3,6 +3,69 @@ require_once APP_DIR . '/layout.php';
 
 $eid = entity_id();
 $err = '';
+schema_upgrade_statements();   // 재발행 컬럼(issued_at · issue_count · revision · reissue_reason) 보강
+
+// ---------------------------------------------------------------- 재발행
+// 명세서는 만들 때 금액이 고정됩니다. 수록 전표의 금액을 고쳤으면 여기서 현재 금액으로 다시 계산해 발행합니다.
+// 사유가 필수이고, 이전 · 이후 금액이 작업로그(ISSUE)에 남습니다. 취소 · 삭제된 전표는 이때 명세서에서 빠집니다.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'reissue') {
+    csrf_check();
+    $sid  = (int)post('id');
+    $why  = trim(post('reason'));
+    $sdate = post('statement_date');
+    $pfrom = post('period_from');
+    $pto   = post('period_to');
+    $st = db()->prepare('SELECT * FROM statements WHERE id = ? AND business_entity_id = ? AND deleted_at IS NULL');
+    $st->execute([$sid, $eid]);
+    $m = $st->fetch();
+    $okDate = fn($d) => (bool)preg_match('/^\d{4}-\d{2}-\d{2}$/', $d);
+    if (!$m) {
+        $err = '명세서를 찾을 수 없습니다.';
+    } elseif (mb_strlen($why) < 2) {
+        $err = '재발행 사유를 적어 주세요. (예: 전표 운임 정정)';
+    } elseif (!$okDate($sdate) || ($pfrom !== '' && !$okDate($pfrom)) || ($pto !== '' && !$okDate($pto))) {
+        $err = '날짜 형식이 올바르지 않습니다.';
+    } else {
+        $pdo = db();
+        try {
+            $pdo->beginTransaction();
+            $before = statement_snapshot($sid);
+            // 취소 · 삭제된 전표는 뺍니다
+            $gone = $pdo->prepare("SELECT x.shipment_id, s.awb_no FROM statement_shipments x
+                                     JOIN shipments s ON s.id = x.shipment_id
+                                    WHERE x.statement_id = ? AND (s.deleted_at IS NOT NULL OR s.status = 'CANCELLED')");
+            $gone->execute([$sid]);
+            $dropped = $gone->fetchAll();
+            if ($dropped) {
+                $ph = implode(',', array_fill(0, count($dropped), '?'));
+                $pdo->prepare("DELETE FROM statement_shipments WHERE statement_id = ? AND shipment_id IN ($ph)")
+                    ->execute(array_merge([$sid], array_map(fn($d) => (int)$d['shipment_id'], $dropped)));
+            }
+            $live = statement_live_totals($sid);
+            if ($live['cnt'] === 0) {
+                throw new RuntimeException('남은 전표가 없어 재발행할 수 없습니다.');
+            }
+            $pdo->prepare('UPDATE statements
+                              SET supply_total = ?, tax_total = ?, grand_total = ?, statement_date = ?,
+                                  period_from = ?, period_to = ?, status = \'ISSUED\',
+                                  issued_at = NOW(), issue_count = issue_count + 1, revision = revision + 1, reissue_reason = ?
+                            WHERE id = ?')
+                ->execute([$live['supply_total'], $live['tax_total'], $live['grand_total'], $sdate,
+                           $pfrom !== '' ? $pfrom : $m['period_from'], $pto !== '' ? $pto : $m['period_to'], $why, $sid]);
+            $after = statement_snapshot($sid)
+                   . ($dropped ? ' · 뺀 전표: ' . implode(', ', array_column($dropped, 'awb_no')) : '');
+            log_action('거래명세서', 'ISSUE', 'statements', $sid, (string)$m['statement_no'], $before, $after, $why);
+            $pdo->commit();
+            flash('거래명세서를 재발행했습니다 (REV. ' . ((int)($m['revision'] ?? 1) + 1) . '). 출력물을 다시 보내세요.'
+                  . ($dropped ? ' 취소된 전표 ' . count($dropped) . '건은 뺐습니다.' : ''));
+            redirect('?p=statements&id=' . $sid);
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) { $pdo->rollBack(); }
+            error_log('명세서 재발행 실패: ' . $e->getMessage());
+            $err = $e instanceof RuntimeException ? $e->getMessage() : '재발행하지 못했습니다.';
+        }
+    }
+}
 
 // ---------------------------------------------------------------- 생성
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'create') {
@@ -55,6 +118,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'create') {
                 ->execute([$eid, $no, $cid, $sdate, $pfrom, $pto,
                            $supply, $tax, $supply + $tax, $_SESSION['admin_id'] ?? null]);
             $sid = (int)$pdo->lastInsertId();
+            $pdo->prepare('UPDATE statements SET issued_at = NOW() WHERE id = ?')->execute([$sid]);
 
             $ins = $pdo->prepare(
                 'INSERT INTO statement_shipments (statement_id, shipment_id, line_no)
@@ -108,6 +172,36 @@ if ($selCid > 0) {
 $candSum = 0;
 foreach ($cand as $c) { $candSum += $c['grand']; }
 
+// ---------------------------------------------------------------- 상세 (?id=)
+$cur = null; $curShips = []; $curLive = null; $curMismatch = false; $history = [];
+$curId = (int)query('id', '0');
+if ($curId > 0) {
+    $st = db()->prepare('SELECT s.*, c.name_ko, c.company_code FROM statements s JOIN companies c ON c.id = s.company_id
+                          WHERE s.id = ? AND s.business_entity_id = ? AND s.deleted_at IS NULL');
+    $st->execute([$curId, $eid]);
+    $cur = $st->fetch() ?: null;
+    if ($cur) {
+        $st = db()->prepare(
+            'SELECT x.line_no, sh.id AS sid, sh.awb_no, sh.voucher_date, sh.status AS ship_status, sh.deleted_at, ca.code AS carrier,
+                    COALESCE(t.supply_total,0) AS supply, COALESCE(t.tax_total,0) AS tax, COALESCE(t.grand_total,0) AS grand
+               FROM statement_shipments x
+               JOIN shipments sh ON sh.id = x.shipment_id
+               JOIN carriers ca ON ca.id = sh.carrier_id
+               LEFT JOIN v_shipment_totals t ON t.shipment_id = sh.id
+              WHERE x.statement_id = ? ORDER BY x.line_no');
+        $st->execute([$curId]);
+        $curShips = $st->fetchAll();
+        $curLive = statement_live_totals($curId);
+        $curMismatch = abs($curLive['grand_total'] - (float)$cur['grand_total']) > 0.5
+                    || $curLive['cnt'] !== count($curShips);
+        $st = db()->prepare("SELECT * FROM activity_logs WHERE ref_table = 'statements' AND ref_id = ? ORDER BY id DESC LIMIT 100");
+        $st->execute([$curId]);
+        $history = $st->fetchAll();
+    }
+}
+$ACT = ['CREATE' => ['만듦', 'b-ok'], 'UPDATE' => ['수정', 'b-info'], 'DELETE' => ['삭제', 'b-err'],
+        'CANCEL' => ['취소', 'b-err'], 'ISSUE' => ['발행', 'b-info'], 'PRINT' => ['출력', 'b-warn']];
+
 // ---------------------------------------------------------------- 목록
 $st = db()->prepare(
     'SELECT s.*, c.name_ko,
@@ -117,6 +211,18 @@ $st = db()->prepare(
       ORDER BY s.statement_date DESC, s.id DESC LIMIT 100');
 $st->execute([$eid]);
 $rows = $st->fetchAll();
+// 수록 전표의 현재 금액 합 — 저장값과 다르면 '재발행 필요'
+$liveMap = [];
+if ($rows) {
+    $ids = array_map(fn($r) => (int)$r['id'], $rows);
+    $st = db()->prepare("SELECT x.statement_id, COALESCE(SUM(t.supply_total),0) + COALESCE(SUM(t.tax_total),0) AS grand
+                           FROM statement_shipments x
+                           JOIN shipments sh ON sh.id = x.shipment_id AND sh.deleted_at IS NULL AND sh.status <> 'CANCELLED'
+                           LEFT JOIN v_shipment_totals t ON t.shipment_id = sh.id
+                          WHERE x.statement_id IN (" . implode(',', array_fill(0, count($ids), '?')) . ") GROUP BY x.statement_id");
+    $st->execute($ids);
+    foreach ($st->fetchAll() as $lr) { $liveMap[(int)$lr['statement_id']] = (float)$lr['grand']; }
+}
 
 layout_head('거래명세서', 'statements');
 ?>
@@ -126,6 +232,108 @@ layout_head('거래명세서', 'statements');
 </div>
 
 <?php if ($err !== ''): ?><div class="msg err"><?= h($err) ?></div><?php endif; ?>
+
+<?php if ($cur): ?>
+<div class="card">
+  <div class="ch">
+    <span class="tnum" style="font-size:14px"><?= h($cur['statement_no']) ?></span>
+    <span class="badge b-ok">발행 <?= (int)($cur['issue_count'] ?? 1) ?>회</span>
+    <?php if ((int)($cur['revision'] ?? 1) > 1): ?><span class="badge b-info">REV. <?= (int)$cur['revision'] ?></span><?php endif; ?>
+    <span style="font-weight:400;color:var(--ink3)"><?= h($cur['name_ko']) ?> · <?= h($cur['statement_date']) ?> · 기간 <?= h($cur['period_from']) ?> ~ <?= h($cur['period_to']) ?>
+      · 최종 발행 <?= h(substr((string)$cur['issued_at'], 0, 16)) ?><?= !empty($cur['reissue_reason']) ? ' · 사유: ' . h($cur['reissue_reason']) : '' ?></span>
+    <a class="btn sm" style="margin-left:auto" href="?p=statement_print&amp;id=<?= (int)$cur['id'] ?>" target="_blank">출력</a>
+    <a class="btn sm" href="?p=statements">목록</a>
+  </div>
+  <?php if ($curMismatch): ?>
+  <div class="msg err" style="margin:10px 12px 0">
+    수록 전표의 현재 금액이 명세서와 다릅니다 — 명세서 합계 <b class="tnum"><?= money($cur['grand_total']) ?></b>
+    → 현재 전표 합계 <b class="tnum"><?= money($curLive['grand_total']) ?></b>
+    <?= $curLive['cnt'] !== count($curShips) ? ' (취소된 전표 ' . (count($curShips) - $curLive['cnt']) . '건 포함)' : '' ?>.
+    아래 <b>[재발행]</b> 으로 현재 금액으로 다시 발행하세요. 재발행 전 출력물에는 이전 금액이 나갑니다.
+  </div>
+  <?php endif; ?>
+  <table>
+    <thead><tr>
+      <th class="c" style="width:40px">#</th><th style="width:105px">전표일</th><th style="width:165px">AWB</th>
+      <th class="c" style="width:65px">운송사</th><th class="c" style="width:70px">상태</th>
+      <th class="r" style="width:125px">공급가액</th><th class="r" style="width:100px">VAT</th><th class="r" style="width:125px">합계 (현재)</th>
+    </tr></thead>
+    <tbody>
+    <?php foreach ($curShips as $cs): $dead = $cs['deleted_at'] !== null || $cs['ship_status'] === 'CANCELLED'; ?>
+      <tr style="<?= $dead ? 'color:var(--err-fg)' : '' ?>">
+        <td class="c tnum"><?= (int)$cs['line_no'] ?></td>
+        <td class="tnum"><?= h($cs['voucher_date']) ?></td>
+        <td class="tnum" style="font-weight:600"><a href="?p=shipment_form&amp;id=<?= (int)$cs['sid'] ?>"><?= h($cs['awb_no']) ?></a></td>
+        <td class="c"><?= h($cs['carrier']) ?></td>
+        <td class="c"><?= $dead ? '취소' : h($cs['ship_status']) ?></td>
+        <td class="r tnum"><?= money($cs['supply']) ?></td>
+        <td class="r tnum"><?= money($cs['tax']) ?></td>
+        <td class="r tnum" style="font-weight:700"><?= money($cs['grand']) ?></td>
+      </tr>
+    <?php endforeach; ?>
+      <tr style="background:#F7FAFB">
+        <td colspan="5" class="r" style="font-weight:700">명세서 저장값 / 현재 합계</td>
+        <td class="r tnum"><?= money($cur['supply_total']) ?> / <?= money($curLive['supply_total']) ?></td>
+        <td class="r tnum"><?= money($cur['tax_total']) ?> / <?= money($curLive['tax_total']) ?></td>
+        <td class="r tnum" style="font-weight:700;color:<?= $curMismatch ? 'var(--err-fg)' : 'var(--ink)' ?>"><?= money($cur['grand_total']) ?> / <?= money($curLive['grand_total']) ?></td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="cb" style="border-top:1px solid var(--line)">
+    <form method="post" class="f" style="align-items:flex-end;gap:8px"
+          onsubmit="return confirm('수록 전표의 현재 금액으로 명세서를 다시 발행합니다. 차수(REV.)가 올라가고 이전 금액과 사유는 변경 이력에 남습니다. 계속할까요?');">
+      <?= csrf_field() ?>
+      <input type="hidden" name="act" value="reissue">
+      <input type="hidden" name="id" value="<?= (int)$cur['id'] ?>">
+      <div class="fw w1"><label>명세서 일자</label><input type="date" name="statement_date" value="<?= h($cur['statement_date']) ?>" required></div>
+      <div class="fw w1"><label>기간 시작</label><input type="date" name="period_from" value="<?= h((string)$cur['period_from']) ?>"></div>
+      <div class="fw w1"><label>기간 종료</label><input type="date" name="period_to" value="<?= h((string)$cur['period_to']) ?>"></div>
+      <div class="fw gr" style="min-width:260px"><label>재발행 사유 *</label>
+        <input type="text" name="reason" required placeholder="예) 전표 운임 정정으로 금액 변경"></div>
+      <button class="btn <?= $curMismatch ? 'pri' : '' ?>">재발행</button>
+    </form>
+    <div style="font-size:11.5px;color:var(--ink3);margin-top:8px">
+      명세서 번호는 그대로 두고 금액 · 일자를 현재 값으로 다시 계산합니다. 취소 · 삭제된 전표는 이때 명세서에서 빠집니다.
+      전표를 더하거나 빼려면 아래에서 새 명세서를 만드세요.
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch">변경 이력
+    <span style="font-weight:400;color:var(--ink3)">발행 · 재발행이 이전값 → 이후값과 사유로 남습니다</span>
+    <a class="btn sm" style="margin-left:auto" href="?p=activity_log&amp;kw=<?= h(rawurlencode((string)$cur['statement_no'])) ?>">전체 작업로그</a>
+  </div>
+  <?php if (!$history): ?>
+    <div class="empty">기록이 없습니다.</div>
+  <?php else: ?>
+  <table>
+    <thead><tr>
+      <th style="width:130px">일시</th><th style="width:90px">담당</th><th style="width:80px">구분</th>
+      <th>내용 (이전 → 이후)</th><th style="width:180px">사유</th>
+    </tr></thead>
+    <tbody>
+    <?php foreach ($history as $hrow): [$al, $ac] = $ACT[$hrow['action']] ?? [$hrow['action'], 'b-info']; ?>
+      <tr>
+        <td class="tnum" style="font-size:11.5px"><?= h(substr((string)$hrow['created_at'], 0, 16)) ?></td>
+        <td><?= h($hrow['admin_name']) ?></td>
+        <td><span class="badge <?= $ac ?>"><?= h($al) ?></span></td>
+        <td style="font-size:11.5px;line-height:1.5;word-break:break-all">
+          <?php if ($hrow['before_value'] !== null && $hrow['before_value'] !== ''): ?>
+            <div style="color:var(--ink3)">이전: <?= h(mb_substr((string)$hrow['before_value'], 0, 400)) ?></div>
+          <?php endif; ?>
+          <?php if ($hrow['after_value'] !== null && $hrow['after_value'] !== ''): ?>
+            <div>이후: <?= h(mb_substr((string)$hrow['after_value'], 0, 400)) ?></div>
+          <?php endif; ?>
+        </td>
+        <td style="font-size:11.5px"><?= h((string)$hrow['reason']) ?></td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  <?php endif; ?>
+</div>
+<?php endif; ?>
 
 <div class="card">
   <div class="ch">명세서 만들기
@@ -221,7 +429,7 @@ layout_head('거래명세서', 'statements');
       <th>거래처</th><th style="width:170px">대상기간</th>
       <th class="r" style="width:60px">전표</th>
       <th class="r" style="width:125px">공급가액</th><th class="r" style="width:100px">VAT</th>
-      <th class="r" style="width:125px">합계</th><th class="c" style="width:60px"></th>
+      <th class="r" style="width:125px">합계</th><th class="c" style="width:120px"></th>
     </tr></thead>
     <tbody>
     <?php foreach ($rows as $r): ?>
@@ -234,8 +442,12 @@ layout_head('거래명세서', 'statements');
         <td class="r tnum"><?= money($r['cnt']) ?></td>
         <td class="r tnum"><?= money($r['supply_total']) ?></td>
         <td class="r tnum"><?= money($r['tax_total']) ?></td>
-        <td class="r tnum" style="font-weight:700"><?= money($r['grand_total']) ?></td>
-        <td class="c"><a class="btn sm" href="?p=statement_print&amp;id=<?= (int)$r['id'] ?>" target="_blank">출력</a></td>
+        <td class="r tnum" style="font-weight:700"><?= money($r['grand_total']) ?>
+          <?php if ((int)($r['revision'] ?? 1) > 1): ?><div style="font-size:10.5px;color:var(--ink3);font-weight:400">REV. <?= (int)$r['revision'] ?></div><?php endif; ?>
+          <?php if (isset($liveMap[(int)$r['id']]) && abs($liveMap[(int)$r['id']] - (float)$r['grand_total']) > 0.5): ?>
+            <div style="font-size:10.5px;color:var(--err-fg);font-weight:400">전표 금액 바뀜 · 재발행 필요</div><?php endif; ?></td>
+        <td class="c"><a class="btn sm" href="?p=statements&amp;id=<?= (int)$r['id'] ?>">열기</a>
+          <a class="btn sm" href="?p=statement_print&amp;id=<?= (int)$r['id'] ?>" target="_blank">출력</a></td>
       </tr>
     <?php endforeach; ?>
     </tbody>

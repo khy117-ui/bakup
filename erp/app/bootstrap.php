@@ -580,6 +580,76 @@ function quotation_snapshot(int $quoteId): string
 }
 
 /**
+ * 거래명세서 재발행용 컬럼을 DB 에 붙입니다 (issued_at · issue_count · revision · reissue_reason).
+ * 이미 있으면 아무것도 안 합니다. 기록용 SQL: sql/25_statement_reissue.sql
+ */
+function schema_upgrade_statements(): void
+{
+    if (!empty($_SESSION['schema_statements_v1'])) { return; }
+    $pdo = db();
+    $has = function (string $col) use ($pdo): bool {
+        $st = $pdo->prepare('SELECT COUNT(*) FROM information_schema.COLUMNS
+                              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = \'statements\' AND COLUMN_NAME = ?');
+        $st->execute([$col]);
+        return (int)$st->fetchColumn() > 0;
+    };
+    try {
+        if (!$has('issued_at')) {
+            $pdo->exec("ALTER TABLE statements ADD COLUMN issued_at DATETIME NULL
+                          COMMENT '마지막 발행(재발행) 시각' AFTER status");
+            $pdo->exec("UPDATE statements SET issued_at = created_at WHERE issued_at IS NULL");
+        }
+        if (!$has('issue_count')) {
+            $pdo->exec("ALTER TABLE statements ADD COLUMN issue_count INT UNSIGNED NOT NULL DEFAULT 1
+                          COMMENT '발행 횟수 (만들 때 1)' AFTER issued_at");
+        }
+        if (!$has('revision')) {
+            $pdo->exec("ALTER TABLE statements ADD COLUMN revision INT UNSIGNED NOT NULL DEFAULT 1
+                          COMMENT '발행본 차수 (재발행하면 +1, 출력물에 REV. 로 표시)' AFTER issue_count");
+        }
+        if (!$has('reissue_reason')) {
+            $pdo->exec("ALTER TABLE statements ADD COLUMN reissue_reason VARCHAR(255) NULL
+                          COMMENT '마지막 재발행 사유' AFTER revision");
+        }
+        $_SESSION['schema_statements_v1'] = 1;
+    } catch (Throwable $e) {
+        error_log('schema_upgrade_statements: ' . $e->getMessage());
+    }
+}
+
+/** 거래명세서 수록 전표의 현재 금액 합 (저장값과 비교해 재발행 필요 여부를 봅니다) */
+function statement_live_totals(int $stmtId): array
+{
+    $st = db()->prepare(
+        "SELECT COUNT(*) AS cnt, COALESCE(SUM(t.supply_total),0) AS supply, COALESCE(SUM(t.tax_total),0) AS tax
+           FROM statement_shipments x
+           JOIN shipments s ON s.id = x.shipment_id AND s.deleted_at IS NULL AND s.status <> 'CANCELLED'
+           LEFT JOIN v_shipment_totals t ON t.shipment_id = s.id
+          WHERE x.statement_id = ?");
+    $st->execute([$stmtId]);
+    $r = $st->fetch() ?: ['cnt' => 0, 'supply' => 0, 'tax' => 0];
+    return ['cnt' => (int)$r['cnt'], 'supply_total' => (float)$r['supply'], 'tax_total' => (float)$r['tax'],
+            'grand_total' => (float)$r['supply'] + (float)$r['tax']];
+}
+
+/** 로그에 남길 거래명세서 요약 한 줄 */
+function statement_snapshot(int $stmtId): string
+{
+    $pdo = db();
+    $st = $pdo->prepare('SELECT * FROM statements WHERE id = ?');
+    $st->execute([$stmtId]);
+    $m = $st->fetch();
+    if (!$m) { return ''; }
+    $st = $pdo->prepare('SELECT COUNT(*) FROM statement_shipments WHERE statement_id = ?');
+    $st->execute([$stmtId]);
+    return sprintf('합계 %s (공급 %s · VAT %s) · 전표 %d건 · 일자 %s · 기간 %s~%s · REV %d · 발행 %d회%s',
+        number_format((float)$m['grand_total']), number_format((float)$m['supply_total']), number_format((float)$m['tax_total']),
+        (int)$st->fetchColumn(), $m['statement_date'], $m['period_from'] ?: '-', $m['period_to'] ?: '-',
+        (int)($m['revision'] ?? 1), (int)($m['issue_count'] ?? 1),
+        $m['remark'] !== null && $m['remark'] !== '' ? ' · 비고 ' . mb_substr((string)$m['remark'], 0, 60) : '');
+}
+
+/**
  * 청구서 금액을 저장하지 않고 현재 값으로만 계산해 돌려줍니다 (재발행 필요 여부 판단용).
  * 전표 금액이 청구서 발행 뒤에 바뀌면 저장된 합계와 달라집니다.
  */
