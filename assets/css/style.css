@@ -274,7 +274,7 @@ ul, ol { padding: 0; list-style: none; }
 .hero { background: var(--ground); padding: 78px 0 64px; }
 .hero .container { display: grid; grid-template-columns: minmax(0, 1fr) 620px; gap: 64px; align-items: center; }
 .hero .container > * { min-width: 0; }
-.hero__tag { display: inline-flex; flex-wrap: wrap; max-width: 100%; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px; background: #fff; border: 1px solid var(--line); font-family: var(--font-en); font-size: 11px; font-weight: 700; letter-spacing: 2px; color: var(--blue); margin-bottom: 24px; }
+.hero__tag { display: inline-flex; flex-wrap: nowrap; white-space: nowrap; max-width: 100%; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px; background: #fff; border: 1px solid var(--line); font-family: var(--font-en); font-size: 11px; font-weight: 700; letter-spacing: 2px; color: var(--blue); margin-bottom: 24px; }
 .hero h1 { font-size: 56px; line-height: 1.2; font-weight: 900; color: var(--navy); letter-spacing: -1.5px; margin-bottom: 20px; }
 .hero__lead { font-size: 18px; color: var(--muted); margin-bottom: 26px; }
 .tool-card { padding: 10px; border-radius: 20px; background: #fff; border: 1px solid var(--line); box-shadow: 0 16px 40px rgba(11,42,91,.10); }
@@ -424,7 +424,8 @@ ul, ol { padding: 0; list-style: none; }
   .lnb .container { flex-wrap: wrap; }
   .subtabs { width: 100%; padding: 10px 0 12px; overflow-x: auto; }
   .grid--2, .grid--3, .grid--4, .grid--side, .grid--intro, .grid--aside-left, .grid--side-420, .grid--side-380, .grid--side-340, .grid--left-360, .grid--left-300 { grid-template-columns: 1fr; gap: 16px; }
-  .hero__tag { font-size: 10px; letter-spacing: 1px; }
+  .hero__tag { font-size: clamp(8px, 2.4vw, 10px); letter-spacing: .6px; gap: 6px; padding: 7px 12px; }
+  .hero__tag svg { flex: 0 0 auto; }
   .search-input { width: auto; }
   .subtabs { flex: 0 0 100%; }
   .grid--7 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
@@ -488,4 +489,23 @@ ul, ol { padding: 0; list-style: none; }
 .kakao-fab svg { flex-shrink: 0; }
 @media (max-width: 900px) {
   .kakao-fab { left: 14px; bottom: 14px; height: 48px; padding: 0 16px 0 12px; font-size: 14px; }
+}
+
+/* ---------- 하단(푸터) 정리 ----------
+   · 한글은 글자 사이 어디서나 줄이 바뀔 수 있어서, 폭이 좁으면 링크가 "회사소 / 개" 처럼 쪼개졌습니다 → 링크는 한 덩어리로
+   · 좌측 하단 카카오톡 버튼(높이 52 + 여백 20)이 맨 아래 아이콘을 가리지 않게 푸터 아래에 자리를 둡니다 */
+.site-footer { padding-bottom: 96px; }
+.site-footer .links a { white-space: nowrap; }
+.site-footer .info { word-break: keep-all; overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .site-footer { padding: 28px 0 88px; }
+  .site-footer .links { gap: 6px 18px; margin-bottom: 10px; }
+}
+
+/* 첫 화면 조회 탭 — 좁은 폰에서 "온라인접 / 수" 로 쪼개지지 않게 (탭 한 칸이 98px 쯤) */
+@media (max-width: 420px) {
+  .tool-card__tabs button { white-space: nowrap; gap: 5px; padding-left: 3px; padding-right: 3px; letter-spacing: -0.02em; }
+}
+@media (max-width: 360px) {
+  .tool-card__tabs button svg { display: none; }
 }

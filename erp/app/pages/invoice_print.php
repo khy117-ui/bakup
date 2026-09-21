@@ -33,14 +33,13 @@ $banks = $st->fetchAll();
 
 $st = db()->prepare(
     'SELECT xs.line_no, s.awb_no, s.voucher_date, s.trade_type, s.dest_city,
-            s.charge_weight, ca.code AS carrier,
+            s.charge_weight,
             COALESCE(t.zero_supply,0)    AS zero_supply,
             COALESCE(t.taxable_supply,0) AS taxable_supply,
             COALESCE(t.tax_total,0)      AS tax_total,
             COALESCE(t.grand_total,0)    AS grand_total
        FROM invoice_shipments xs
        JOIN shipments s ON s.id = xs.shipment_id
-       JOIN carriers ca ON ca.id = s.carrier_id
        LEFT JOIN v_shipment_totals t ON t.shipment_id = s.id
       WHERE xs.invoice_id = ? ORDER BY xs.line_no');
 $st->execute([$id]);
@@ -50,6 +49,65 @@ $st = db()->prepare('SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY l
 $st->execute([$id]);
 $items = $st->fetchAll();
 
+// ---------------------------------------------------------------- 엑셀로 저장 (?xlsx=1)
+if (query('xlsx') === '1') {
+    require_once APP_DIR . '/xlsx.php';
+    $num = fn($v) => (int)round((float)$v);
+    $rows = [
+        ['INVOICE', $inv['invoice_no']],
+        ['DATE', $inv['invoice_date'], 'PERIOD', $inv['period_from'] . ' ~ ' . $inv['period_to'], 'DUE', (string)($inv['due_date'] ?? '')],
+        [],
+        ['공급자', $be['name_ko'], '사업자등록번호', $be['business_number'], '대표자', $be['representative']],
+        ['주소', (string)$be['address_ko'], 'TEL', (string)$be['phone'], 'FAX', (string)$be['fax']],
+        [],
+        ['MESSRS', $inv['name_ko'], '사업자번호', (string)$inv['business_number'], '대표자', (string)$inv['representative']],
+        ['ADDRESS', (string)$inv['address_ko'], '결제조건', (string)($inv['payment_terms'] ?? '')],
+        [],
+        ['NO', 'DATE', 'AWB NO', '구분', 'DESTINATION', 'WEIGHT', '영세율', '과세', 'VAT', 'AMOUNT'],
+    ];
+    foreach ($ships as $s) {
+        $rows[] = [(int)$s['line_no'], $s['voucher_date'], $s['awb_no'], $s['trade_type'] === 'IMPORT' ? '수입' : '수출',
+                   (string)$s['dest_city'], $s['charge_weight'] !== null ? (float)$s['charge_weight'] : '',
+                   $num($s['zero_supply']), $num($s['taxable_supply']), $num($s['tax_total']), $num($s['grand_total'])];
+    }
+    foreach ($items as $it) {
+        $rows[] = ['', '', $it['item_name'] . ($it['remark'] ? ' (' . $it['remark'] . ')' : ''), '', '', '',
+                   $it['tax_type'] === 'ZERO' ? $num($it['supply_amount']) : '',
+                   $it['tax_type'] === 'TAXABLE' ? $num($it['supply_amount']) : '',
+                   $num($it['tax_amount']), $num($it['total_amount'])];
+    }
+    $pad = ['', '', '', '', '', '', '', ''];
+    $rows[] = [];
+    $rows[] = array_merge($pad, ['영세율 공급가액', $num($inv['zero_supply'])]);
+    $rows[] = array_merge($pad, ['과세 공급가액', $num($inv['taxable_supply'])]);
+    if ((float)$inv['exempt_supply'] != 0.0) {
+        $rows[] = array_merge($pad, ['면세 공급가액', $num($inv['exempt_supply'])]);
+    }
+    $rows[] = array_merge($pad, ['부가세 (VAT)', $num($inv['tax_total'])]);
+    $rows[] = array_merge($pad, ['합계 금액', $num($inv['grand_total'])]);
+    if ((float)$inv['paid_amount'] > 0) {
+        $rows[] = array_merge($pad, ['기수금', $num($inv['paid_amount'])]);
+        $rows[] = array_merge($pad, ['미수 잔액', $num($inv['balance'])]);
+    }
+    $rows[] = [];
+    $rows[] = ['입금계좌'];
+    foreach ($banks as $b) {
+        $rows[] = ['', $b['bank_name'] . ' ' . $b['account_no'] . ' 예금주 ' . $b['account_holder']];
+    }
+    if ($inv['remark']) { $rows[] = ['비고', (string)$inv['remark']]; }
+    $bin = xlsx_build('INVOICE', $rows, [10, 16, 22, 10, 18, 10, 14, 14, 16, 16]);
+    log_action('청구', 'EXPORT', 'invoices', $id, (string)$inv['invoice_no'], null, '엑셀 저장');
+    $fn = 'INVOICE_' . $inv['invoice_no'] . '_' . $inv['name_ko'] . '.xlsx';
+    header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    header('Content-Disposition: attachment; filename="invoice.xlsx"; filename*=UTF-8\'\'' . rawurlencode($fn));
+    header('Content-Length: ' . strlen($bin));
+    header('Cache-Control: no-store');
+    echo $bin;
+    exit;
+}
+
+$stampUri = entity_stamp_data_uri($be ?: null);
+
 log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
 ?><!doctype html>
 <html lang="ko">
@@ -57,8 +115,9 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
 <meta charset="utf-8">
 <title>INVOICE <?= h($inv['invoice_no']) ?></title>
 <style>
-  @page { size: A4 landscape; margin: 12mm; }
-  * { box-sizing: border-box; }
+  /* PDF 저장 때 여백을 '없음' 으로 골라도 잘리지 않게 — 여백은 종이 쪽이 아니라 .sheet 안쪽 padding 으로 */
+  @page { size: A4 landscape; margin: 0; }
+  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   body { margin: 0; background: #F1F5F8; color: #0C1A26;
          font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
   .sheet { width: 1123px; min-height: 794px; margin: 18px auto; background: #fff;
@@ -82,9 +141,15 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
   .sum .big { font-size: 17px; font-weight: 700; }
   .box { border: 1px solid #C9D6DF; }
   .foot { margin-top: 16px; display: flex; gap: 22px; align-items: flex-start; }
+  .who { position: relative; display: inline-block; padding-right: 64px; }
+  .stamp { position: absolute; right: -6px; top: 50%; transform: translateY(-50%);
+           width: 66px; height: 66px; object-fit: contain; mix-blend-mode: multiply; opacity: .92; }
+  td { overflow-wrap: anywhere; }
+  thead { display: table-header-group; }
+  tr { page-break-inside: avoid; break-inside: avoid; }
   @media print {
-    body { background: #fff; }
-    .sheet { margin: 0; width: auto; min-height: 0; padding: 0; }
+    html, body { background: #fff; width: 100%; }
+    .sheet { margin: 0; width: 100%; min-height: 0; padding: 11mm 12mm; }
     .bar { display: none; }
   }
 </style>
@@ -94,6 +159,11 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
 
   <div class="bar">
     <button class="btn" onclick="window.print()">인쇄 / PDF 저장</button>
+    <a class="btn" href="?p=invoice_print&amp;id=<?= $id ?>&amp;xlsx=1">엑셀로 저장</a>
+    <?php if (!$stampUri): // 화면에만 보이는 안내 (인쇄 · PDF 에는 안 나옴) ?>
+      <a class="btn" style="border-color:#E4B9B9;color:#A32020" href="?p=business_entity&amp;id=<?= (int)$eid ?>#stamp">
+        <?= trim((string)($be['stamp_path'] ?? '')) === '' ? '직인 미등록 — 사업자 관리에서 올리기' : '직인 파일을 찾지 못함 — 다시 올리기' ?></a>
+    <?php endif; ?>
     <a class="btn" href="?p=invoice_view&amp;id=<?= $id ?>">돌아가기</a>
     <?php if ($inv['status'] === 'DRAFT'): ?>
       <span style="font-size:12px;color:#A32020">아직 발행하지 않은 청구서입니다 (작성중)</span>
@@ -117,7 +187,8 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
     </div>
     <div style="margin-left:auto;text-align:right;font-size:11.5px;line-height:1.7">
       <div style="font-size:15px;font-weight:700;letter-spacing:.04em">
-        <?= h($be['name_en'] ?: $be['name_ko']) ?></div>
+        <span class="who"><?= h($be['name_en'] ?: $be['name_ko']) ?>
+          <?php if ($stampUri): ?><img class="stamp" src="<?= h($stampUri) ?>" alt="직인"><?php endif; ?></span></div>
       <div><?= h($be['address_en'] ?: $be['address_ko']) ?></div>
       <div class="tnum">TEL. <?= h($be['phone']) ?>
         <?php if ($be['fax']): ?> &nbsp; FAX. <?= h($be['fax']) ?><?php endif; ?></div>
@@ -154,7 +225,6 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
       <th class="c" style="width:32px">NO</th>
       <th style="width:88px">DATE</th>
       <th style="width:150px">AWB NO</th>
-      <th class="c" style="width:58px">CARRIER</th>
       <th class="c" style="width:48px">구분</th>
       <th style="width:120px">DESTINATION</th>
       <th class="r" style="width:62px">WEIGHT</th>
@@ -169,7 +239,6 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
         <td class="c tnum"><?= (int)$s['line_no'] ?></td>
         <td class="tnum"><?= h($s['voucher_date']) ?></td>
         <td class="tnum" style="font-weight:600"><?= h($s['awb_no']) ?></td>
-        <td class="c"><?= h($s['carrier']) ?></td>
         <td class="c"><?= $s['trade_type']==='IMPORT'?'수입':'수출' ?></td>
         <td><?= h($s['dest_city'] ?: '-') ?></td>
         <td class="r tnum"><?= $s['charge_weight'] !== null
@@ -183,7 +252,7 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
     <?php foreach ($items as $it): ?>
       <tr>
         <td class="c">·</td>
-        <td colspan="6" style="color:#4E6273"><?= h($it['item_name']) ?>
+        <td colspan="5" style="color:#4E6273"><?= h($it['item_name']) ?>
           <?php if ($it['remark']): ?> <span style="font-size:10.5px">(<?= h($it['remark']) ?>)</span><?php endif; ?></td>
         <td class="r tnum"><?= $it['tax_type']==='ZERO'   ? money($it['supply_amount']) : '' ?></td>
         <td class="r tnum"><?= $it['tax_type']==='TAXABLE'? money($it['supply_amount']) : '' ?></td>
@@ -192,7 +261,7 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
       </tr>
     <?php endforeach; ?>
     <?php if (!$ships && !$items): ?>
-      <tr><td colspan="11" class="c" style="padding:30px;color:#4E6273">수록된 내역이 없습니다.</td></tr>
+      <tr><td colspan="10" class="c" style="padding:30px;color:#4E6273">수록된 내역이 없습니다.</td></tr>
     <?php endif; ?>
     </tbody>
   </table>

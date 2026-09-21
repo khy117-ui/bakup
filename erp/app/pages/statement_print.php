@@ -43,6 +43,7 @@ log_action('거래명세서', 'PRINT', 'statements', $id, (string)$sm['statement
 
 $zero = 0; $taxable = 0;
 foreach ($rows as $r) { $zero += $r['zero_supply']; $taxable += $r['taxable_supply']; }
+$stampUri = entity_stamp_data_uri($be ?: null);   // 사업자 관리에서 올린 직인 (없으면 '(인)' 글자만)
 ?><!doctype html>
 <html lang="ko">
 <head>
@@ -50,7 +51,11 @@ foreach ($rows as $r) { $zero += $r['zero_supply']; $taxable += $r['taxable_supp
 <title>거래명세서 <?= h($sm['statement_no']) ?></title>
 <style>
   @page { size: A4 portrait; margin: 13mm; }
-  * { box-sizing: border-box; }
+  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  /* 직인 — 공급자 대표자 옆 '(인)' 위에 겹쳐 찍음 (흰 바탕은 비쳐 보이게) */
+  .inwrap { position: relative; display: inline-block; }
+  .stamp { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+           width: 60px; height: 60px; object-fit: contain; mix-blend-mode: multiply; opacity: .9; pointer-events: none; }
   body { margin: 0; background: #F1F5F8; color: #0C1A26;
          font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
   .sheet { width: 794px; min-height: 1123px; margin: 18px auto; background: #fff; padding: 30px 34px; }
@@ -76,6 +81,9 @@ foreach ($rows as $r) { $zero += $r['zero_supply']; $taxable += $r['taxable_supp
   <div class="bar">
     <button class="btn" onclick="window.print()">인쇄 / PDF 저장</button>
     <a class="btn" href="?p=statements">돌아가기</a>
+    <?php if (!$stampUri): // 화면에만 보이는 안내 (인쇄 · PDF 에는 안 나옴) ?>
+      <a class="btn" style="border-color:#E4B9B9;color:#A32020" href="?p=business_entity&amp;id=<?= (int)($be['id'] ?? 0) ?>#stamp">직인 미등록 — 사업자 관리에서 올리기</a>
+    <?php endif; ?>
   </div>
 
   <h1>거 래 명 세 서</h1>
@@ -98,7 +106,7 @@ foreach ($rows as $r) { $zero += $r['zero_supply']; $taxable += $r['taxable_supp
       <tr><th colspan="2" style="text-align:center;border-top:1.5px solid #0C1A26">공 급 자</th></tr>
       <tr><th style="width:74px">상호</th><td style="font-weight:700"><?= h($be['name_ko']) ?></td></tr>
       <tr><th>사업자번호</th><td class="tnum"><?= h($be['business_number']) ?></td></tr>
-      <tr><th>대표자</th><td><?= h($be['representative']) ?> (인)</td></tr>
+      <tr><th>대표자</th><td><?= h($be['representative']) ?> <span class="inwrap">(인)<?php if ($stampUri): ?><img class="stamp" src="<?= h($stampUri) ?>" alt="직인"><?php endif; ?></span></td></tr>
       <tr><th>주소</th><td style="font-size:10.5px"><?= h($be['address_ko']) ?></td></tr>
       <tr><th>업태 / 종목</th><td style="font-size:10.5px">
         <?= h(($be['business_type'] ?: '-') . ' / ' . ($be['business_item'] ?: '-')) ?></td></tr>

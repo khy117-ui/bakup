@@ -2,7 +2,7 @@
 // 웹에서 직접 열면 실행되지 않게 막습니다 (nginx 면 .htaccess 가 무시됩니다)
 if (!defined('APP_DIR')) { http_response_code(403); exit('Forbidden'); }
 
-require APP_DIR . '/layout.php';
+require_once APP_DIR . '/layout.php';
 
 /**
  * 입출금 내역 + 한 건 상세.
@@ -81,12 +81,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'cancel') {
                 invoice_recalc((int)$invId);
             }
 
+            // 은행내역에서 처리한 거래면 그 줄을 다시 미처리로
+            require_once APP_DIR . '/bankrow.php';
+            $bankBack = bank_row_unlink($pdo, $id);
+
             fin_audit($id, 'CANCEL', 'status', 'CONFIRMED', 'CANCELLED', $reason,
                       json_encode($t, JSON_UNESCAPED_UNICODE));
             log_action('입출금', 'CANCEL', 'financial_transactions', $id,
                        (string)$t['doc_no'], 'CONFIRMED', 'CANCELLED', $reason);
             $pdo->commit();
-            flash('취소했습니다. 배분이 풀려 미수금이 되돌아왔습니다. 기록은 남아 있습니다.');
+            flash('취소했습니다. 배분이 풀려 미수금이 되돌아왔습니다. 기록은 남아 있습니다.'
+                . ($bankBack ? ' 연결된 은행내역 줄도 다시 미처리로 돌렸습니다.' : ''));
             redirect('?p=cash_list&id=' . $id);
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) { $pdo->rollBack(); }
@@ -238,7 +243,10 @@ layout_head('입출금 내역', 'cash_list');
       <div><div style="font-size:11px;color:var(--ink2)">배분됨</div>
         <div class="tnum"><?= money($cur['alloc_amount']) ?>
           <?php $left = (float)$cur['amount'] - (float)$cur['alloc_amount'];
-                if ($left > 0): ?>
+                $etcIn = $cur['txn_type'] === 'IN' && empty($cur['company_id']);   // 기타 입금(수동) — 배분 대상 아님
+                if ($etcIn): ?>
+            <span style="color:var(--ink3);font-size:11px">(기타 입금 — 전표와 관계없음)</span>
+          <?php elseif ($left > 0): ?>
             <span style="color:var(--warn-fg);font-size:11px">
               (미배분 <?= money($left) ?>)</span>
           <?php endif; ?></div></div>
@@ -288,8 +296,9 @@ layout_head('입출금 내역', 'cash_list');
     </tbody>
   </table>
   <?php elseif ($cur['status'] !== 'CANCELLED'): ?>
-    <div class="empty">배분된 전표가 없습니다 — 전액 <?=
-      $cur['txn_type'] === 'IN' ? '선수금' : '미배분' ?>입니다.</div>
+    <div class="empty"><?= $cur['txn_type'] === 'IN' && empty($cur['company_id'])
+      ? '기타 입금(수동 입력)입니다 — 매출전표에 배분하지 않습니다.'
+      : '배분된 전표가 없습니다 — 전액 ' . ($cur['txn_type'] === 'IN' ? '선수금' : '미배분') . '입니다.' ?></div>
   <?php endif; ?>
 
   <?php if ($cur['status'] !== 'CANCELLED'): ?>

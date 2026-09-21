@@ -1,5 +1,5 @@
 <?php
-require APP_DIR . '/layout.php';
+require_once APP_DIR . '/layout.php';
 
 $eid = entity_id();
 $kw  = query('kw');
@@ -87,6 +87,8 @@ layout_head('AWB 관리', 'awb_list');
           <a href="?p=shipment_form&amp;id=<?= (int)$r['id'] ?>"><?= h($r['awb_no']) ?></a>
           <?php if ($r['awb_source'] === 'CARRIER'): ?>
             <span class="badge b-info" style="margin-left:3px">운송사</span>
+          <?php elseif ($r['awb_source'] === 'MANUAL'): ?>
+            <span class="badge b-warn" style="margin-left:3px">수동</span>
           <?php endif; ?></td>
         <td class="tnum" style="font-size:11.5px"><?= h($r['mawb_no'] ?: '-') ?></td>
         <td><?= h($r['name_ko']) ?></td>
@@ -110,6 +112,7 @@ layout_head('AWB 관리', 'awb_list');
             : '<a href="?p=documents&amp;shipment_id=' . (int)$r['id'] . '" style="color:var(--ink3)">+</a>' ?></td>
         <td class="c">
           <a class="btn sm" href="?p=awb_label&amp;id=<?= (int)$r['id'] ?>" target="_blank">라벨</a>
+          <a class="btn sm" href="?p=hawb_form&amp;shipment_id=<?= (int)$r['id'] ?>" title="이 전표 내용으로 항공 하우스 비엘 만들기">HAWB</a>
           <a class="btn sm" href="?p=tracking&amp;shipment_id=<?= (int)$r['id'] ?>">추적</a>
         </td>
       </tr>

@@ -1,14 +1,12 @@
 <?php
-require APP_DIR . '/layout.php';
+require_once APP_DIR . '/layout.php';
 
 $eid = entity_id();
 $id  = (int)query('id', '0');
 $err = '';
 $cur = null;
 
-$CHARGE = ['AIR_FREIGHT' => '특송운임', 'DOMESTIC' => '국내운송',
-           'HANDLING' => '취급수수료', 'CUSTOMS' => '통관료',
-           'STORAGE' => '창고료', 'OTHER' => '기타'];
+$CHARGE = charge_labels();   // 종류와 기본 세금구분은 bootstrap 의 CHARGE_TYPES
 $TAX     = ['ZERO' => 0.0, 'TAXABLE' => 10.0, 'EXEMPT' => 0.0];
 $STATUS  = ['DRAFT' => '작성중', 'SENT' => '발송', 'ACCEPTED' => '수주',
             'REJECTED' => '실주', 'EXPIRED' => '만료'];
@@ -346,9 +344,9 @@ layout_head($title, 'quotations');
     <?php foreach ($lines as $i => $l): ?>
       <tr>
         <td class="c tnum"><?= $i+1 ?></td>
-        <td><select name="line[<?= $i ?>][charge_type]">
+        <td><select name="line[<?= $i ?>][charge_type]" class="ctype">
           <?php foreach ($CHARGE as $k=>$v): ?>
-            <option value="<?= h($k) ?>"<?= $l['charge_type']===$k?' selected':'' ?>><?= h($v) ?></option>
+            <option value="<?= h($k) ?>" data-tax="<?= h(charge_default_tax($k)) ?>"<?= $l['charge_type']===$k?' selected':'' ?>><?= h($v) ?></option>
           <?php endforeach; ?>
         </select></td>
         <td><input type="text" name="line[<?= $i ?>][item_name]" value="<?= h($l['item_name']) ?>"
@@ -366,6 +364,16 @@ layout_head($title, 'quotations');
     <?php endforeach; ?>
     </tbody>
   </table>
+  <script>
+  // 종류를 고르면 회사 기준 세금구분으로 (운송 = 영세율, 핸드링 · 도큐멘트 · 국내운송 · 창고 · 검사 · 통관 = 과세)
+  document.querySelectorAll('select.ctype').forEach(function (s) {
+    s.addEventListener('change', function () {
+      var tax = s.options[s.selectedIndex].getAttribute('data-tax');
+      var t = s.closest('tr').querySelector('select[name$="[tax_type]"]');
+      if (tax && t) { t.value = tax; }
+    });
+  });
+  </script>
   <div class="pager"><span>공급가액 = 수량 × 단가. 빈 줄은 저장하지 않습니다.
     <a href="?p=rate_calculator">단가계산기</a>로 금액을 먼저 뽑아보실 수 있습니다.</span></div>
 </div>

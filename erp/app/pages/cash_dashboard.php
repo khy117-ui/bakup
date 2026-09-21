@@ -2,7 +2,7 @@
 // 웹에서 직접 열면 실행되지 않게 막습니다 (nginx 면 .htaccess 가 무시됩니다)
 if (!defined('APP_DIR')) { http_response_code(403); exit('Forbidden'); }
 
-require APP_DIR . '/layout.php';
+require_once APP_DIR . '/layout.php';
 
 /**
  * 입출금 현황 — 돈이 지금 어떻게 돌고 있는지 한 화면에.
@@ -265,7 +265,7 @@ layout_head('입출금 현황', 'cash_dashboard');
         <td class="r tnum" style="color:#1B7F5A"><?= money($a['in_total']) ?></td>
         <td class="r tnum" style="color:#B3261E"><?= money($a['out_total']) ?></td>
         <td class="r tnum" style="font-weight:700"><?= money($a['balance']) ?></td>
-        <td class="tnum" style="font-size:11.5px"><?= h($a['last_txn_date'] ?: '-') ?></td>
+        <td class="tnum" style="font-size:11.5px"><?= h($a['last_txn_date'] && $a['last_txn_date'] > '1901-01-01' ? $a['last_txn_date'] : '-') ?></td>
       </tr>
     <?php endforeach; ?>
     </tbody>

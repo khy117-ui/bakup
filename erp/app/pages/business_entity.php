@@ -2,7 +2,7 @@
 // 웹에서 직접 열면 실행되지 않게 막습니다 (nginx 면 .htaccess 가 무시됩니다)
 if (!defined('APP_DIR')) { http_response_code(403); exit('Forbidden'); }
 
-require APP_DIR . '/layout.php';
+require_once APP_DIR . '/layout.php';
 
 /**
  * 사업자 관리 — 인보이스·명세서·견적서에 찍히는 정보가 여기서 나옵니다.
@@ -88,7 +88,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ->execute([$bid]);
             log_action('시스템', 'UPDATE', 'business_bank_accounts', $bid, null, null, '사용 여부 변경');
             redirect('?p=business_entity&id=' . (int)post('entity_id'));
+
+        } elseif ($act === 'stamp_upload' || $act === 'stamp_remove') {
+            // 직인 — 서버 보관 폴더에만 (공개 저장소 · 웹 주소로는 못 엶). 청구서 등 인쇄 화면에 찍힙니다
+            $eidS = (int)post('entity_id');
+            $old = $pdo->prepare('SELECT stamp_path FROM business_entities WHERE id = ?');
+            $old->execute([$eidS]);
+            $oldPath = (string)$old->fetchColumn();
+            $newRel = null;
+            if ($act === 'stamp_upload') {
+                $f = $_FILES['stamp'] ?? null;
+                $info = ($f && ($f['error'] ?? 1) === UPLOAD_ERR_OK && is_uploaded_file((string)$f['tmp_name']))
+                      ? @getimagesize((string)$f['tmp_name']) : false;
+                $ext = $info ? (['image/png' => 'png', 'image/jpeg' => 'jpg', 'image/webp' => 'webp'][$info['mime']] ?? '') : '';
+                if (!$info || $ext === '') {
+                    throw new RuntimeException('PNG · JPG · WEBP 그림 파일을 골라 주세요.');
+                }
+                if ((int)$f['size'] > 2 * 1024 * 1024) {
+                    throw new RuntimeException('직인 그림은 2MB 이하로 올려 주세요.');
+                }
+                // 비공개 구역 uploads/stamps — 서버에 먼저 두고, 파일 저장소가 NAS 면 NAS /erp/uploads/stamps 로
+                require_once APP_DIR . '/filestore.php';
+                $dir = entity_stamp_dir();
+                if (!is_dir($dir) && !@mkdir($dir, 0750, true) && !is_dir($dir)) {
+                    throw new RuntimeException('보관 폴더를 만들지 못했습니다.');
+                }
+                doc_protect_root(storage_root());
+                $newRel = 'stamps/' . preg_replace('/[^A-Za-z0-9]/', '', (string)$eidS) . '_' . bin2hex(random_bytes(8)) . '.' . $ext;
+                if (!@move_uploaded_file((string)$f['tmp_name'], fs_local_path('uploads', $newRel))) {
+                    throw new RuntimeException('직인 파일을 저장하지 못했습니다.');
+                }
+                if (fs_cfg()['nas'] && !fs_push('uploads', $newRel, $why)) {
+                    error_log('직인 NAS 저장 실패: ' . $why);   // 서버 사본으로 계속 씀
+                }
+            }
+            $pdo->prepare('UPDATE business_entities SET stamp_path = ? WHERE id = ?')->execute([$newRel, $eidS]);
+            if ($oldPath !== '' && preg_match('/^stamps\/[A-Za-z0-9_-]+\.(png|jpg|jpeg|webp)$/', $oldPath)) {
+                require_once APP_DIR . '/filestore.php';
+                @unlink(fs_local_path('uploads', $oldPath));
+                @unlink(storage_root() . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $oldPath));   // 예전 위치
+                if (fs_cfg()['nas']) { fs_dav('DELETE', fs_dav_url('uploads', $oldPath), null, null, 15); }
+            }
+            log_action('시스템', 'UPDATE', 'business_entities', $eidS, '직인', null, $newRel ? '직인 이미지 등록' : '직인 이미지 삭제');
+            flash($newRel ? '직인을 등록했습니다. 청구서 인쇄 화면에 찍힙니다.' : '직인을 지웠습니다.');
+            redirect('?p=business_entity&id=' . $eidS . '#stamp');
         }
+    } catch (RuntimeException $e) {
+        $err = $e->getMessage();
     } catch (PDOException $e) {
         error_log('사업자 저장 실패: ' . $e->getMessage());
         $err = '저장하지 못했습니다.';
@@ -255,6 +301,40 @@ layout_head('사업자 관리', 'business_entity');
   <button class="btn pri">저장</button>
 </div>
 </form>
+
+<?php $stampUri = entity_stamp_data_uri($be); ?>
+<div class="card" id="stamp">
+  <div class="ch">직인
+    <span style="font-weight:400;color:var(--ink3)">청구서(INVOICE) 회사명 옆에 찍힙니다 · 서버 비공개 폴더에만 보관</span>
+  </div>
+  <div class="cb" style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
+    <div style="width:110px;height:110px;border:1px dashed var(--line);border-radius:8px;display:flex;align-items:center;justify-content:center;background:#fff">
+      <?php if ($stampUri): ?>
+        <img src="<?= h($stampUri) ?>" alt="직인" style="max-width:96px;max-height:96px;mix-blend-mode:multiply">
+      <?php else: ?>
+        <span style="font-size:11.5px;color:var(--ink3)">없음</span>
+      <?php endif; ?>
+    </div>
+    <form method="post" enctype="multipart/form-data" class="f" style="align-items:flex-end">
+      <?= csrf_field() ?>
+      <input type="hidden" name="act" value="stamp_upload">
+      <input type="hidden" name="entity_id" value="<?= $id ?>">
+      <div class="fw gr" style="min-width:240px"><label for="stampf">직인 그림 (PNG · JPG · WEBP, 2MB 이하)</label>
+        <input type="file" id="stampf" name="stamp" accept="image/png,image/jpeg,image/webp" required></div>
+      <button class="btn pri"><?= $stampUri ? '바꾸기' : '올리기' ?></button>
+    </form>
+    <?php if ($stampUri): ?>
+    <form method="post" onsubmit="return confirm('직인을 지울까요? 청구서에 더 이상 찍히지 않습니다.');">
+      <?= csrf_field() ?>
+      <input type="hidden" name="act" value="stamp_remove">
+      <input type="hidden" name="entity_id" value="<?= $id ?>">
+      <button class="btn">지우기</button>
+    </form>
+    <?php endif; ?>
+  </div>
+  <div class="cb" style="padding-top:0;font-size:11.5px;color:var(--ink3)">
+    흰 바탕 그림이어도 인쇄 화면에서는 바탕이 비쳐 보이게 찍습니다. 배경이 투명한 PNG 면 더 깔끔합니다.</div>
+</div>
 
 <div class="card">
   <div class="ch">입금계좌

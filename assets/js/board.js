@@ -137,11 +137,17 @@
         renderDetail(all.filter(function (it) { return String(it.id) === String(id); })[0]);
       });
     }
-    var pw = params.get('pw') || '';
-    return fetch(api + (api.indexOf('?') >= 0 ? '&' : '?') + 'id=' + encodeURIComponent(id) + (pw ? '&pw=' + encodeURIComponent(pw) : ''), { credentials: 'same-origin', cache: 'no-store' })
+    // 비밀글 비밀번호는 주소창(?pw=)에 붙이지 않고 요청 머리글로만 보냅니다 — 방문 기록 · 서버 기록에 안 남게
+    var pw = '';
+    try { pw = sessionStorage.getItem('gp_board_pw_' + id) || ''; } catch (e) { pw = ''; }
+    var hdr = pw ? { 'X-Board-Pw': encodeURIComponent(pw) } : {};
+    return fetch(api + (api.indexOf('?') >= 0 ? '&' : '?') + 'id=' + encodeURIComponent(id), { credentials: 'same-origin', cache: 'no-store', headers: hdr })
       .then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
       .then(function (res) {
-        if (res.status === 403 && res.data && res.data.error === 'secret') return renderSecret(res.data, !!pw);
+        if (res.status === 403 && res.data && res.data.error === 'secret') {
+          try { sessionStorage.removeItem('gp_board_pw_' + id); } catch (e) {}
+          return renderSecret(res.data, !!pw);
+        }
         if (res.status >= 400) throw new Error(res.data && res.data.error || 'HTTP ' + res.status);
         renderDetail(res.data.item || res.data);
       });
@@ -160,8 +166,10 @@
       + '<div class="form-actions" style="justify-content:flex-start;padding:0 24px 24px"><a class="btn btn--outline btn--sm btn--square" href="' + link(page) + '">목록</a></div>';
     f.addEventListener('submit', function (e) {
       e.preventDefault();
-      var sp = new URLSearchParams(location.search); sp.set('pw', f.elements.pw.value);
-      location.search = '?' + sp.toString();
+      try { sessionStorage.setItem('gp_board_pw_' + id, f.elements.pw.value); } catch (err) {}
+      f.remove();
+      box.style.display = '';
+      loadDetail().catch(function () { fail(); });
     });
     box.parentNode.insertBefore(f, box);
   }

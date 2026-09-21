@@ -117,6 +117,29 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-line
 
 .badge { display: inline-flex; align-items: center; height: 21px; padding: 0 8px;
   border-radius: 4px; font-size: 11px; font-weight: 600; }
+/* 표 안의 버튼 · 상태 글씨가 좁은 칸에서 세로로 한 글자씩 꺾이지 않게 */
+.btn, .badge { white-space: nowrap; }
+td .btn { flex-shrink: 0; }
+
+/* PC 넓은 화면 — 칸 너비를 내용에 맞춰 고르게 나눕니다.
+   화면마다 칸에 너비를 박아 두어서, 남는 폭이 전부 거래처 같은 한 칸으로 몰려 가운데가 텅 비었음.
+   입력칸이 있는 표(전표 입력 등)는 박아 둔 너비를 그대로 씁니다. */
+@media (min-width: 901px) {
+  .body table:not(:has(input:not([type=checkbox]):not([type=hidden]), select, textarea)) th[style*="width"] {
+    width: auto !important;
+  }
+  /* 숫자 · 날짜 · 가운데 칸은 한 줄로. 거래처 · 적요 같은 글 칸은 표가 넘칠 때만 줄바꿈 */
+  .body td.r, .body td.c, .body td.tnum { white-space: nowrap; }
+  /* 좁은 PC 창에서 거래처 이름 같은 글 칸이 한두 글자 폭으로 찌그러지지 않게 (넘치면 표만 옆으로 밀림) */
+  .body table:not(:has(input:not([type=checkbox]):not([type=hidden]), select, textarea)) td:not(.r):not(.c):not(.tnum) {
+    min-width: 120px;
+  }
+}
+/* 사이드바 아래 사용자 칸 — '나가기' · '역할 · 내 정보' 가 꺾이지 않게 */
+.side .me > a:first-of-type { min-width: 0; flex: 1 1 auto; }
+.side .me small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side .me .btn { flex-shrink: 0; }
+.side .me .av { flex-shrink: 0; }
 .b-ok { color: var(--ok-fg); background: var(--ok-bg); }
 .b-warn { color: var(--warn-fg); background: var(--warn-bg); }
 .b-err { color: var(--err-fg); background: var(--err-bg); }
@@ -139,3 +162,92 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-line
 .pager { display: flex; align-items: center; gap: 8px; padding: 12px 16px;
   border-top: 1px solid var(--line); font-size: 12px; color: var(--ink2); }
 .pager .right { margin-left: auto; display: flex; gap: 6px; }
+
+/* 상단 사업자 선택 · 메뉴 버튼 · 표 감싸개 */
+.entform { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.entform select { width: 180px; }
+.menu-btn, .scrim { display: none; }
+.tscroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.login .box { max-width: calc(100vw - 32px); }
+
+/* ---------------------------------------------------------------- 휴대폰 · 태블릿
+   왼쪽 메뉴는 숨기고 ☰ 로 여는 서랍으로. 표는 표만 좌우로 밀리고, 입력칸·카드는 화면 폭에 맞춘다. */
+@media (max-width: 900px) {
+  .side { position: fixed; top: 0; left: 0; bottom: 0; z-index: 50; width: 264px;
+    max-width: 82vw; transform: translateX(-100%); transition: transform .2s ease;
+    overflow-y: auto; }
+  body.nav-open { overflow: hidden; }
+  body.nav-open .side { transform: none; box-shadow: 0 0 24px rgba(0, 0, 0, .35); }
+  body.nav-open .scrim { display: block; position: fixed; inset: 0; z-index: 40;
+    background: rgba(10, 36, 56, .45); }
+  .side a.item, .side span.item { height: 42px; }
+  .side > * { flex-shrink: 0; }  /* 메뉴가 길어도 로고·내 정보 칸이 눌리지 않게 */
+
+  .menu-btn { display: inline-flex; align-items: center; justify-content: center;
+    flex-shrink: 0; width: 40px; height: 40px; border: 1px solid var(--line);
+    border-radius: 6px; background: #fff; color: var(--ink); font-size: 20px;
+    cursor: pointer; }
+  .top { position: sticky; top: 0; z-index: 30; height: 56px; padding: 0 12px; gap: 8px; }
+  .top .ent, .entform label { display: none; }
+  .entform select { width: auto; max-width: 62vw; }
+
+  .body { padding: 12px; gap: 12px; }
+  h1 { font-size: 18px; }
+  .head { flex-wrap: wrap; gap: 6px 10px; }
+  .head .right { flex-wrap: wrap; }
+
+  .kpis { gap: 10px; }
+  .kpi { flex: 1 1 calc(50% - 5px); min-width: 0; padding: 11px 12px; }
+  .kpi .val { font-size: 18px; }
+
+  .card .ch { height: auto; min-height: 44px; flex-wrap: wrap; padding: 8px 12px; }
+  .card .cb { padding: 12px; }
+  .tscroll th, .tscroll td { white-space: nowrap; }
+
+  .fw.w1 { width: calc(50% - 6px); }
+  .fw.w2, .fw.w3 { width: 100%; }
+  .fw[style*="min-width"] { min-width: 0 !important; width: 100%; }
+  .body div[style*="display:flex"] { flex-wrap: wrap; }
+  /* 16px 미만이면 아이폰이 입력칸을 누를 때마다 화면을 확대한다 */
+  input[type=text], input[type=date], input[type=number], input[type=password],
+  select, textarea { font-size: 16px; height: 40px; }
+  textarea { height: auto; }
+  .btn { height: 38px; }
+  .btn.sm { height: 32px; }
+  .pager { flex-wrap: wrap; }
+}
+
+/* 검색되는 선택칸 (assets/combo.js) — 거래처 · 운송사처럼 항목이 많은 선택칸 */
+.combo { position: relative; width: 100%; }
+.combo-sel { position: absolute !important; left: 0; bottom: 0; width: 1px !important; height: 1px !important;
+  opacity: 0; pointer-events: none; }
+.combo-list { position: absolute; z-index: 45; left: 0; right: 0; top: calc(100% + 4px); max-height: 300px;
+  overflow-y: auto; background: #fff; border: 1px solid var(--line); border-radius: 6px;
+  box-shadow: 0 10px 24px rgba(10, 36, 56, .14); }
+.combo-item { display: flex; gap: 8px; align-items: baseline; padding: 8px 10px; font-size: 13px; cursor: pointer;
+  border-bottom: 1px solid var(--line2); }
+.combo-item:last-child { border-bottom: 0; }
+.combo-item.on, .combo-item:hover { background: var(--accent-tint); }
+.combo-item b { flex-shrink: 0; min-width: 64px; color: var(--accent-deep); font-variant-numeric: tabular-nums; }
+.combo-item small { color: var(--ink3); margin-left: auto; }
+.combo-blank { color: var(--ink2); }
+.combo-none { padding: 9px 10px; font-size: 12px; color: var(--ink3); }
+@media (max-width: 900px) {
+  .combo-item { padding: 11px 10px; font-size: 14px; }
+  .combo-list { max-height: 50vh; }
+}
+
+/* 대시보드 — 누르면 세부 목록으로 가는 카드 */
+a.kpi-link { display: block; position: relative; color: inherit; text-decoration: none;
+  transition: border-color .15s, box-shadow .15s; }
+a.kpi-link:hover, a.kpi-link:focus-visible { border-color: var(--accent); text-decoration: none;
+  box-shadow: 0 4px 14px rgba(10, 36, 56, .08); }
+.kpi-go { position: absolute; right: 12px; top: 8px; font-size: 20px; line-height: 1; color: var(--ink3); }
+a.kpi-link:hover .kpi-go { color: var(--accent-deep); }
+
+/* 표 안의 입력칸 — 휴대폰에서 표가 좁아지면 입력칸이 손톱만큼 줄어 붙여넣기도 안 됐습니다 (환경설정 등) */
+@media (max-width: 900px) {
+  .tscroll td input[type=text], .tscroll td input[type=password], .tscroll td input[type=number],
+  .tscroll td input[type=date], .tscroll td select { min-width: 170px; }
+  .tscroll td input[type=checkbox], .tscroll td input[type=radio] { min-width: 0; }
+}

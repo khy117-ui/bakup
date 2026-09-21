@@ -3,6 +3,13 @@ declare(strict_types=1);
 
 define('APP_DIR', __DIR__);
 
+/** assets/ 파일 주소에 수정시각을 붙인다 — 휴대폰이 예전 CSS 를 계속 쓰지 않게 */
+function asset_v(string $path): string
+{
+    $t = @filemtime(dirname(APP_DIR) . '/' . $path);
+    return $path . ($t ? '?v=' . $t : '');
+}
+
 /**
  * 설정 읽기.
  *   1순위  app/config.local.php   (직접 올린 서버)
@@ -35,11 +42,16 @@ if (is_file($localCfg)) {
     ];
 }
 
+// 운영 화면에 PHP 경고 · 경로가 그대로 찍히지 않게 (기록은 error_log 로)
+@ini_set('display_errors', '0');
+@ini_set('log_errors', '1');
+
 mb_internal_encoding('UTF-8');
 date_default_timezone_set('Asia/Seoul');
 
 // ---------------------------------------------------------------- 세션
-if (session_status() !== PHP_SESSION_ACTIVE) {
+// 홈페이지 공개 조회(track.php)처럼 로그인과 상관없는 입구는 GP_NO_SESSION 을 먼저 정의해 세션을 열지 않습니다
+if (session_status() !== PHP_SESSION_ACTIVE && !defined('GP_NO_SESSION')) {
     $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
           || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
     session_set_cookie_params([
@@ -71,6 +83,14 @@ function db(): PDO
             // 드라이버가 문자열을 조립하므로 인젝션 방어가 약해집니다
             PDO::ATTR_EMULATE_PREPARES   => false,
         ]);
+        // 표는 전부 utf8mb4_unicode_ci 입니다. MySQL 8 은 연결 기본값이 utf8mb4_0900_ai_ci 라서
+        // CAST(... AS CHAR) · CONCAT 결과와 표 컬럼을 비교하면 'Illegal mix of collations' 가 납니다.
+        // 이 문장이 실패해도 화면은 떠야 하니 기록만 남기고 넘어갑니다.
+        try {
+            $pdo->exec('SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci');
+        } catch (PDOException $e) {
+            error_log('SET NAMES 실패(무시): ' . $e->getMessage());
+        }
     } catch (PDOException $e) {
         http_response_code(500);
         error_log('DB 접속 실패: ' . $e->getMessage());
@@ -100,6 +120,187 @@ function storage_root(): string
     }
     return $root = dirname(APP_DIR) . DIRECTORY_SEPARATOR . 'storage'
                  . DIRECTORY_SEPARATOR . 'documents';
+}
+
+// ---------------------------------------------------------------- 서류 파일
+// 올릴 수 있는 확장자. 실행 가능한 형식은 넣지 않습니다
+const DOC_EXT = ['pdf', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'xlsx', 'xls', 'csv',
+                 'docx', 'doc', 'pptx', 'ppt', 'hwp', 'hwpx', 'txt', 'zip'];
+const DOC_MAX = 100 * 1024 * 1024;   // 100MB — 서버 PHP 한도는 .htaccess (php_value) 에서 맞춤
+const DOC_MAX_LABEL = '100MB';
+
+/**
+ * 보관 폴더를 웹에서 바로 못 열게 막습니다.
+ * AISpace 에서는 /app/user_data 가 웹 폴더 안에 있어서, 파일 이름을 알면 주소로 열릴 수 있습니다.
+ * 파일은 로그인한 사람만 file_download 화면으로 받게 합니다.
+ */
+function doc_protect_root(string $root): void
+{
+    $ht = $root . DIRECTORY_SEPARATOR . '.htaccess';
+    if (is_dir($root) && !is_file($ht)) {
+        @file_put_contents($ht, "# 서류 보관 폴더 — 웹에서 직접 열지 못하게 (ERP 의 file_download 로만)\n"
+                              . "<IfModule mod_authz_core.c>\n  Require all denied\n</IfModule>\n"
+                              . "<IfModule !mod_authz_core.c>\n  Order deny,allow\n  Deny from all\n</IfModule>\n");
+    }
+}
+
+/**
+ * 사업자 직인 이미지 — 공개 저장소(GitHub)에 두지 않고 비공개 구역(uploads/stamps)에만 둡니다.
+ * 파일 저장소가 NAS 면 NAS /erp/uploads/stamps 에도 올라갑니다 (app/filestore.php).
+ * 문서 화면에는 파일 주소가 아니라 data: 로 바로 넣어, 로그인한 화면에서만 보입니다.
+ */
+function entity_stamp_dir(): string
+{
+    require_once APP_DIR . '/filestore.php';
+    return dirname(fs_local_path('uploads', 'stamps/x'));
+}
+
+function entity_stamp_data_uri(?array $be): ?string
+{
+    $rel = (string)($be['stamp_path'] ?? '');
+    if (!preg_match('/^stamps\/[A-Za-z0-9_-]+\.(png|jpg|jpeg|webp)$/', $rel)) { return null; }
+    require_once APP_DIR . '/filestore.php';
+    $bin = fs_read('uploads', $rel);
+    if ($bin === null) {
+        // 저장소 도입 전에 서류 폴더(documents/stamps)에 올린 직인
+        $old = storage_root() . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $rel);
+        $bin = is_file($old) ? (string)file_get_contents($old) : null;
+    }
+    if ($bin === null || $bin === '') { return null; }
+    $ext  = strtolower(pathinfo($rel, PATHINFO_EXTENSION));
+    $mime = ['png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'webp' => 'image/webp'][$ext];
+    return 'data:' . $mime . ';base64,' . base64_encode($bin);
+}
+
+/** <input type=file name=x[] multiple> 를 파일 하나씩의 배열로 */
+function uploaded_files(string $field): array
+{
+    $f = $_FILES[$field] ?? null;
+    if (!$f || !isset($f['name'])) { return []; }
+    if (!is_array($f['name'])) { return [$f]; }
+    $out = [];
+    foreach ($f['name'] as $i => $name) {
+        if (($f['error'][$i] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) { continue; }
+        $out[] = ['name' => $name, 'type' => $f['type'][$i] ?? '', 'tmp_name' => $f['tmp_name'][$i] ?? '',
+                  'error' => $f['error'][$i] ?? UPLOAD_ERR_NO_FILE, 'size' => $f['size'][$i] ?? 0];
+    }
+    return $out;
+}
+
+/**
+ * 올린 파일 하나를 보관하고 documents 에 한 줄 남깁니다. 성공이면 '' , 실패면 이유.
+ * 저장 이름은 원본과 무관하게 새로 만듭니다 — 원본 이름을 쓰면 경로 조작 · 덮어쓰기 · 실행 위험.
+ * backup_status = PENDING 으로 두면 NAS 백업이 가져갑니다.
+ */
+function doc_store_upload(array $f, int $eid, int $typeId, ?int $shipmentId = null, ?int $companyId = null,
+                          string $title = '', ?string $docDate = null): string
+{
+    $name = (string)($f['name'] ?? '');
+    if (($f['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        return $name . ': ' . (in_array($f['error'] ?? 0, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true)
+            ? '서버가 받을 수 있는 크기를 넘습니다'
+            : '업로드 실패 (오류 ' . (int)($f['error'] ?? 0) . ')');
+    }
+    if (!is_uploaded_file((string)$f['tmp_name'])) { return $name . ': 정상적인 업로드가 아닙니다'; }
+    if ((int)$f['size'] > DOC_MAX) { return $name . ': ' . DOC_MAX_LABEL . ' 를 넘습니다'; }
+    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+    if (!in_array($ext, DOC_EXT, true)) { return $name . ': 올릴 수 없는 형식 (허용: ' . implode(', ', DOC_EXT) . ')'; }
+    if ($typeId <= 0) { return $name . ': 문서 종류를 고르세요'; }
+
+    $root = storage_root();
+    $dir  = $root . DIRECTORY_SEPARATOR . date('Y') . DIRECTORY_SEPARATOR . date('m');
+    if (!is_dir($dir) && !@mkdir($dir, 0750, true) && !is_dir($dir)) {
+        return $name . ': 저장 폴더를 만들지 못했습니다';
+    }
+    doc_protect_root($root);
+
+    $stored = bin2hex(random_bytes(16)) . '.' . $ext;
+    $full   = $dir . DIRECTORY_SEPARATOR . $stored;
+    $rel    = date('Y') . '/' . date('m') . '/' . $stored;
+    if (!@move_uploaded_file((string)$f['tmp_name'], $full)) {
+        return $name . ': 파일을 저장하지 못했습니다 (폴더 쓰기 권한)';
+    }
+    @chmod($full, 0640);
+    $hash = hash_file('sha256', $full) ?: null;
+    $mime = function_exists('mime_content_type') ? (mime_content_type($full) ?: null) : null;
+    try {
+        db()->prepare(
+            'INSERT INTO documents
+               (business_entity_id, document_type_id, shipment_id, company_id,
+                doc_date, title, original_name, stored_path, mime_type,
+                size_bytes, checksum_sha256, backup_status, uploaded_by)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,\'PENDING\',?)')
+            ->execute([$eid, $typeId, $shipmentId ?: null, $companyId ?: null, $docDate ?: null,
+                       $title !== '' ? $title : $name, $name, $rel, $mime, (int)$f['size'], $hash,
+                       $_SESSION['admin_id'] ?? null]);
+        $docId = (int)db()->lastInsertId();
+        log_action('문서', 'CREATE', 'documents', $docId, $name, null,
+                   number_format((int)$f['size']) . ' bytes' . ($shipmentId ? ' · 전표 #' . $shipmentId : ''));
+        // 파일 저장소가 NAS 면 바로 보냅니다. 안 붙으면 서버에 둔 채(LOCAL) 자동 작업이 나중에 다시 보냄
+        require_once APP_DIR . '/filestore.php';
+        if (fs_cfg()['nas'] && fs_push('docs', $rel, $why)) {
+            db()->prepare("UPDATE documents SET storage = 'NAS', backup_status = 'SYNCED', backup_at = NOW(),
+                                  backup_path = ? WHERE id = ?")
+                ->execute(['NAS:' . fs_cfg()['dir']['docs'] . '/' . $rel, $docId]);
+        }
+    } catch (PDOException $e) {
+        @unlink($full);
+        error_log('문서 저장 실패: ' . $e->getMessage());
+        return $name . ': 기록을 남기지 못해 올리지 않았습니다';
+    }
+    return '';
+}
+
+/** SQL 파일을 문장으로 나눕니다. 따옴표 안 · 주석 · DELIMITER 를 압니다 (서버의 sql/ 파일 전용) */
+function sql_split(string $sql): array
+{
+    $out = [];
+    $buf = '';
+    $len = strlen($sql);
+    $delim = ';';
+    $i = 0;
+    while ($i < $len) {
+        if (($i === 0 || $sql[$i - 1] === "\n") && strncasecmp(substr($sql, $i, 10), 'DELIMITER ', 10) === 0) {
+            $j = strpos($sql, "\n", $i);
+            $j = $j === false ? $len : $j;
+            $delim = trim(substr($sql, $i + 10, $j - $i - 10));
+            $i = $j + 1;
+            continue;
+        }
+        $c = $sql[$i];
+        if ($c === "'" || $c === '"' || $c === '`') {
+            $buf .= $c;
+            $i++;
+            while ($i < $len) {
+                if ($sql[$i] === "\\") { $buf .= substr($sql, $i, 2); $i += 2; continue; }
+                $buf .= $sql[$i];
+                if ($sql[$i] === $c) { $i++; break; }
+                $i++;
+            }
+            continue;
+        }
+        if (substr($sql, $i, 2) === '--' || $c === '#') {
+            $j = strpos($sql, "\n", $i);
+            $i = $j === false ? $len : $j;
+            continue;
+        }
+        if (substr($sql, $i, 2) === '/*') {
+            $j = strpos($sql, '*/', $i);
+            $i = $j === false ? $len : $j + 2;
+            continue;
+        }
+        if (substr($sql, $i, strlen($delim)) === $delim) {
+            $t = trim($buf);
+            if ($t !== '') { $out[] = $t; }
+            $buf = '';
+            $i += strlen($delim);
+            continue;
+        }
+        $buf .= $c;
+        $i++;
+    }
+    if (trim($buf) !== '') { $out[] = trim($buf); }
+    return $out;
 }
 
 // ---------------------------------------------------------------- 헬퍼
@@ -304,6 +505,114 @@ function invoice_recalc(int $invoiceId): void
           WHERE id = ?')
         ->execute([$zero, $taxable, $exempt, $vat, $grand, $paid, $balance,
                    $status, $invoiceId]);
+}
+
+/**
+ * 전표로 청구서를 만듭니다 (청구관리 · 매출전표 목록 · 전표 화면이 같이 씀).
+ * 한 거래처의 아직 청구 안 된 전표만 받습니다 — 하나라도 어긋나면 만들지 않고 RuntimeException.
+ * 대상기간을 안 주면 고른 전표의 첫 · 마지막 전표일. 돌려주는 값: [청구서 id, 청구번호]
+ */
+function invoice_create(int $eid, int $cid, array $shipIds, string $invoiceDate, ?string $dueDate = null,
+                        ?string $periodFrom = null, ?string $periodTo = null): array
+{
+    $shipIds = array_values(array_unique(array_filter(array_map('intval', $shipIds))));
+    if ($cid <= 0 || !$shipIds) {
+        throw new RuntimeException('청구할 전표를 한 건 이상 선택하세요.');
+    }
+    $pdo = db();
+    $own = !$pdo->inTransaction();
+    if ($own) { $pdo->beginTransaction(); }
+    try {
+        // 고른 전표가 정말 이 거래처의 미청구 건인지 다시 확인합니다. 화면에서 넘어온 id 를 그대로 믿지 않습니다
+        $ph = implode(',', array_fill(0, count($shipIds), '?'));
+        $st = $pdo->prepare(
+            "SELECT s.id, s.voucher_date FROM shipments s
+               LEFT JOIN invoice_shipments xs ON xs.shipment_id = s.id
+              WHERE s.id IN ($ph) AND s.business_entity_id = ? AND s.company_id = ?
+                AND s.deleted_at IS NULL AND s.status <> 'CANCELLED'
+                AND xs.id IS NULL
+              ORDER BY s.voucher_date, s.id
+              FOR UPDATE");
+        $st->execute(array_merge($shipIds, [$eid, $cid]));
+        $rows = $st->fetchAll();
+        if (count($rows) !== count($shipIds)) {
+            throw new RuntimeException('이미 청구됐거나 조건에 맞지 않는 전표가 섞여 있습니다.');
+        }
+        $ok = array_map('intval', array_column($rows, 'id'));
+        $periodFrom = $periodFrom ?: (string)$rows[0]['voucher_date'];
+        $periodTo   = $periodTo ?: (string)end($rows)['voucher_date'];
+
+        $no = next_doc_no('INVOICE', 'GPA-INV-', '-', $eid);
+        $bank = $pdo->prepare('SELECT id FROM business_bank_accounts
+                                WHERE business_entity_id = ? AND is_active = 1 ORDER BY sort_order LIMIT 1');
+        $bank->execute([$eid]);
+        $bankId = $bank->fetchColumn() ?: null;
+
+        $pdo->prepare(
+            'INSERT INTO invoices
+               (business_entity_id, invoice_no, company_id, invoice_date,
+                period_from, period_to, due_date, bank_account_id, status, created_by)
+             VALUES (?,?,?,?,?,?,?,?,\'DRAFT\',?)')
+            ->execute([$eid, $no, $cid, $invoiceDate, $periodFrom, $periodTo,
+                       $dueDate ?: null, $bankId, $_SESSION['admin_id'] ?? null]);
+        $invId = (int)$pdo->lastInsertId();
+
+        $ins = $pdo->prepare('INSERT INTO invoice_shipments (invoice_id, shipment_id, line_no) VALUES (?,?,?)');
+        $n = 0;
+        foreach ($ok as $sid) {
+            $ins->execute([$invId, $sid, ++$n]);
+        }
+        $pdo->prepare("UPDATE shipments SET status = 'BILLED'
+                        WHERE id IN ($ph) AND status NOT IN ('PAID','CANCELLED')")
+            ->execute($ok);
+
+        invoice_recalc($invId);
+        log_action('청구', 'CREATE', 'invoices', $invId, $no, null, '전표 ' . $n . '건');
+        if ($own) { $pdo->commit(); }
+        return [$invId, $no];
+    } catch (Throwable $e) {
+        if ($own && $pdo->inTransaction()) { $pdo->rollBack(); }
+        throw $e;
+    }
+}
+
+/**
+ * 비용 종류와 기본 세금구분 — 매출전표 · 견적 · 매입이 같이 씁니다.
+ * 회사 기준 (2026-09-19): 특송 · 항공 · 해상 운송(수출입)은 영세율,
+ *   핸드링차지 · 도큐멘트피 · 국내운송 · 창고료 · 검사료 · 통관료는 과세 10%.
+ *   기타는 기본값이 없습니다 (줄에서 직접 고름).
+ * 종류를 고르면 화면이 세금구분을 기본값으로 바꿔 주고, 필요하면 그 줄만 다시 고칠 수 있습니다.
+ */
+const CHARGE_TYPES = [
+    'AIR_FREIGHT' => ['특송운임',   'ZERO'],
+    'AIR_CARGO'   => ['항공운임',   'ZERO'],
+    'SEA_FREIGHT' => ['해상운임',   'ZERO'],
+    'HANDLING'    => ['핸드링차지', 'TAXABLE'],
+    'DOC_FEE'     => ['도큐멘트피', 'TAXABLE'],
+    'DOMESTIC'    => ['국내운송',   'TAXABLE'],
+    'STORAGE'     => ['창고료',     'TAXABLE'],
+    'INSPECTION'  => ['검사료',     'TAXABLE'],
+    'CUSTOMS'     => ['통관료',     'TAXABLE'],
+    'OTHER'       => ['기타',       ''],
+];
+
+/** 종류 코드 → 이름 */
+function charge_labels(): array
+{
+    return array_map(fn($v) => $v[0], CHARGE_TYPES);
+}
+
+/** 종류 코드 → 기본 세금구분 ('' 이면 없음) */
+function charge_default_tax(string $code): string
+{
+    return CHARGE_TYPES[$code][1] ?? '';
+}
+
+/** 세금계산서 종류 이름 — TAX 일반(과세) / ZERO 영세율 / EXEMPT 계산서(면세) */
+function tax_doc_label(string $type): string
+{
+    return ['TAX' => '세금계산서', 'ZERO' => '영세율 세금계산서', 'EXEMPT' => '계산서',
+            'MODIFY' => '수정세금계산서'][$type] ?? $type;
 }
 
 /** 연체 여부는 저장하지 않고 볼 때 계산합니다 (날짜가 지나면 저절로 바뀌므로) */
@@ -516,6 +825,58 @@ function txn_type_label(string $t): string
 }
 
 /** 미수 상태 뱃지 */
+/**
+ * 거래처 코드의 머리글자 — 옛 시스템 규칙(팀-머리글자+번호, 예 01-D045)을 따릅니다.
+ * 업체명 첫 글자의 소리를 로마자로: ㄷ→D, ㅎ→H … ㅇ 으로 시작하면 모음으로 (아→A, 이→I, 와·워→W, 야·유→Y).
+ * (주) · 주식회사 · ㈜ 같은 앞붙이는 건너뜁니다. 영문 이름이면 그 첫 글자.
+ */
+function company_code_letter(string $name): string
+{
+    $n = (string)preg_replace('/^\s*(\(주\)|㈜|주식회사|\(유\)|유한회사|\(합\)|\(사\))\s*/u', '', $name);
+    // ㄱ→K · ㄹ→L 은 옛 코드에서 더 많이 쓴 쪽입니다 (885곳 중 옛 규칙과 약 60% 일치, 나머지는 사람이 고른 것)
+    $cho  = ['K','K','N','D','D','L','M','B','P','S','S','','J','J','C','K','T','P','H'];
+    // ㅇ 뒤 모음: ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ
+    $vow  = ['A','A','Y','Y','E','E','Y','Y','O','W','W','O','Y','U','W','W','W','Y','E','E','I'];
+    foreach (preg_split('//u', $n, -1, PREG_SPLIT_NO_EMPTY) as $ch) {
+        $o = mb_ord($ch, 'UTF-8');
+        if ($o >= 0xAC00 && $o <= 0xD7A3) {
+            $idx = $o - 0xAC00;
+            $c = $cho[intdiv($idx, 588)];
+            return $c !== '' ? $c : $vow[intdiv($idx % 588, 28)];
+        }
+        if (preg_match('/[A-Za-z]/', $ch)) { return strtoupper($ch); }
+    }
+    return 'X';
+}
+
+/** 다음 거래처 코드 — 같은 팀 · 같은 머리글자에서 가장 큰 번호 + 1 (세 자리) */
+function company_code_suggest(string $team, string $name): string
+{
+    $team = preg_match('/^\d{1,2}$/', trim($team)) ? str_pad(trim($team), 2, '0', STR_PAD_LEFT) : '01';
+    $prefix = $team . '-' . company_code_letter($name);
+    $st = db()->prepare('SELECT company_code FROM companies WHERE company_code LIKE ?');
+    $st->execute([$prefix . '%']);
+    $max = 0;
+    foreach ($st->fetchAll(PDO::FETCH_COLUMN) as $c) {
+        if (preg_match('/^' . preg_quote($prefix, '/') . '(\d+)$/i', (string)$c, $m)) {
+            $max = max($max, (int)$m[1]);
+        }
+    }
+    return $prefix . str_pad((string)($max + 1), 3, '0', STR_PAD_LEFT);
+}
+
+/** 매출전표 상태 → [한글, 배지색] */
+function shipment_status_badge(string $s): array
+{
+    return [
+        'DRAFT'     => ['임시',        'b-warn'],
+        'CONFIRMED' => ['확정·미청구', 'b-warn'],
+        'BILLED'    => ['청구',        'b-info'],
+        'PAID'      => ['입금',        'b-ok'],
+        'CANCELLED' => ['취소',        'b-err'],
+    ][$s] ?? [$s, 'b-info'];
+}
+
 function pay_status_badge(string $s): array
 {
     return [
@@ -524,6 +885,8 @@ function pay_status_badge(string $s): array
         'PAID'      => ['입금완료', 'b-ok'],
         'CANCELLED' => ['취소',     'b-err'],
         'NONE'      => ['금액없음', 'b-info'],
+        // 전환일 이전 전표 — 미수에서 닫힘(입금처리로 봄). 남은 미수가 있으면 기초잔액으로 따로 관리
+        'OPENING'   => ['입금처리(전환 전)', 'b-ok'],
     ][$s] ?? [$s, 'b-info'];
 }
 
@@ -554,20 +917,37 @@ function fin_resync_invoices(int $txnId): void
  */
 function can(string $code): bool
 {
-    static $cache = [];
+    static $codes = null;
     $role = (string)($_SESSION['role'] ?? '');
     if ($role === '') { return false; }
     if ($role === 'SUPER_ADMIN') { return true; }
-    $key = $role . '|' . $code;
-    if (!isset($cache[$key])) {
-        $st = db()->prepare(
-            'SELECT 1 FROM role_permissions rp
-               JOIN permissions p ON p.id = rp.permission_id
-              WHERE rp.role_code = ? AND p.code = ? LIMIT 1');
-        $st->execute([$role, $code]);
-        $cache[$key] = (bool)$st->fetchColumn();
+    if ($codes === null) {
+        // 계정별 권한(perm_custom = 1)이면 그 계정 것만, 아니면 역할 것을 씁니다.
+        // 한 요청에 한 번만 읽습니다 — 메뉴를 그릴 때 수십 번 물어봅니다.
+        $codes = [];
+        $aid = (int)($_SESSION['admin_id'] ?? 0);
+        $custom = false;
+        try {
+            $st = db()->prepare('SELECT perm_custom FROM admins WHERE id = ?');
+            $st->execute([$aid]);
+            $custom = (int)$st->fetchColumn() === 1;
+        } catch (PDOException $e) {
+            $custom = false;   // 컬럼이 아직 없으면 역할 권한
+        }
+        if ($custom) {
+            $st = db()->prepare('SELECT p.code FROM admin_permissions ap
+                                   JOIN permissions p ON p.id = ap.permission_id
+                                  WHERE ap.admin_id = ?');
+            $st->execute([$aid]);
+        } else {
+            $st = db()->prepare('SELECT p.code FROM role_permissions rp
+                                   JOIN permissions p ON p.id = rp.permission_id
+                                  WHERE rp.role_code = ?');
+            $st->execute([$role]);
+        }
+        foreach ($st->fetchAll(PDO::FETCH_COLUMN) as $c) { $codes[$c] = true; }
     }
-    return $cache[$key];
+    return isset($codes[$code]);
 }
 
 /** 권한이 없으면 화면을 막습니다 */

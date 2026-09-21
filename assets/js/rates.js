@@ -1,4 +1,4 @@
-/* 요금표 로더: assets/data/rates.xlsx 를 읽어 [data-sheet] 컨테이너에 표를 그립니다.
+/* 요금표 로더: ERP 단가표(erp/rates.php) + assets/data/rates.xlsx 를 읽어 [data-sheet] 컨테이너에 표를 그립니다.
    - 엑셀 파일만 같은 이름으로 덮어써 올리면 페이지 새로고침 시 바로 반영됩니다.
    - 파싱은 SheetJS(xlsx.full.min.js, CDN)로 처리합니다. */
 (function () {
@@ -44,12 +44,34 @@
   function fail(msg) {
     containers.forEach(function (el) { el.innerHTML = '<p class="note">' + msg + '</p>'; });
   }
+  /* ERP 단가표와 연결된 칸은 ERP(erp/rates.php) 숫자로, 나머지 칸은 엑셀(rates.xlsx)로 그립니다.
+     ERP 에서 가격표를 고치면 여기 새로고침만으로 바뀝니다. */
   function load() {
-    if (typeof XLSX === 'undefined') { fail('요금표 라이브러리를 불러오지 못했습니다. 네트워크 연결을 확인해 주세요.'); return; }
-    fetch(FILE, { cache: 'no-store' })
-      .then(function (res) { if (!res.ok) throw new Error(res.status); return res.arrayBuffer(); })
-      .then(function (buf) { renderWorkbook(XLSX.read(buf, { type: 'array' })); })
-      .catch(function () { fail('요금표 파일(assets/data/rates.xlsx)을 불러오지 못했습니다. 파일이 올바른 위치에 있는지 확인해 주세요.'); });
+    var erp = fetch(root + 'erp/rates.php', { cache: 'no-store' })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .catch(function () { return null; });
+    var xls = (typeof XLSX === 'undefined') ? Promise.resolve(null)
+      : fetch(FILE, { cache: 'no-store' })
+          .then(function (res) { if (!res.ok) throw new Error(res.status); return res.arrayBuffer(); })
+          .then(function (buf) { return XLSX.read(buf, { type: 'array' }); })
+          .catch(function () { return null; });
+    Promise.all([erp, xls]).then(function (r) {
+      var sheets = (r[0] && r[0].ok && r[0].sheets) || {};
+      var wb = r[1];
+      var rest = [];
+      containers.forEach(function (el) {
+        var name = el.getAttribute('data-sheet');
+        if (sheets[name]) { render(el, sheets[name]); } else { rest.push(el); }
+      });
+      if (rest.length) {
+        if (wb) { renderWorkbook(wb, rest); }
+        else { rest.forEach(function (el) { el.innerHTML = '<p class="note">요금표를 불러오지 못했습니다. 잠시 후 새로고침해 주세요.</p>'; }); }
+      }
+      var stamp = document.getElementById('rates-updated');
+      var tables = (r[0] && r[0].tables) || {};
+      var dates = Object.keys(tables).map(function (k) { return tables[k].from; }).sort();
+      if (stamp && dates.length) stamp.textContent = '요금표 기준일: ' + dates[dates.length - 1];
+    });
   }
 
   /* 관리자 미리보기: 로컬 엑셀 파일을 선택하면 업로드 전에 표를 확인 */

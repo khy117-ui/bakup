@@ -32,6 +32,7 @@ $banks = $st->fetchAll();
 
 log_action('견적', 'PRINT', 'quotations', $id, (string)$q['quote_no']);
 $buyer = $q['name_ko'] ?: ($q['prospect_name'] ?: '-');
+$stampUri = entity_stamp_data_uri($be ?: null);   // 사업자 관리에서 올린 직인 (없으면 '(인)' 글자만)
 ?><!doctype html>
 <html lang="ko">
 <head>
@@ -39,7 +40,11 @@ $buyer = $q['name_ko'] ?: ($q['prospect_name'] ?: '-');
 <title>견적서 <?= h($q['quote_no']) ?></title>
 <style>
   @page { size: A4 portrait; margin: 14mm; }
-  * { box-sizing: border-box; }
+  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  /* 직인 — 대표 옆 '(인)' 위에 겹쳐 찍음 (흰 바탕은 비쳐 보이게) */
+  .inwrap { position: relative; display: inline-block; }
+  .stamp { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+           width: 62px; height: 62px; object-fit: contain; mix-blend-mode: multiply; opacity: .9; pointer-events: none; }
   body { margin: 0; background: #F1F5F8; color: #0C1A26;
          font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
   .sheet { width: 794px; min-height: 1123px; margin: 18px auto; background: #fff; padding: 32px 36px; }
@@ -66,6 +71,9 @@ $buyer = $q['name_ko'] ?: ($q['prospect_name'] ?: '-');
   <div class="bar">
     <button class="btn" onclick="window.print()">인쇄 / PDF 저장</button>
     <a class="btn" href="?p=quotation_form&amp;id=<?= $id ?>">돌아가기</a>
+    <?php if (!$stampUri): // 화면에만 보이는 안내 (인쇄 · PDF 에는 안 나옴) ?>
+      <a class="btn" style="border-color:#E4B9B9;color:#A32020" href="?p=business_entity&amp;id=<?= (int)($be['id'] ?? 0) ?>#stamp">직인 미등록 — 사업자 관리에서 올리기</a>
+    <?php endif; ?>
     <?php if ($q['status'] === 'DRAFT'): ?>
       <span style="font-size:12px;color:#A32020;align-self:center">작성중인 견적서입니다</span>
     <?php endif; ?>
@@ -139,8 +147,7 @@ $buyer = $q['name_ko'] ?: ($q['prospect_name'] ?: '-');
     </tr></thead>
     <tbody>
     <?php
-    $CT = ['AIR_FREIGHT'=>'특송운임','DOMESTIC'=>'국내운송','HANDLING'=>'취급수수료',
-           'CUSTOMS'=>'통관료','STORAGE'=>'창고료','OTHER'=>'기타'];
+    $CT = charge_labels();
     foreach ($items as $it): ?>
       <tr>
         <td class="c tnum"><?= (int)$it['line_no'] ?></td>
@@ -189,7 +196,7 @@ $buyer = $q['name_ko'] ?: ($q['prospect_name'] ?: '-');
 
   <div style="margin-top:26px;text-align:center;font-size:13px;font-weight:700">
     <?= h($be['name_ko']) ?>
-    <span style="font-weight:400;color:#4E6273">&nbsp; 대표 <?= h($be['representative']) ?> (인)</span>
+    <span style="font-weight:400;color:#4E6273">&nbsp; 대표 <?= h($be['representative']) ?> <span class="inwrap">(인)<?php if ($stampUri): ?><img class="stamp" src="<?= h($stampUri) ?>" alt="직인"><?php endif; ?></span></span>
   </div>
 </div>
 </body>

@@ -2,7 +2,7 @@
 // 웹에서 직접 열면 실행되지 않게 막습니다 (nginx 면 .htaccess 가 무시됩니다)
 if (!defined('APP_DIR')) { http_response_code(403); exit('Forbidden'); }
 
-require APP_DIR . '/layout.php';
+require_once APP_DIR . '/layout.php';
 
 /**
  * 세금계산서 — 청구서에서 발행합니다.
@@ -20,11 +20,13 @@ $STATUS = ['DRAFT' => ['작성중', 'b-warn'], 'ISSUED' => ['발행', 'b-ok'],
            'FAILED' => ['실패', 'b-err']];
 
 // ---------------------------------------------------------------- 청구서에서 생성
+// 한 청구서에 영세율 · 과세 · 면세가 섞여 있으면 종류별로 따로 만듭니다 (한 장에 섞을 수 없음)
+//   영세율분 → 영세율 세금계산서(ZERO) · 과세분 → 세금계산서(TAX) · 면세분 → 계산서(EXEMPT)
+// 회사 기준: 특송 · 항공 · 해상 운송 = 영세율, 핸드링 · 도큐멘트 · 국내운송 · 창고 · 검사 · 통관 = 과세 (CHARGE_TYPES)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'create') {
     csrf_check();
     $invId = (int)post('invoice_id');
     $date  = post('issue_date', date('Y-m-d'));
-    $type  = post('doc_type', 'TAX');
 
     $st = db()->prepare(
         'SELECT i.*, c.name_ko, c.business_number, c.representative, c.address_ko,
@@ -44,8 +46,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'create') {
         $err = '거래처에 사업자등록번호가 없습니다. 거래처 정보를 먼저 채우세요.';
     } elseif (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
         $err = '작성일자를 입력하세요.';
-    } elseif (!in_array($type, ['TAX', 'EXEMPT'], true)) {
-        $err = '문서 종류가 올바르지 않습니다.';
     } else {
         $dup = db()->prepare(
             "SELECT id FROM tax_invoices
@@ -57,75 +57,144 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'create') {
             $pdo = db();
             try {
                 $pdo->beginTransaction();
-                $no = next_doc_no('TAX', 'GPA-T-', '-');
 
-                // 과세분만 세금계산서에 담습니다. 영세율은 따로 발행해야 합니다 (스펙 [37])
-                $taxable = (float)$inv['taxable_supply'];
-                $zero    = (float)$inv['zero_supply'];
-                $onlyZero = ($taxable == 0.0 && $zero > 0);
+                // 품목 — 전표마다 세금구분별로 한 줄 (항목 이름은 비용 종류로)
+                $labels = charge_labels();
+                $ships = $pdo->prepare(
+                    "SELECT s.id, s.awb_no, s.voucher_date, ch.tax_type,
+                            GROUP_CONCAT(DISTINCT ch.charge_type ORDER BY ch.line_no SEPARATOR ',') AS types,
+                            SUM(ch.supply_amount) AS supply, SUM(ch.tax_amount) AS tax
+                       FROM invoice_shipments xs
+                       JOIN shipments s ON s.id = xs.shipment_id
+                       JOIN shipment_charges ch ON ch.shipment_id = s.id
+                      WHERE xs.invoice_id = ?
+                      GROUP BY s.id, s.awb_no, s.voucher_date, ch.tax_type, xs.line_no
+                      ORDER BY xs.line_no");
+                $ships->execute([$invId]);
+                $lines = ['ZERO' => [], 'TAXABLE' => [], 'EXEMPT' => []];
+                foreach ($ships->fetchAll() as $s) {
+                    if (!isset($lines[$s['tax_type']]) || ((float)$s['supply'] == 0.0 && (float)$s['tax'] == 0.0)) {
+                        continue;
+                    }
+                    $names = array_map(fn($c) => $labels[$c] ?? $c, array_unique(explode(',', (string)$s['types'])));
+                    $lines[$s['tax_type']][] = [$s['voucher_date'], implode('·', $names) . ' ' . $s['awb_no'],
+                                                (float)$s['supply'], (float)$s['tax']];
+                }
+                // 청구서 조정 항목(할인 · 추가 등)도 그 세금구분 쪽에 한 줄씩
+                $adj = $pdo->prepare('SELECT item_name, supply_amount, tax_type, tax_amount FROM invoice_items
+                                       WHERE invoice_id = ? ORDER BY line_no');
+                $adj->execute([$invId]);
+                foreach ($adj->fetchAll() as $a) {
+                    if (isset($lines[$a['tax_type']]) && ((float)$a['supply_amount'] != 0.0 || (float)$a['tax_amount'] != 0.0)) {
+                        $lines[$a['tax_type']][] = [$inv['invoice_date'], (string)$a['item_name'],
+                                                    (float)$a['supply_amount'], (float)$a['tax_amount']];
+                    }
+                }
 
-                $pdo->prepare(
-                    'INSERT INTO tax_invoices
+                $kinds = ['ZERO' => ['ZERO', '영세율'], 'TAXABLE' => ['TAX', '과세'], 'EXEMPT' => ['EXEMPT', '면세']];
+                $insT = $pdo->prepare(
+                    "INSERT INTO tax_invoices
                        (business_entity_id, doc_no, company_id, invoice_id, issue_date,
                         doc_type, buyer_biz_no, buyer_name, buyer_rep, buyer_address,
                         buyer_biz_type, buyer_biz_item, buyer_email,
                         supply_total, tax_total, grand_total, status, created_by)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,\'DRAFT\',?)')
-                    ->execute([
-                        $eid, $no, (int)$inv['company_id'], $invId, $date, $type,
-                        $inv['business_number'], $inv['name_ko'], $inv['representative'],
-                        $inv['address_ko'], $inv['business_type'], $inv['business_item'],
-                        $inv['tax_email'] ?: $inv['email'],
-                        $onlyZero ? $zero : $taxable,
-                        $onlyZero ? 0 : (float)$inv['tax_total'],
-                        $onlyZero ? $zero : $taxable + (float)$inv['tax_total'],
-                        $_SESSION['admin_id'] ?? null,
-                    ]);
-                $tid = (int)$pdo->lastInsertId();
-
-                // 품목 — 청구서에 담긴 전표를 한 줄씩
-                $ships = $pdo->prepare(
-                    'SELECT s.awb_no, s.voucher_date,
-                            COALESCE(t.zero_supply,0) AS zero_supply,
-                            COALESCE(t.taxable_supply,0) AS taxable_supply,
-                            COALESCE(t.tax_total,0) AS tax_total
-                       FROM invoice_shipments xs
-                       JOIN shipments s ON s.id = xs.shipment_id
-                       LEFT JOIN v_shipment_totals t ON t.shipment_id = s.id
-                      WHERE xs.invoice_id = ? ORDER BY xs.line_no');
-                $ships->execute([$invId]);
-
-                $ins = $pdo->prepare(
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'DRAFT',?)");
+                $insI = $pdo->prepare(
                     'INSERT INTO tax_invoice_items
                        (tax_invoice_id, line_no, supply_date, item_name, spec, qty,
                         unit_price, supply_amount, tax_amount)
                      VALUES (?,?,?,?,?,1,?,?,?)');
-                $n = 0;
-                foreach ($ships->fetchAll() as $s) {
-                    $amt = $onlyZero ? (float)$s['zero_supply'] : (float)$s['taxable_supply'];
-                    $tax = $onlyZero ? 0.0 : (float)$s['tax_total'];
-                    if ($amt == 0.0 && $tax == 0.0) { continue; }
-                    $ins->execute([$tid, ++$n, $s['voucher_date'],
-                                   '국제특송 ' . $s['awb_no'],
-                                   $onlyZero ? '영세율' : '과세', $amt, $amt, $tax]);
+                $made = [];
+                foreach ($kinds as $tt => [$docType, $spec]) {
+                    if (!$lines[$tt]) { continue; }
+                    $sup = array_sum(array_column($lines[$tt], 2));
+                    $vat = $tt === 'TAXABLE' ? array_sum(array_column($lines[$tt], 3)) : 0.0;
+                    if ($sup == 0.0 && $vat == 0.0) { continue; }
+                    $no = next_doc_no('TAX', 'GPA-T-', '-');
+                    $insT->execute([
+                        $eid, $no, (int)$inv['company_id'], $invId, $date, $docType,
+                        $inv['business_number'], $inv['name_ko'], $inv['representative'],
+                        $inv['address_ko'], $inv['business_type'], $inv['business_item'],
+                        $inv['tax_email'] ?: $inv['email'],
+                        $sup, $vat, $sup + $vat, $_SESSION['admin_id'] ?? null,
+                    ]);
+                    $tid = (int)$pdo->lastInsertId();
+                    $n = 0;
+                    foreach ($lines[$tt] as [$d, $name, $amt, $tax]) {
+                        $insI->execute([$tid, ++$n, $d, mb_substr($name, 0, 200), $spec, $amt, $amt,
+                                        $tt === 'TAXABLE' ? $tax : 0.0]);
+                    }
+                    log_action('세금계산서', 'CREATE', 'tax_invoices', $tid, $no, null,
+                               tax_doc_label($docType) . ' · 청구서 ' . $inv['invoice_no'] . ' · 품목 ' . $n . '건');
+                    $made[] = [$tid, $no, tax_doc_label($docType)];
                 }
-                if ($n === 0) {
+                if (!$made) {
                     throw new RuntimeException('담을 품목이 없습니다. 청구서 금액을 확인하세요.');
                 }
-
-                log_action('세금계산서', 'CREATE', 'tax_invoices', $tid, $no, null,
-                           '청구서 ' . $inv['invoice_no'] . ' · 품목 ' . $n . '건');
                 $pdo->commit();
-                flash('세금계산서 ' . $no . ' 를 만들었습니다. 내용을 확인하고 발행하세요.'
-                    . ($zero > 0 && $taxable > 0
-                       ? ' 영세율분은 별도로 한 건 더 만들어야 합니다.' : ''));
-                redirect('?p=tax_invoices&id=' . $tid);
+                flash(count($made) === 1
+                    ? $made[0][2] . ' ' . $made[0][1] . ' 를 만들었습니다. 내용을 확인하고 발행하세요.'
+                    : '영세율 · 과세를 나눠 ' . count($made) . '장을 만들었습니다 ('
+                      . implode(', ', array_map(fn($m) => $m[2] . ' ' . $m[1], $made)) . '). 내용을 확인하고 발행하세요.');
+                redirect(count($made) === 1 ? '?p=tax_invoices&id=' . $made[0][0] : '?p=tax_invoices');
             } catch (Throwable $e) {
                 $pdo->rollBack();
                 error_log('세금계산서 생성 실패: ' . $e->getMessage());
                 $err = $e instanceof RuntimeException ? $e->getMessage() : '만들지 못했습니다.';
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------- 홈택스 일괄발급 엑셀 내려받기
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'hometax_xlsx') {
+    csrf_check();
+    require_once APP_DIR . '/hometax.php';
+    try {
+        [$rows, $skip, $used] = hometax_rows(db(), $eid, (array)($_POST['tid'] ?? []));
+        if (!$rows) {
+            $err = '내려받을 세금계산서가 없습니다.'
+                 . ($skip ? ' 뺀 것: ' . implode(' / ', array_map(fn($k, $v) => $k . ' ' . $v, array_keys($skip), $skip)) : '');
+        } else {
+            $bin = hometax_xlsx($rows);
+            log_action('세금계산서', 'EXPORT', 'tax_invoices', null, '홈택스 엑셀', null,
+                       count($rows) . '건 · ' . implode(',', $used) . ($skip ? ' · 뺀 것 ' . count($skip) . '건' : ''));
+            if ($skip) {
+                // 뺀 것은 다음 화면에서 알려 줍니다 (파일 응답에는 메시지를 못 붙임)
+                flash('홈택스 엑셀에서 뺀 것 ' . count($skip) . '건: '
+                      . implode(' / ', array_map(fn($k, $v) => $k . ' ' . $v, array_keys($skip), $skip)));
+            }
+            $fn = 'hometax_' . entity_code($eid) . '_' . date('Ymd_His') . '_' . count($rows) . '건.xlsx';
+            header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            header("Content-Disposition: attachment; filename=\"hometax.xlsx\"; filename*=UTF-8''" . rawurlencode($fn));
+            header('Content-Length: ' . strlen($bin));
+            header('Cache-Control: no-store');
+            echo $bin;
+            exit;
+        }
+    } catch (Throwable $e) {
+        error_log('홈택스 엑셀 실패: ' . $e->getMessage());
+        $err = $e instanceof RuntimeException ? $e->getMessage() : '엑셀을 만들지 못했습니다.';
+    }
+}
+
+// ---------------------------------------------------------------- 홈택스 발급 목록으로 승인번호 붙이기
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'hometax_match') {
+    csrf_check();
+    require_once APP_DIR . '/hometax.php';
+    try {
+        $res = hometax_match_approvals(db(), $eid, (string)($_POST['pasted'] ?? ''));
+        if ($res['error'] !== '') {
+            $err = $res['error'];
+        } else {
+            flash('승인번호를 ' . count($res['matched']) . '건 붙였습니다.'
+                  . ($res['unmatched'] ? ' 못 찾은 것 ' . count($res['unmatched']) . '건: '
+                                         . implode(' / ', array_slice($res['unmatched'], 0, 10)) : ''));
+            redirect('?p=tax_invoices');
+        }
+    } catch (Throwable $e) {
+        error_log('홈택스 승인번호 붙이기 실패: ' . $e->getMessage());
+        $err = '승인번호를 붙이지 못했습니다.';
     }
 }
 
@@ -223,9 +292,12 @@ layout_head('전자세금계산서', 'tax_invoices');
 
 <?php if ($err !== ''): ?><div class="msg err"><?= h($err) ?></div><?php endif; ?>
 
-<div class="msg" style="background:var(--info-bg);color:var(--info-fg)">
-  <b>국세청 전송은 아직 붙어 있지 않습니다.</b> 연동사(팝빌·바로빌 등)가 정해지지 않았습니다.
-  지금은 내용을 여기서 만들고, 연동사에서 발행한 뒤 <b>승인번호를 받아 여기 기록</b>하는 방식으로 씁니다.
+<div class="msg" style="background:var(--info-bg);color:var(--info-fg);line-height:1.8">
+  <b>홈택스 엑셀 일괄발급으로 국세청에 보냅니다.</b>
+  ① 아래 발행 내역에서 <b>작성중</b> 인 것을 골라 <b>[홈택스 엑셀 내려받기]</b> (한 파일 100건까지)
+  → ② 홈택스 <b>전자(세금)계산서 일괄발급</b> 에 그 파일을 올려 발급 (인증서 서명 — 50건씩)
+  → ③ 홈택스 발급 목록을 엑셀로 받아 <b>머리행까지 복사</b> 해 아래 <b>[승인번호 붙이기]</b> 칸에 붙여 넣으면 승인번호가 자동으로 붙고 '전송완료' 가 됩니다.
+  <span style="color:var(--ink3)">엑셀 비고 칸에 ERP 문서번호가 들어가 짝을 찾습니다. 비고를 지우지 마세요.</span>
 </div>
 
 <?php if ($cur): ?>
@@ -234,9 +306,7 @@ layout_head('전자세금계산서', 'tax_invoices');
     <span class="tnum" style="font-size:14px"><?= h($cur['doc_no']) ?></span>
     <?php [$lab,$cls] = $STATUS[$cur['status']] ?? [$cur['status'],'b-info']; ?>
     <span class="badge <?= $cls ?>"><?= h($lab) ?></span>
-    <?php if ($cur['doc_type'] === 'EXEMPT'): ?>
-      <span class="badge b-warn">계산서(면세·영세)</span>
-    <?php endif; ?>
+    <span class="badge <?= $cur['doc_type'] === 'TAX' ? 'b-info' : 'b-warn' ?>"><?= h(tax_doc_label((string)$cur['doc_type'])) ?></span>
     <a class="btn sm" style="margin-left:auto" href="?p=tax_invoices">목록</a>
   </div>
   <div class="cb f" style="gap:24px">
@@ -339,10 +409,6 @@ layout_head('전자세금계산서', 'tax_invoices');
             <input type="hidden" name="act" value="create">
             <input type="hidden" name="invoice_id" value="<?= (int)$pd['id'] ?>">
             <input type="date" name="issue_date" value="<?= h(date('Y-m-d')) ?>" style="width:140px">
-            <select name="doc_type" style="width:90px">
-              <option value="TAX">세금계산서</option>
-              <option value="EXEMPT">계산서</option>
-            </select>
             <button class="btn sm pri">만들기</button>
           </form>
         </td>
@@ -351,8 +417,8 @@ layout_head('전자세금계산서', 'tax_invoices');
     </tbody>
   </table>
   <div class="pager"><span>
-    <b>영세율과 과세가 섞인 청구서는 두 건으로 나눠야 합니다.</b>
-    먼저 세금계산서(과세분)를 만들고, 영세율분은 계산서로 한 번 더 만드세요.
+    <b>영세율과 과세가 섞인 청구서는 [만들기] 한 번에 두 장으로 나눠 만듭니다</b> —
+    운송(특송 · 항공 · 해상)은 영세율 세금계산서, 핸드링 · 도큐멘트 · 국내운송 · 창고 · 검사 · 통관은 과세 세금계산서.
   </span></div>
   <?php endif; ?>
 </div>
@@ -375,8 +441,17 @@ layout_head('전자세금계산서', 'tax_invoices');
   <?php if (!$rows): ?>
     <div class="empty">발행한 세금계산서가 없습니다.</div>
   <?php else: ?>
+  <form method="post" id="ht-form">
+  <?= csrf_field() ?>
+  <input type="hidden" name="act" value="hometax_xlsx">
+  <div class="cb" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line)">
+    <span style="font-size:12.5px;color:var(--ink2)">작성중 · 발행(승인번호 없음) 문서를 골라 홈택스 일괄발급 엑셀로 —
+      <b id="ht-n">0</b>건</span>
+    <button class="btn sm pri" style="margin-left:auto" id="ht-btn" disabled>홈택스 엑셀 내려받기</button>
+  </div>
   <table>
     <thead><tr>
+      <th class="c" style="width:36px"><input type="checkbox" id="ht-all" title="이 목록의 보낼 수 있는 것 모두"></th>
       <th style="width:165px">문서번호</th><th style="width:100px">작성일자</th>
       <th>공급받는자</th><th style="width:125px">사업자번호</th>
       <th class="c" style="width:90px">종류</th>
@@ -387,11 +462,14 @@ layout_head('전자세금계산서', 'tax_invoices');
     <tbody>
     <?php foreach ($rows as $r): [$lab,$cls] = $STATUS[$r['status']] ?? [$r['status'],'b-info']; ?>
       <tr>
+        <td class="c"><?php if (in_array($r['status'], ['DRAFT', 'ISSUED'], true) && !$r['nts_approval_no']
+                                && in_array($r['doc_type'], ['TAX', 'ZERO'], true)): ?>
+          <input type="checkbox" class="ht-pick" name="tid[]" value="<?= (int)$r['id'] ?>"><?php endif; ?></td>
         <td class="tnum" style="font-weight:600"><?= h($r['doc_no']) ?></td>
         <td class="tnum"><?= h($r['issue_date']) ?></td>
         <td><?= h($r['buyer_name']) ?></td>
         <td class="tnum"><?= h($r['buyer_biz_no']) ?></td>
-        <td class="c"><?= $r['doc_type']==='EXEMPT'?'계산서':'세금계산서' ?></td>
+        <td class="c"><?= h(tax_doc_label((string)$r['doc_type'])) ?></td>
         <td class="r tnum"><?= money($r['supply_total']) ?></td>
         <td class="r tnum"><?= money($r['tax_total']) ?></td>
         <td class="tnum" style="font-size:11.5px"><?= h($r['nts_approval_no'] ?: '-') ?></td>
@@ -401,6 +479,41 @@ layout_head('전자세금계산서', 'tax_invoices');
     <?php endforeach; ?>
     </tbody>
   </table>
+  </form>
+  <script>
+  (function () {
+    var picks = document.querySelectorAll('.ht-pick'), n = document.getElementById('ht-n'), btn = document.getElementById('ht-btn');
+    function upd() {
+      var c = 0; picks.forEach(function (p) { if (p.checked) c++; });
+      n.textContent = c; btn.disabled = c === 0;
+      btn.textContent = c > 100 ? '100건까지만 됩니다' : '홈택스 엑셀 내려받기';
+      if (c > 100) btn.disabled = true;
+    }
+    picks.forEach(function (p) { p.addEventListener('change', upd); });
+    document.getElementById('ht-all').addEventListener('change', function () {
+      var on = this.checked; picks.forEach(function (p) { p.checked = on; }); upd();
+    });
+    // 파일을 받은 뒤 화면을 새로 읽어 '뺀 것' 안내를 보여 줍니다
+    document.getElementById('ht-form').addEventListener('submit', function () {
+      setTimeout(function () { location.reload(); }, 2500);
+    });
+  })();
+  </script>
   <?php endif; ?>
+</div>
+
+<div class="card">
+  <div class="ch">홈택스 승인번호 붙이기
+    <span style="font-weight:400;color:var(--ink3)">발급 후 홈택스 목록조회 → 엑셀 내려받기 → 머리행부터 표 전체 복사 → 아래에 붙여넣기</span></div>
+  <form method="post" class="cb">
+    <?= csrf_field() ?>
+    <input type="hidden" name="act" value="hometax_match">
+    <textarea name="pasted" rows="5" required style="font-family:ui-monospace,Consolas,monospace;font-size:12px"
+              placeholder="작성일자&#9;승인번호&#9;…&#9;공급받는자사업자등록번호&#9;…&#9;공급가액&#9;세액&#9;…&#9;비고 (홈택스 엑셀에서 복사한 그대로)"></textarea>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+      <span style="font-size:11.5px;color:var(--ink3)">비고의 ERP 문서번호로 먼저 찾고, 없으면 작성일자 · 공급받는자 번호 · 공급가액 · 세액이 모두 같은 한 건을 찾습니다.</span>
+      <button class="btn pri" style="margin-left:auto">승인번호 붙이기</button>
+    </div>
+  </form>
 </div>
 <?php layout_foot();

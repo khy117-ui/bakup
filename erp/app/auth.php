@@ -9,13 +9,19 @@ function current_admin(): ?array
     if (empty($_SESSION['admin_id'])) {
         return null;
     }
+    // SELECT * — 계정 표에 컬럼이 늘어도(must_change_pw 등) 옛 DB 에서 멈추지 않게
     $st = db()->prepare(
-        'SELECT id, login_id, name, role_code, team
-           FROM admins
+        'SELECT * FROM admins
           WHERE id = ? AND is_active = 1 AND deleted_at IS NULL');
     $st->execute([$_SESSION['admin_id']]);
     $a = $st->fetch();
-    return $a ?: null;
+    if (!$a) {
+        return null;
+    }
+    unset($a['password_hash']);
+    // 관리자가 역할을 바꾸면 다음 요청부터 바로 반영되게
+    $_SESSION['role'] = $a['role_code'];
+    return $a;
 }
 
 function require_login(): array

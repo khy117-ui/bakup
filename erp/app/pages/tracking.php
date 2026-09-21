@@ -1,11 +1,11 @@
 <?php
-require APP_DIR . '/layout.php';
+require_once APP_DIR . '/layout.php';
 
 $eid = entity_id();
 $err = '';
 $sid = (int)query('shipment_id', '0');
 
-$carriers = db()->query('SELECT id, code, tracking_enabled FROM carriers
+$carriers = db()->query('SELECT id, code, name, tracking_enabled FROM carriers
                           WHERE is_active = 1 ORDER BY sort_order, code')->fetchAll();
 
 $sh = null;
@@ -95,6 +95,69 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             log_action('물류', 'UPDATE', 'tracking_numbers', $tid, null, null, '배송완료 표시');
             flash('배송완료로 표시했습니다.');
             redirect('?p=tracking&shipment_id=' . (int)post('shipment_id'));
+
+        } elseif ($act === 'api_key') {
+            // 화물추적 화면에서 바로 조회 인증키 넣기 — 환경설정 권한자만. which = epost(우체국) / dhl / fedex
+            // FedEx 는 API Key · Secret Key 두 개 — 적은 칸만 바꿉니다
+            require_once APP_DIR . '/epost.php';
+            require_once APP_DIR . '/dhl.php';
+            require_once APP_DIR . '/fedex.php';
+            $which = in_array(post('which'), ['dhl', 'fedex'], true) ? post('which') : 'epost';
+            $k = (string)preg_replace('/\s+/u', '', post('api_key'));
+            $k2 = (string)preg_replace('/\s+/u', '', post('api_secret'));
+            $label = ['epost' => '우체국 Open API 인증키', 'dhl' => 'DHL API 키', 'fedex' => 'FedEx 키'][$which];
+            $okShape = fn(string $v) => (bool)preg_match('/^[A-Za-z0-9%+\/=_-]{16,300}$/', $v);
+            if (!route_can_edit('settings')) {
+                $err = '인증키는 환경설정 권한이 있는 관리자만 넣을 수 있습니다.';
+            } elseif ($which === 'fedex' ? ($k === '' && $k2 === '') || ($k !== '' && !$okShape($k))
+                                           || ($k2 !== '' && !$okShape($k2))
+                                         : !$okShape($k)) {
+                $err = $label . ' 모양이 아닙니다. 발급 화면의 키를 그대로 붙여넣어 주세요.';
+            } else {
+                if ($which === 'fedex') {
+                    if ($k !== '')  { fedex_save_key('api', $k); }
+                    if ($k2 !== '') { fedex_save_key('secret', $k2); }
+                    $saved = trim(($k !== '' ? 'API Key ····' . substr($k, -4) : '') . ' '
+                                  . ($k2 !== '' ? 'Secret Key ····' . substr($k2, -4) : ''));
+                } else {
+                    $which === 'dhl' ? dhl_save_key($k) : epost_save_key($k);
+                    $saved = '끝 4자리 ' . substr($k, -4);
+                }
+                log_action('시스템', 'UPDATE', 'app_settings', null, $label, null, '(새 값으로 바꿈)');
+                flash($label . '를 저장했습니다 (' . $saved . ').');
+                redirect('?p=tracking' . ((int)post('shipment_id') > 0 ? '&shipment_id=' . (int)post('shipment_id') : ''));
+            }
+
+        } elseif ($act === 'track_fetch') {
+            // 운송사 조회 API 에서 이력을 가져와 쌓습니다 (같은 일시 · 상태는 건너뜀). src = epost(우체국 EMS) / dhl / fedex
+            $src = in_array(post('src'), ['dhl', 'fedex'], true) ? post('src') : 'epost';
+            $who = ['epost' => '우체국', 'dhl' => 'DHL', 'fedex' => 'FedEx'][$src];
+            $tid = (int)post('tracking_number_id');
+            $st = $pdo->prepare('SELECT t.id, t.tracking_no, t.shipment_id FROM tracking_numbers t
+                                   JOIN shipments s ON s.id = t.shipment_id
+                                  WHERE t.id = ? AND s.business_entity_id = ?');
+            $st->execute([$tid, $eid]);
+            $trk = $st->fetch();
+            if (!$trk) {
+                $err = '추적번호를 찾을 수 없습니다.';
+            } else {
+                require_once APP_DIR . '/track_any.php';
+                $r = track_fetch($src, (string)$trk['tracking_no']);
+                $_SESSION['track_raw'][$tid] = [$who, mb_substr((string)$r['raw'], 0, 4000)];
+                if (!$r['ok']) {
+                    $err = $r['error'];
+                } else {
+                    // 홈페이지 조회와 같은 저장 로직 (배달완료 판별 포함)
+                    [$new, $done] = track_save_events($pdo, $tid, $r['events'], $_SESSION['admin_id'] ?? null);
+                    log_action('물류', 'UPDATE', 'tracking_numbers', $tid, (string)$trk['tracking_no'], null,
+                               $who . ' 조회 — 이력 ' . count($r['events']) . '건 중 새 것 ' . $new . '건');
+                    flash($r['events']
+                        ? $who . '에서 이력 ' . count($r['events']) . '건을 받았습니다 (새로 ' . $new . '건).'
+                          . ($done ? ' 배달완료로 표시했습니다.' : '')
+                        : $who . ' 응답은 받았지만 이력을 읽지 못했습니다. 아래 "응답 원문" 을 캡처해 보내 주세요.');
+                    redirect('?p=tracking&shipment_id=' . (int)$trk['shipment_id']);
+                }
+            }
         }
     } catch (PDOException $e) {
         if ($pdo->inTransaction()) { $pdo->rollBack(); }
@@ -123,10 +186,9 @@ if ($sid === 0 && $kw !== '') {
     $found = $st->fetchAll();
 }
 
-$trks = [];
-if ($sid > 0) {
+$loadTrks = function (int $sid): array {
     $st = db()->prepare(
-        'SELECT t.*, ca.code AS carrier FROM tracking_numbers t
+        'SELECT t.*, ca.code AS carrier, ca.name AS carrier_name FROM tracking_numbers t
            JOIN carriers ca ON ca.id = t.carrier_id
           WHERE t.shipment_id = ? ORDER BY t.id');
     $st->execute([$sid]);
@@ -136,6 +198,40 @@ if ($sid > 0) {
                              ORDER BY event_at DESC');
         $e->execute([$t['id']]);
         $trks[$i]['events'] = $e->fetchAll();
+    }
+    return $trks;
+};
+$trks = $sid > 0 ? $loadTrks($sid) : [];
+
+// 자동 추적 — 전표를 열면:
+//   · 추적번호가 없고 AWB 가 그 운송사 번호 모양이면 AWB 를 추적번호로 등록 (이관 전표, 예: FedEx 871350927454)
+//   · 배송완료 전인데 한 번도 안 봤거나 1시간 넘게 안 본 번호는 운송사에서 바로 가져옴 (한 번에 2건까지)
+require_once APP_DIR . '/track_any.php';
+if ($sh && $_SERVER['REQUEST_METHOD'] === 'GET' && route_can_edit('tracking')) {
+    try {
+        if (!$trks && ($newTid = track_auto_register(db(), $sid)) > 0) {
+            log_action('물류', 'CREATE', 'tracking_numbers', $newTid, (string)$sh['awb_no'], null, 'AWB 번호를 추적번호로 자동 등록');
+            $trks = $loadTrks($sid);
+        }
+        $pulled = 0;
+        foreach ($trks as $t) {
+            if ($pulled >= 2 || $t['delivered_at']
+                || ($t['last_checked_at'] && strtotime((string)$t['last_checked_at']) > time() - 3600)) { continue; }
+            $asrc = track_detect_src((string)$t['tracking_no'], $t['carrier'] . ' ' . ($t['carrier_name'] ?? ''));
+            if (!in_array($asrc, TRACK_API_SRC, true) || !track_has_key($asrc)) { continue; }
+            $pulled++;
+            $r = track_fetch($asrc, (string)$t['tracking_no']);
+            $_SESSION['track_raw'][(int)$t['id']] = [TRACK_SRC_NAME[$asrc], mb_substr((string)$r['raw'], 0, 4000)];
+            if ($r['ok']) {
+                track_save_events(db(), (int)$t['id'], $r['events'], $_SESSION['admin_id'] ?? null);
+            } else {
+                db()->prepare('UPDATE tracking_numbers SET last_checked_at = NOW() WHERE id = ?')->execute([(int)$t['id']]);
+                $err = $r['error'];
+            }
+        }
+        if ($pulled > 0) { $trks = $loadTrks($sid); }
+    } catch (PDOException $e) {
+        error_log('자동 추적 실패: ' . $e->getMessage());
     }
 }
 
@@ -152,9 +248,63 @@ layout_head('화물추적', 'tracking');
 
 <?php if ($err !== ''): ?><div class="msg err"><?= h($err) ?></div><?php endif; ?>
 
+<?php
+// 운송사 조회 인증키 — 여기서 바로 넣을 수 있게 (환경설정 권한자만)
+require_once APP_DIR . '/epost.php';
+require_once APP_DIR . '/dhl.php';
+require_once APP_DIR . '/fedex.php';
+require_once APP_DIR . '/track_any.php';
+$epKey  = epost_key();
+$dhlKey = dhl_key();
+[$fxId, $fxSecret] = fedex_creds();
+$keyBadge = fn(string $k) => $k !== '' ? '<span class="badge b-ok">저장됨 ····' . h(substr($k, -4)) . '</span>'
+                                       : '<span class="badge b-warn">없음</span>';
+if (route_can_edit('settings')): ?>
+<details class="card"<?= $epKey === '' || $dhlKey === '' || $fxId === '' || $fxSecret === '' ? ' open' : '' ?>>
+  <summary class="ch" style="cursor:pointer">배송조회 인증키
+    <span style="font-weight:400;font-size:12px">우체국 EMS <?= $keyBadge($epKey) ?> · DHL <?= $keyBadge($dhlKey) ?>
+      · FedEx <?= $keyBadge($fxId !== '' && $fxSecret !== '' ? $fxSecret : '') ?></span></summary>
+  <?php foreach ([['epost', '우체국 EMS — 공공데이터포털 일반 인증키', '마이페이지의 일반 인증키 붙여넣기'],
+                  ['dhl', 'DHL — developer.dhl.com 앱의 API Key (Consumer Key)', 'MyApps > 앱 > Credentials 의 API Key 붙여넣기']] as [$w, $lab, $ph]): ?>
+  <div class="cb" style="border-top:1px solid var(--line2)">
+    <form method="post" class="f" style="align-items:flex-end" autocomplete="off">
+      <?= csrf_field() ?>
+      <input type="hidden" name="act" value="api_key">
+      <input type="hidden" name="which" value="<?= $w ?>">
+      <input type="hidden" name="shipment_id" value="<?= $sid ?>">
+      <div class="fw gr" style="min-width:260px"><label for="k-<?= $w ?>"><?= h($lab) ?></label>
+        <input type="text" id="k-<?= $w ?>" name="api_key" class="tnum" required spellcheck="false"
+               placeholder="<?= h($ph) ?> (공백은 자동으로 뺍니다)"></div>
+      <button class="btn pri">저장</button>
+    </form>
+  </div>
+  <?php endforeach; ?>
+  <div class="cb" style="border-top:1px solid var(--line2)">
+    <form method="post" class="f" style="align-items:flex-end" autocomplete="off">
+      <?= csrf_field() ?>
+      <input type="hidden" name="act" value="api_key">
+      <input type="hidden" name="which" value="fedex">
+      <input type="hidden" name="shipment_id" value="<?= $sid ?>">
+      <div class="fw gr" style="min-width:220px"><label for="k-fx1">FedEx — API Key (Client ID)
+          <?= $fxId !== '' ? '<span style="color:var(--ink3)">····' . h(substr($fxId, -4)) . '</span>' : '' ?></label>
+        <input type="text" id="k-fx1" name="api_key" class="tnum" spellcheck="false"
+               placeholder="developer.fedex.com 프로젝트의 Production API Key"></div>
+      <div class="fw gr" style="min-width:220px"><label for="k-fx2">FedEx — Secret Key
+          <?= $fxSecret !== '' ? '<span style="color:var(--ink3)">····' . h(substr($fxSecret, -4)) . '</span>' : '' ?></label>
+        <input type="password" id="k-fx2" name="api_secret" class="tnum" spellcheck="false" autocomplete="new-password"
+               placeholder="같은 화면의 Secret Key"></div>
+      <button class="btn pri">저장</button>
+    </form>
+  </div>
+  <div class="cb" style="padding-top:0;font-size:11.5px;color:var(--ink3)">
+    저장 후에는 끝 4자리만 보입니다. DHL 은 처음 한도가 하루 250건 · 5초에 1건입니다.
+    FedEx 는 두 칸 중 바꿀 칸만 적으면 됩니다 (샌드박스 키는 실제 번호가 조회되지 않습니다).</div>
+</details>
+<?php endif; ?>
+
 <div class="msg" style="background:var(--info-bg);color:var(--info-fg)">
-  운송사 API 연동은 아직 없습니다. <b>지금은 사람이 조회해서 넣는 방식</b>입니다.
-  기존 시스템은 추적 이력을 아예 저장하지 않았는데, 여기서는 넣는 만큼 쌓입니다.
+  <b>우체국 EMS</b>(영문2+숫자9+영문2) · <b>DHL</b>(숫자 10자리) · <b>FedEx</b>(숫자 12 · 15자리) 번호는 버튼 한 번으로 이력을 가져옵니다
+  (위 인증키 필요). 다른 운송사는 사람이 조회해서 넣습니다. 넣은 이력은 전부 쌓입니다.
 </div>
 
 <?php if (!$sh): ?>
@@ -209,7 +359,7 @@ layout_head('화물추적', 'tracking');
         <select name="carrier_id" required>
           <?php foreach ($carriers as $c): ?>
             <option value="<?= (int)$c['id'] ?>"<?= $c['code']===$sh['carrier']?' selected':'' ?>>
-              <?= h($c['code']) ?></option>
+              <?= h($c['name'] . ' (' . $c['code'] . ')') ?></option>
           <?php endforeach; ?>
         </select></div>
       <div class="fw w2"><label>추적번호 *</label>
@@ -245,8 +395,62 @@ layout_head('화물추적', 'tracking');
       <?php else: ?>확인 이력 없음<?php endif; ?>
     </span>
   </div>
-  <div class="cb">
-    <form method="post" class="f" style="align-items:flex-end">
+  <?php
+    // 번호 모양 · 운송사로 어디에 물어볼지 정합니다 (app/track_any.php — 홈페이지 조회와 같은 규칙)
+    $no      = (string)$t['tracking_no'];
+    $src     = track_detect_src($no, $t['carrier'] . ' ' . ($t['carrier_name'] ?? ''));
+    $srcName = ['epost' => '우체국', 'dhl' => 'DHL', 'fedex' => 'FedEx', 'ups' => 'UPS'][$src] ?? '';
+    $siteUrl = track_site_url($src, $no);
+    [$rawWho, $raw] = $_SESSION['track_raw'][(int)$t['id']] ?? ['', ''];
+  ?>
+  <?php if ($src !== ''): ?>
+  <div class="cb" style="border-bottom:1px solid var(--line2);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <?php if (in_array($src, TRACK_API_SRC, true) && route_can_edit('tracking')): ?>
+    <form method="post" style="display:inline">
+      <?= csrf_field() ?>
+      <input type="hidden" name="act" value="track_fetch">
+      <input type="hidden" name="src" value="<?= $src ?>">
+      <input type="hidden" name="tracking_number_id" value="<?= (int)$t['id'] ?>">
+      <button class="btn pri"><?= $srcName ?>에서 이력 가져오기</button>
+    </form>
+    <?php endif; ?>
+      <a class="btn" target="_blank" rel="noopener" href="<?= h($siteUrl) ?>"><?= $srcName ?> 사이트에서 보기</a>
+    <span style="font-size:11.5px;color:var(--ink3)">같은 이력은 두 번 쌓이지 않습니다</span>
+    <?php if ($raw !== ''): ?>
+      <details style="width:100%;margin-top:6px"><summary style="cursor:pointer;font-size:12px"><?= h($rawWho) ?> 응답 원문 (마지막 조회)</summary>
+        <pre style="white-space:pre-wrap;word-break:break-all;font-size:11px;max-height:240px;overflow:auto;background:#F7FAFB;padding:8px;border-radius:6px"><?= h($raw) ?></pre></details>
+    <?php endif; ?>
+  </div>
+  <?php endif; ?>
+  <?php if (!$t['events']): ?>
+    <div class="empty">배송 이력이 없습니다.<?= $src !== '' ? ' 위 [' . $srcName . '에서 이력 가져오기] 를 누르면 여기에 추적 세부사항이 뜹니다.' : '' ?></div>
+  <?php else: ?>
+  <!-- 추적 세부사항 — 운송사 사이트처럼 날짜별로 묶고, 최신이 위 -->
+  <div class="ch" style="border-top:0;font-size:13px">추적 세부사항
+    <span style="font-weight:400;font-size:12px;color:var(--ink3)"><?= count($t['events']) ?>건 · 최신순</span></div>
+  <table>
+    <thead><tr><th style="width:70px">시각</th><th style="width:170px">상태</th>
+      <th style="width:170px">위치</th><th>설명</th></tr></thead>
+    <tbody>
+    <?php $prevDay = ''; foreach ($t['events'] as $i => $e):
+          $day = substr((string)$e['event_at'], 0, 10);
+          if ($day !== $prevDay): $prevDay = $day; ?>
+      <tr><td colspan="4" style="background:var(--line2,#F1F4F6);font-weight:700;font-size:12px">
+        <?= h($day) ?> (<?= ['일','월','화','수','목','금','토'][(int)date('w', strtotime($day))] ?>)</td></tr>
+    <?php endif; ?>
+      <tr<?= $i === 0 ? ' style="background:#F3FAF6"' : '' ?>>
+        <td class="tnum"><?= h(substr((string)$e['event_at'], 11, 5)) ?></td>
+        <td style="font-weight:600"><?= h($e['status']) ?></td>
+        <td><?= h($e['location'] ?: '-') ?></td>
+        <td style="color:var(--ink2)"><?= h($e['description'] ?: '') ?></td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  <?php endif; ?>
+  <details class="cb" style="border-top:1px solid var(--line2)"<?= $src === '' && !$t['events'] ? ' open' : '' ?>>
+    <summary style="cursor:pointer;font-size:12.5px;font-weight:600">직접 이력 추가 · 배송완료 표시</summary>
+    <form method="post" class="f" style="align-items:flex-end;margin-top:8px">
       <?= csrf_field() ?>
       <input type="hidden" name="act" value="add_event">
       <input type="hidden" name="shipment_id" value="<?= $sid ?>">
@@ -273,25 +477,7 @@ layout_head('화물추적', 'tracking');
         <button class="btn">배송완료 표시</button>
       </form>
     <?php endif; ?>
-  </div>
-  <?php if (!$t['events']): ?>
-    <div class="empty">배송 이력이 없습니다.</div>
-  <?php else: ?>
-  <table>
-    <thead><tr><th style="width:160px">일시</th><th style="width:130px">위치</th>
-      <th style="width:160px">상태</th><th>설명</th></tr></thead>
-    <tbody>
-    <?php foreach ($t['events'] as $e): ?>
-      <tr>
-        <td class="tnum"><?= h($e['event_at']) ?></td>
-        <td><?= h($e['location'] ?: '-') ?></td>
-        <td style="font-weight:600"><?= h($e['status']) ?></td>
-        <td style="color:var(--ink2)"><?= h($e['description'] ?: '') ?></td>
-      </tr>
-    <?php endforeach; ?>
-    </tbody>
-  </table>
-  <?php endif; ?>
+  </details>
 </div>
 <?php endforeach; ?>
 <?php endif; ?>

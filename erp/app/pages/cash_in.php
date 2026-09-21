@@ -2,7 +2,7 @@
 // 웹에서 직접 열면 실행되지 않게 막습니다 (nginx 면 .htaccess 가 무시됩니다)
 if (!defined('APP_DIR')) { http_response_code(403); exit('Forbidden'); }
 
-require APP_DIR . '/layout.php';
+require_once APP_DIR . '/layout.php';
 
 /**
  * 입금 등록.
@@ -20,6 +20,80 @@ $err = '';
 $eid = entity_id();                       // 새로 만드는 것은 한 사업자에 속합니다
 
 require_perm('CASH_WRITE', '입금 등록');
+
+// 은행내역 가져오기의 [입금처리] 에서 왔으면 그 줄 — 일자 · 금액 · 계좌 · 이름을 미리 채우고, 저장하면 처리완료로
+require_once APP_DIR . '/bankrow.php';
+$bankRowId = (int)(post('bank_row') ?: query('bank_row', '0'));
+$bankRow = bank_row_open($bankRowId, 'IN');
+if ($bankRowId > 0 && !$bankRow && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+    $err = '이 은행내역은 이미 처리됐거나 입금 줄이 아닙니다. 그냥 입금 등록으로 진행합니다.';
+    $bankRowId = 0;
+}
+$bankDate = $bankRow ? substr((string)$bankRow['txn_at'], 0, 10) : '';
+$bankAmt  = $bankRow ? money($bankRow['in_amount']) : '';
+
+/** 기타 입금(거래처 없이 수동 입력) 구분 — financial_transactions.payee_type 에 둡니다 */
+const CASH_IN_ETC = ['INTEREST' => '이자수익', 'MISC' => '잡이익 · 기타수입', 'REFUND' => '환급금 (세금 · 보험 등)',
+                     'SUSPENSE' => '가수금 (누가 보냈는지 확인 전)', 'LOAN' => '차입금 · 대표자 입금',
+                     'ASSET' => '자산 매각', 'OTHER' => '기타'];
+
+// ---------------------------------------------------------------- 기타 입금 (수동)
+// 거래처 · 전표와 관계없는 입금 — 이자, 환급, 가수금, 차입 등. 매출 미수를 줄이지 않습니다
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save_etc') {
+    csrf_check();
+    $entId  = (int)post('business_entity_id', (string)$eid);
+    $date   = post('txn_date', date('Y-m-d'));
+    $kind   = array_key_exists(post('kind'), CASH_IN_ETC) ? post('kind') : '';
+    $amount = (float)str_replace(',', '', post('amount'));
+    $acctId = (int)post('to_account_id');
+    $method = in_array(post('method'), ['TRANSFER', 'CASH', 'CARD', 'NOTE', 'PG'], true) ? post('method') : 'TRANSFER';
+    $who    = trim(post('counterparty'));
+    $summary = trim(post('summary'));
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+        $err = '입금일자를 입력하세요.';
+    } elseif ($kind === '') {
+        $err = '입금 구분을 고르세요.';
+    } elseif ($amount <= 0) {
+        $err = '입금금액을 입력하세요.';
+    } else {
+        $pdo = db();
+        try {
+            if ($acctId > 0) {
+                $chk = $pdo->prepare('SELECT COUNT(*) FROM business_bank_accounts WHERE id = ? AND business_entity_id = ? AND is_active = 1');
+                $chk->execute([$acctId, $entId]);
+                if (!(int)$chk->fetchColumn()) { throw new RuntimeException('고른 계좌가 이 사업자의 계좌가 아닙니다.'); }
+            }
+            $pdo->beginTransaction();
+            $no = next_doc_no('CASH_IN', entity_code($entId) . '-R-', '-', $entId);
+            $label = CASH_IN_ETC[$kind];
+            $pdo->prepare(
+                "INSERT INTO financial_transactions
+                   (business_entity_id, doc_no, txn_type, txn_date, company_id, counterparty, to_account_id, method,
+                    supply_amount, tax_type, vat_amount, amount, payee_type, alloc_amount, summary, memo, status, created_by)
+                 VALUES (?,?,'IN',?,NULL,?,?,?,?,'EXEMPT',0,?,?,0,?,?,'CONFIRMED',?)")
+                ->execute([$entId, $no, $date, $who !== '' ? mb_substr($who, 0, 100) : null, $acctId ?: null, $method,
+                           $amount, $amount, $kind, mb_substr('[' . $label . ']' . ($summary !== '' ? ' ' . $summary : ''), 0, 255),
+                           post('memo') ?: null, $_SESSION['admin_id'] ?? null]);
+            $txnId = (int)$pdo->lastInsertId();
+            $impBack = $bankRowId > 0 ? bank_row_link($pdo, $bankRowId, 'IN', $txnId, $entId, $date, [$amount]) : 0;
+            fin_audit($txnId, 'CREATE', null, null, money($amount) . '원 · 기타 입금(' . $label . ')'
+                      . ($impBack ? ' · 은행내역 연결' : ''));
+            log_action('입출금', 'CREATE', 'financial_transactions', $txnId, $no, null, '기타 입금 ' . $label . ' ' . money($amount));
+            $pdo->commit();
+            flash('기타 입금 ' . $no . ' (' . $label . ' ' . money($amount) . '원) 을 등록했습니다.'
+                . ($impBack ? ' 은행내역의 이 줄은 처리완료로 바뀌었습니다.' : ''));
+            redirect($impBack ? '?p=bank_import&import_id=' . $impBack : '?p=cash_list&type=IN');
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) { $pdo->rollBack(); }
+            if ($e instanceof RuntimeException) {
+                $err = $e->getMessage();
+            } else {
+                error_log('기타 입금 등록 실패: ' . $e->getMessage());
+                $err = '등록하지 못했습니다.';
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------- 저장
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save') {
@@ -147,16 +221,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save') {
             // 이 전표들이 담긴 청구서의 수금액도 같이 맞춥니다
             fin_resync_invoices($txnId);
 
+            $impBack = $bankRowId > 0 ? bank_row_link($pdo, $bankRowId, 'IN', $txnId, $entId, $date, [$amount]) : 0;
             fin_audit($txnId, 'CREATE', null, null,
-                      money($amount) . '원 · 배분 ' . $n . '건 ' . money($sum) . '원');
+                      money($amount) . '원 · 배분 ' . $n . '건 ' . money($sum) . '원'
+                      . ($impBack ? ' · 은행내역 연결' : ''));
             log_action('입출금', 'CREATE', 'financial_transactions', $txnId, $no,
                        null, '입금 ' . money($amount));
             $pdo->commit();
 
             $left = $amount - $sum;
             flash('입금 ' . $no . ' 을 등록했습니다.'
-                . ($left > 0 ? ' 배분하지 않은 ' . money($left) . '원은 선수금으로 남습니다.' : ''));
-            redirect('?p=cash_list&type=IN');
+                . ($left > 0 ? ' 배분하지 않은 ' . money($left) . '원은 선수금으로 남습니다.' : '')
+                . ($impBack ? ' 은행내역의 이 줄은 처리완료로 바뀌었습니다.' : ''));
+            redirect($impBack ? '?p=bank_import&import_id=' . $impBack : '?p=cash_list&type=IN');
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) { $pdo->rollBack(); }
             if ($e instanceof RuntimeException) {
@@ -171,6 +248,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save') {
 
 // ---------------------------------------------------------------- 조회
 $compId = (int)query('company_id', (string)(int)post('company_id'));
+if ($compId <= 0 && $bankRow && $bankRow['suggested_company_id']) {
+    $compId = (int)$bankRow['suggested_company_id'];     // 추천일 뿐 — 화면에서 바꿀 수 있습니다
+}
 
 $companies = db()->query(
     'SELECT id, company_code, name_ko FROM companies
@@ -181,7 +261,7 @@ $accounts = db()->prepare(
        FROM business_bank_accounts
       WHERE business_entity_id = ? AND is_active = 1 AND purpose IN ('IN','BOTH')
       ORDER BY sort_order, id");
-$accounts->execute([$eid]);
+$accounts->execute([$bankRow ? (int)$bankRow['business_entity_id'] : $eid]);
 $accounts = $accounts->fetchAll();
 
 // 선택한 거래처의 미수 전표 — 오래된 것부터
@@ -190,7 +270,7 @@ $obRows = [];
 $unpaidTotal = 0.0;
 $taxInvoices = [];
 // 상단에서 사업자를 골라 두었으면 그 사업자로 등록합니다
-$formEnt = entity_filter() ?? $eid;
+$formEnt = $bankRow ? (int)$bankRow['business_entity_id'] : (entity_filter() ?? $eid);
 if ($compId > 0) {
     $params = [];
     $w = entity_where('r.business_entity_id', $params);
@@ -241,12 +321,78 @@ layout_head('입금 등록', 'cash_in');
 </div>
 
 <?php if ($err !== ''): ?><div class="msg err"><?= h($err) ?></div><?php endif; ?>
+<?php if ($bankRow): ?><?= bank_row_banner($bankRow, 'IN') ?>
+  <div style="font-size:12px;color:var(--ink2);margin:-4px 0 12px">거래처 대금이 아니면 (이자 · 환급 · 가수금 등) 바로 아래 <b>기타 입금</b>을 펼쳐 등록하세요 — 거기도 미리 채워 두었습니다.</div>
+<?php endif; ?>
+
+<?php
+$etcEnts = db()->query('SELECT id, code, name_ko FROM business_entities WHERE is_active = 1 ORDER BY id')->fetchAll();
+$etcAcc = db()->query("SELECT a.id, a.business_entity_id, a.bank_name, a.account_no FROM business_bank_accounts a
+                        WHERE a.is_active = 1 AND a.purpose IN ('IN','BOTH') ORDER BY a.business_entity_id, a.sort_order, a.id")->fetchAll();
+$etcOpen = post('act') === 'save_etc' || query('mode') === 'etc';
+?>
+<details class="card" id="etc"<?= $etcOpen ? ' open' : '' ?>>
+  <summary class="ch" style="cursor:pointer">기타 입금 — 수동 입력 (거래처 · 전표 없이)
+    <span style="font-weight:400;color:var(--ink3)">이자 · 환급금 · 가수금 · 차입 · 자산 매각 등 — 매출 미수는 줄이지 않습니다</span></summary>
+  <form method="post" class="cb">
+    <?= csrf_field() ?>
+    <input type="hidden" name="act" value="save_etc">
+    <?php if ($bankRow): ?><input type="hidden" name="bank_row" value="<?= (int)$bankRow['id'] ?>"><?php endif; ?>
+    <div class="f" style="align-items:flex-end">
+      <div class="fw w1"><label for="ee">사업자 *</label>
+        <select id="ee" name="business_entity_id">
+          <?php foreach ($etcEnts as $en): ?>
+            <option value="<?= (int)$en['id'] ?>"<?= (int)$en['id'] === (int)$formEnt ? ' selected' : '' ?>><?= h($en['code'] . ' · ' . $en['name_ko']) ?></option>
+          <?php endforeach; ?></select></div>
+      <div class="fw w1"><label for="ed">입금일 *</label>
+        <input type="date" id="ed" name="txn_date" value="<?= h(post('txn_date') ?: ($bankDate ?: date('Y-m-d'))) ?>" required></div>
+      <div class="fw w2"><label for="ek">입금 구분 *</label>
+        <select id="ek" name="kind" required><option value="">— 고르세요 —</option>
+          <?php foreach (CASH_IN_ETC as $k => $lab): ?>
+            <option value="<?= $k ?>"<?= post('kind') === $k ? ' selected' : '' ?>><?= h($lab) ?></option>
+          <?php endforeach; ?></select></div>
+      <div class="fw w1"><label for="ea">입금금액 *</label>
+        <input type="text" id="ea" name="amount" class="tnum" inputmode="numeric" style="text-align:right" required
+               value="<?= h(post('act') === 'save_etc' ? post('amount') : $bankAmt) ?>" placeholder="0"></div>
+    </div>
+    <div class="f" style="align-items:flex-end;margin-top:10px">
+      <div class="fw w2"><label for="ew">입금한 곳 (입금자명)</label>
+        <input type="text" id="ew" name="counterparty" maxlength="100" value="<?= h(post('act') === 'save_etc' ? post('counterparty') : ($bankRow['counterparty'] ?? '')) ?>" placeholder="예) 국민은행 이자 · 강서세무서"></div>
+      <div class="fw w2"><label for="eac">입금계좌</label>
+        <select id="eac" name="to_account_id"><option value="">— 지정 안 함 —</option>
+          <?php foreach ($etcAcc as $ac): ?>
+            <option value="<?= (int)$ac['id'] ?>" data-ent="<?= (int)$ac['business_entity_id'] ?>"<?= $bankRow && (int)$bankRow['bank_account_id'] === (int)$ac['id'] ? ' selected' : '' ?>><?= h($ac['bank_name'] . ' ' . $ac['account_no']) ?></option>
+          <?php endforeach; ?></select></div>
+      <div class="fw w1"><label for="em">방법</label>
+        <select id="em" name="method"><option value="TRANSFER">계좌이체</option><option value="CASH">현금</option>
+          <option value="CARD">카드</option><option value="NOTE">어음</option><option value="PG">PG</option></select></div>
+      <div class="fw gr" style="min-width:200px"><label for="es">적요</label>
+        <input type="text" id="es" name="summary" maxlength="200" value="<?= h(post('act') === 'save_etc' ? post('summary') : ($bankRow['description'] ?? '')) ?>" placeholder="예) 9월 예금이자"></div>
+    </div>
+    <div class="fw" style="margin-top:10px"><label for="emo">메모</label>
+      <input type="text" id="emo" name="memo" maxlength="500"></div>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:12px">
+      <button class="btn pri">기타 입금 등록</button>
+      <span style="font-size:11.5px;color:var(--ink3)">거래처 대금이면 아래 '거래처 선택' 으로 등록하세요 — 그래야 미수가 줄어듭니다.
+        누가 보낸 돈인지 모르면 <b>가수금</b>으로 넣어 두고, 확인되면 취소 후 거래처 입금으로 다시 넣습니다.</span>
+    </div>
+  </form>
+  <script>
+  // 사업자에 맞는 계좌만 보이게
+  (function () {
+    var ent = document.getElementById('ee'), acc = document.getElementById('eac');
+    function f() { Array.prototype.forEach.call(acc.options, function (o) { var e = o.getAttribute('data-ent'); o.hidden = !!e && e !== ent.value; if (o.hidden && o.selected) acc.value = ''; }); }
+    ent.addEventListener('change', f); f();
+  })();
+  </script>
+</details>
 
 <div class="card">
   <div class="ch">거래처 선택</div>
   <div class="cb">
     <form class="f" method="get" style="align-items:flex-end">
       <input type="hidden" name="p" value="cash_in">
+      <?php if ($bankRow): ?><input type="hidden" name="bank_row" value="<?= (int)$bankRow['id'] ?>"><?php endif; ?>
       <div class="fw w2"><label for="c">거래처 *</label>
         <select id="c" name="company_id" onchange="this.form.submit()">
           <option value="">— 선택 —</option>
@@ -270,6 +416,7 @@ layout_head('입금 등록', 'cash_in');
 <?= csrf_field() ?>
 <input type="hidden" name="act" value="save">
 <input type="hidden" name="company_id" value="<?= $compId ?>">
+<?php if ($bankRow): ?><input type="hidden" name="bank_row" value="<?= (int)$bankRow['id'] ?>"><?php endif; ?>
 
 <div class="card">
   <div class="ch">입금 내용</div>
@@ -283,11 +430,11 @@ layout_head('입금 등록', 'cash_in');
           <?php endforeach; ?>
         </select></div>
       <div class="fw w1"><label for="d">입금일자 *</label>
-        <input type="date" id="d" name="txn_date" required value="<?= h(date('Y-m-d')) ?>"></div>
+        <input type="date" id="d" name="txn_date" required value="<?= h($bankDate ?: date('Y-m-d')) ?>"></div>
       <div class="fw w1"><label for="a">입금금액 *</label>
         <input type="text" id="a" name="amount" class="tnum" required
-               style="text-align:right;font-weight:700" placeholder="0"
-               oninput="recalc()"></div>
+               style="text-align:right;font-weight:700" placeholder="0" value="<?= h($bankAmt) ?>"
+               oninput="recalc()"<?= $bankRow ? ' readonly title="은행내역 금액 그대로입니다"' : '' ?>></div>
       <div class="fw w1"><label for="m">입금방법</label>
         <select id="m" name="method">
           <option value="TRANSFER">계좌이체</option>
@@ -302,7 +449,7 @@ layout_head('입금 등록', 'cash_in');
         <select id="ac" name="to_account_id">
           <option value="">— 지정 안 함 —</option>
           <?php foreach ($accounts as $ac): ?>
-            <option value="<?= (int)$ac['id'] ?>">
+            <option value="<?= (int)$ac['id'] ?>"<?= $bankRow && (int)$bankRow['bank_account_id'] === (int)$ac['id'] ? ' selected' : '' ?>>
               <?= h($ac['bank_name']) ?> <?= h($ac['account_no']) ?></option>
           <?php endforeach; ?>
         </select>
@@ -312,7 +459,7 @@ layout_head('입금 등록', 'cash_in');
         <?php endif; ?>
       </div>
       <div class="fw w1"><label for="cp">입금자명</label>
-        <input type="text" id="cp" name="counterparty" placeholder="업체명과 다른 경우"></div>
+        <input type="text" id="cp" name="counterparty" placeholder="업체명과 다른 경우" value="<?= h($bankRow['counterparty'] ?? '') ?>"></div>
       <div class="fw w2"><label for="ti">관련 세금계산서</label>
         <select id="ti" name="tax_invoice_id">
           <option value="">— 없음 —</option>
@@ -326,7 +473,7 @@ layout_head('입금 등록', 'cash_in');
       <div class="fw w2"><label for="sm">적요</label>
         <input type="text" id="sm" name="summary" placeholder="예) 9월분 운임"></div>
       <div class="fw w2"><label for="mo">메모</label>
-        <input type="text" id="mo" name="memo"></div>
+        <input type="text" id="mo" name="memo" value="<?= h($bankRow && $bankRow['description'] ? '은행: ' . $bankRow['description'] : '') ?>"></div>
     </div>
   </div>
 </div>
@@ -335,7 +482,8 @@ layout_head('입금 등록', 'cash_in');
   <div class="ch">정산할 매출전표
     <span style="font-weight:400;color:var(--ink3)">오래된 것부터</span>
     <?php if ($unpaid || $obRows): ?>
-      <button type="button" class="btn sm" style="margin-left:auto" onclick="autoAlloc()">
+      <button type="button" class="btn sm pri" style="margin-left:auto" onclick="pickAll(true)">전체 선택</button>
+      <button type="button" class="btn sm" onclick="autoAlloc()">
         입금액만큼 자동배분</button>
       <button type="button" class="btn sm" onclick="clearAlloc()">배분 지우기</button>
     <?php endif; ?>
@@ -349,7 +497,8 @@ layout_head('입금 등록', 'cash_in');
   <?php else: ?>
   <table>
     <thead><tr>
-      <th class="c" style="width:45px"></th>
+      <th class="c" style="width:45px"><input type="checkbox" id="pickall" onchange="pickAll(this.checked)"
+                                               title="전체 선택 / 해제" aria-label="미수 전표 전체 선택"></th>
       <th style="width:110px">전표일</th><th style="width:170px">AWB</th>
       <th class="r" style="width:135px">매출금액</th>
       <th class="r" style="width:135px">기수금</th>
@@ -417,7 +566,7 @@ layout_head('입금 등록', 'cash_in');
 
 <div style="display:flex;gap:8px;align-items:center">
   <button class="btn pri">입금 등록</button>
-  <a class="btn" href="?p=cash_in">취소</a>
+  <a class="btn" href="<?= $bankRow ? '?p=bank_import&amp;import_id=' . (int)$bankRow['import_id'] : '?p=cash_in' ?>">취소</a>
   <span style="font-size:11.5px;color:var(--ink3)">
     등록자와 등록일시는 자동으로 남습니다. 등록 후 수정·취소 이력도 전부 기록됩니다.
   </span>
@@ -448,7 +597,30 @@ function recalc(){
 function pickChanged(cb){
   var el = document.querySelector('.allocin[data-sid="' + cb.dataset.sid + '"]');
   el.value = cb.checked ? fmt(parseFloat(cb.dataset.bal)) : '';
+  syncPickAll();
   recalc();
+}
+// 전체 선택 — 모든 미수를 잔액 그대로 채웁니다. 입금액이 비어 있으면 합계를 넣어 줍니다 (적어 둔 금액은 그대로)
+function pickAll(on){
+  var sum = 0;
+  document.querySelectorAll('.pick').forEach(function(cb){
+    cb.checked = on;
+    var el = document.querySelector('.allocin[data-sid="' + cb.dataset.sid + '"]');
+    el.value = on ? fmt(parseFloat(cb.dataset.bal)) : '';
+    if (on) { sum += parseFloat(cb.dataset.bal); }
+  });
+  var a = document.getElementById('a');
+  if (on && num(a.value) === 0) { a.value = fmt(sum); }
+  syncPickAll();
+  recalc();
+}
+function syncPickAll(){
+  var all = document.getElementById('pickall');
+  if (!all) return;
+  var picks = document.querySelectorAll('.pick'), n = 0;
+  picks.forEach(function(cb){ if (cb.checked) n++; });
+  all.checked = picks.length > 0 && n === picks.length;
+  all.indeterminate = n > 0 && n < picks.length;
 }
 function autoAlloc(){
   var left = num(document.getElementById('a').value);
@@ -460,11 +632,13 @@ function autoAlloc(){
     if (cb) cb.checked = put > 0;
     left -= put;
   });
+  syncPickAll();
   recalc();
 }
 function clearAlloc(){
   document.querySelectorAll('.allocin').forEach(function(el){ el.value = ''; });
   document.querySelectorAll('.pick').forEach(function(el){ el.checked = false; });
+  syncPickAll();
   recalc();
 }
 recalc();

@@ -19,7 +19,7 @@ if (current_admin()) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>로그인 · <?= h($CFG['app_name']) ?></title>
-<link rel="stylesheet" href="assets/app.css">
+<link rel="stylesheet" href="<?= h(asset_v('assets/app.css')) ?>">
 </head>
 <body>
 <div class="login">

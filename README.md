@@ -23,15 +23,15 @@ api/board.php              게시판 공개 API (목록 · 본문 · Q&A 등록)
 includes/db.php            DB 연결 (MySQL 환경변수 → MySQL, 없으면 영속 폴더 SQLite) · 테이블 자동 생성 · 예시 글 시드
 db/schema.sql              board_post 테이블 정의 (ERP 등 다른 프로그램이 같은 테이블을 쓸 때 참고)
 db/seed/                   테이블이 비어 있을 때 넣는 예시 글
-admin/posts.php            게시판 관리 (작성 · 수정 · 삭제 · Q&A 답변)
+admin/posts.php            (닫음) 예전 게시판 관리 화면 → ERP 홈페이지 게시판으로 이동
 helpdesk/qna-write.html    고객 Q&A 글쓰기
 assets/data/rates.xlsx     요금표 원본 엑셀 (이 파일만 교체하면 요금 반영)
-admin/rates.html           관리자 페이지 · 게시판 관리 / 요금표 교체 안내 · 미리보기
+admin/rates.html           관리자 페이지 · 게시판 관리(ERP) 링크 / 요금표 교체 안내 · 미리보기
 admin/config.js            ERP 게시판(공지사항 · Q&A) 링크 주소 설정
 assets/img/                로고 · 사진 자산 (백업 사이트 이미지에서 추출)
 ```
 
-게시판(api/, admin/posts.php)만 PHP 8 + PDO 를 쓰고 나머지는 정적 HTML 입니다. 별도 빌드 없이 PHP 가 되는 웹서버에 그대로 올리면 됩니다. 로컬 확인은 `php -S 127.0.0.1:8000` 으로 가능합니다.
+게시판 API(api/)와 관리자 보조 스크립트(admin/*.php)만 PHP 8 + PDO 를 쓰고 나머지는 정적 HTML 입니다. 별도 빌드 없이 PHP 가 되는 웹서버에 그대로 올리면 됩니다. 로컬 확인은 `php -S 127.0.0.1:8000` 으로 가능합니다.
 
 ## 요금표 관리 (엑셀 파일 교체)
 
@@ -45,7 +45,7 @@ assets/img/                로고 · 사진 자산 (백업 사이트 이미지�
 
 ## 관리자 페이지 접근 제한 · 비밀번호 (AI SPACE 배포)
 
-`/admin/` 폴더(요금표 · 게시판 관리, 업로드 엔드포인트)는 `admin/.htaccess` 로 보호됩니다.
+`/admin/` 폴더(요금표 관리 · 업로드 엔드포인트 · 비밀번호 설정)는 `admin/.htaccess` 로 보호됩니다.
 
 1. **비밀번호 만들기(최초 1회)**: AI SPACE 콘솔(또는 `project_env`)에 환경변수 `ADMIN_SETUP_TOKEN` 을 설정한 뒤, 기본 제공 도메인으로 `https://khy117-bakup.mycafe24.ai/admin/setup-password.php` 를 열어 토큰 · 아이디 · 비밀번호를 입력합니다. 비밀번호 파일은 영속 폴더 `/app/user_data/goodpost.htpasswd` 에 저장되어 재배포해도 유지됩니다.
 2. **그 뒤로는** 어느 도메인(good-post.co.kr · 기본 도메인)에서 접속하든 브라우저 로그인 창이 뜨고, 아이디 · 비밀번호가 맞아야 `/admin/` 이 열립니다. 비밀번호 변경은 로그인 후 같은 페이지에서 합니다.
@@ -55,7 +55,7 @@ assets/img/                로고 · 사진 자산 (백업 사이트 이미지�
 
 ## 연동이 필요한 부분
 
-- **게시판(공지사항 · Q&A)**: 이 서버의 DB(`board_post`)에 저장되며 `admin/posts.php` 에서 관리합니다. ERP(/erp/)가 같은 DB 를 쓰면 같은 테이블을 읽고 쓰면 됩니다(아래 "게시판 DB · API").
+- **게시판(공지사항 · Q&A)**: 이 서버의 DB(`board_post`)에 저장되며 ERP 의 "홈페이지 게시판"(/erp/?p=boards, 로그인 필요)에서 관리합니다. ERP(/erp/)가 같은 DB 를 쓰면 같은 테이블을 읽고 쓰면 됩니다(아래 "게시판 DB · API").
 - **견적문의**: 목록은 예시 데이터입니다.
 - **폼(픽업예약 · 로그인 · 회원가입 · 화물추적 · 결제)**: 마크업과 프론트 동작만 구현되어 있고 전송 대상 API는 비어 있습니다.
 - **개인정보취급방침**의 주민등록번호 수집 항목은 현행법 검토가 필요합니다.
@@ -66,7 +66,7 @@ assets/img/                로고 · 사진 자산 (백업 사이트 이미지�
 
 - **DB 연결**: `includes/db.php` 가 서버 환경변수 `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` 를 읽어 MySQL 에 접속합니다(AI SPACE · 호스팅이 자동 주입). 환경변수가 없으면 영속 폴더(`/app/user_data`, 없으면 `data/`)에 SQLite 파일을 만들어 동작하므로 DB 를 붙이기 전에도 게시판이 작동하고, MySQL 이 연결되면 자동으로 전환됩니다. 관리 화면 우측 상단에 현재 저장소(MySQL / SQLite)가 표시됩니다.
 - **테이블 · 예시 글**: 첫 요청 때 테이블이 없으면 만들고, 비어 있으면 `db/seed/*.json` 의 예시 글을 넣습니다. 실제 글을 등록하기 전에 관리 화면에서 예시 글을 지우면 됩니다.
-- **관리**: `admin/posts.php` (공지사항 · Q&A 탭, 작성 · 수정 · 삭제 · 공지 고정 · 비밀글 · Q&A 답변). `/admin/` 접근 제한(허용 IP + 관리자 인증)이 그대로 적용됩니다.
+- **관리**: ERP 의 "홈페이지 게시판"(`/erp/index.php?p=boards&b=notice|qna`, ERP 로그인 · 권한 필요)에서 작성 · 수정 · 삭제 · 공지 고정 · 비밀글 · Q&A 답변을 합니다. 예전 `admin/posts.php` 는 닫혀 있고 ERP 로 넘어갑니다.
 - **고객 Q&A 등록**: `helpdesk/qna-write.html` → `api/board.php`(POST). 비밀글은 비밀번호(해시 저장)를 아는 사람과 관리자만 본문을 볼 수 있습니다. 공지사항은 공개 등록이 막혀 있습니다.
 - **ERP 연동**: ERP 가 같은 DB 의 `board_post` 에 INSERT / UPDATE / DELETE 하면 홈페이지에 즉시 반영됩니다. 컬럼 의미는 `db/schema.sql` 주석 참고. 관리자 페이지의 ERP 링크는 같은 서버의 `/erp/` 상대 주소이며 `admin/config.js` 에서 바꿉니다.
 

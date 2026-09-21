@@ -1,5 +1,6 @@
 <?php
-require APP_DIR . '/layout.php';
+require_once APP_DIR . '/layout.php';
+require_once APP_DIR . '/ratecalc.php';
 
 /**
  * 단가계산기 — 스펙 [21]
@@ -44,102 +45,21 @@ if ($in['carrier_id'] !== '' && $in['actual_weight'] !== '') {
     }
     $cw = max($aw, $vw);
 
-    // 2) Zone — 국가코드로 찾거나 직접 입력
-    $zone = $in['zone_no'] !== '' ? (int)$in['zone_no'] : 0;
-    $zoneSrc = '직접 입력';
-    if ($zone === 0 && $in['country'] !== '') {
-        $st = db()->prepare('SELECT zone_no, country_name FROM carrier_zones
-                              WHERE carrier_id = ? AND country_code = ?');
-        $st->execute([$carId, $in['country']]);
-        $z = $st->fetch();
-        if ($z) {
-            $zone = (int)$z['zone_no'];
-            $zoneSrc = $in['country'] . ' (' . ($z['country_name'] ?: '') . ')';
-        } else {
-            $why[] = '이 운송사에 ' . $in['country'] . ' 의 Zone 이 등록돼 있지 않습니다.';
-        }
-    }
-    if ($zone === 0 && !$why) {
-        $why[] = '국가코드를 넣거나 Zone 번호를 직접 넣으세요.';
-    }
-
-    // 3) 기본가격 — 적용중인 가격표에서 Zone × 중량구간
-    $base = null; $rateTable = null;
-    if ($zone > 0) {
-        $st = db()->prepare(
-            'SELECT r.base_price, t.id AS tid, t.name, t.effective_from,
-                    r.weight_from, r.weight_to
-               FROM carrier_rates r
-               JOIN carrier_rate_tables t ON t.id = r.rate_table_id
-              WHERE t.carrier_id = ? AND t.status = \'ACTIVE\'
-                AND t.effective_from <= ?
-                AND (t.effective_to IS NULL OR t.effective_to >= ?)
-                AND r.zone_no = ?
-                AND r.weight_from < ? AND r.weight_to >= ?
-              ORDER BY t.effective_from DESC, r.weight_to ASC LIMIT 1');
-        $st->execute([$carId, $day, $day, $zone, $cw, $cw]);
-        $row = $st->fetch();
-        if ($row) {
-            $base = (float)$row['base_price'];
-            $rateTable = $row;
-        } else {
-            $why[] = 'Zone ' . $zone . ' · 청구중량 ' . $cw . 'kg 에 맞는 단가가 없습니다. '
-                   . '적용중인 가격표에 그 구간이 있는지 확인하세요.';
-        }
-    }
-
-    // 4) 할인율 — 거래처별. 없으면 0%
-    $disc = 0.0; $discSrc = '할인율 없음 (0%)'; $fuelApplied = true;
-    if ($in['company_id'] !== '') {
-        $st = db()->prepare(
-            'SELECT t.discount_rate, t.fuel_applied, t.effective_from, t.memo
-               FROM company_carrier_terms t
-              WHERE t.company_id = ? AND t.carrier_id = ?
-                AND t.trade_type IN (?, \'ALL\')
-                AND t.effective_from <= ?
-                AND (t.effective_to IS NULL OR t.effective_to >= ?)
-              ORDER BY t.trade_type = \'ALL\', t.effective_from DESC LIMIT 1');
-        $st->execute([(int)$in['company_id'], $carId, $in['trade_type'], $day, $day]);
-        $d = $st->fetch();
-        if ($d) {
-            $disc = (float)$d['discount_rate'];
-            $fuelApplied = (bool)$d['fuel_applied'];
-            $discSrc = $d['effective_from'] . ' 부터 적용'
-                     . ($d['memo'] ? ' · ' . $d['memo'] : '');
-        }
-    }
-
-    // 5) 유류할증 — 운송사별
-    $fuel = 0.0; $basis = 'AFTER_DISCOUNT'; $fuelSrc = '유류할증 없음 (0%)';
-    $st = db()->prepare(
-        'SELECT fuel_rate, calc_basis, effective_from FROM fuel_surcharges
-          WHERE carrier_id = ? AND effective_from <= ?
-            AND (effective_to IS NULL OR effective_to >= ?)
-          ORDER BY effective_from DESC LIMIT 1');
-    $st->execute([$carId, $day, $day]);
-    $f = $st->fetch();
-    if ($f) {
-        $fuel  = (float)$f['fuel_rate'];
-        $basis = $f['calc_basis'];
-        $fuelSrc = $f['effective_from'] . ' 부터 적용';
-    }
-
-    if ($base !== null) {
-        $discAmt  = round($base * $disc / 100);
-        $afterDsc = $base - $discAmt;
-        $fuelBase = ($basis === 'BASE_PRICE') ? $base : $afterDsc;
-        $fuelAmt  = $fuelApplied ? round($fuelBase * $fuel / 100) : 0;
-        $supply   = $afterDsc + $fuelAmt;
-
+    // 2~5) Zone · 기본가격 · 할인 · 유류할증 — 계산은 app/ratecalc.php 한 곳에서 (매출전표와 같은 값)
+    $Q = rate_quote($carId, $in['company_id'] !== '' ? (int)$in['company_id'] : null,
+                    $in['trade_type'], $day, $cw, $in['country'],
+                    $in['zone_no'] !== '' ? (int)$in['zone_no'] : 0);
+    $why = $Q['why'];
+    if ($Q['ok']) {
         $R = [
             'aw' => $aw, 'vw' => $vw, 'cw' => $cw,
-            'zone' => $zone, 'zone_src' => $zoneSrc,
-            'base' => $base, 'table' => $rateTable,
-            'disc' => $disc, 'disc_amt' => $discAmt, 'disc_src' => $discSrc,
-            'after' => $afterDsc,
-            'fuel' => $fuel, 'fuel_amt' => $fuelAmt, 'fuel_src' => $fuelSrc,
-            'fuel_basis' => $basis, 'fuel_applied' => $fuelApplied,
-            'supply' => $supply,
+            'zone' => $Q['zone'], 'zone_src' => $Q['zone_src'],
+            'base' => $Q['base'], 'table' => $Q['table'],
+            'disc' => $Q['disc'], 'disc_amt' => $Q['disc_amt'], 'disc_src' => $Q['disc_src'],
+            'after' => $Q['after'],
+            'fuel' => $Q['fuel'], 'fuel_amt' => $Q['fuel_amt'], 'fuel_src' => $Q['fuel_src'],
+            'fuel_basis' => $Q['fuel_basis'], 'fuel_applied' => $Q['fuel_applied'],
+            'supply' => $Q['supply'],
         ];
     }
 }
@@ -161,7 +81,7 @@ layout_head('단가계산기', 'rate_calculator');
           <option value="">선택 안 함 (할인 0%)</option>
           <?php foreach ($companies as $c): ?>
             <option value="<?= (int)$c['id'] ?>"<?= (string)$in['company_id']===(string)$c['id']?' selected':'' ?>>
-              <?= h($c['name_ko']) ?></option>
+              <?= h($c['name_ko']) ?> (<?= h($c['company_code']) ?>)</option>
           <?php endforeach; ?>
         </select></div>
       <div class="fw w1"><label>운송사 *</label>
