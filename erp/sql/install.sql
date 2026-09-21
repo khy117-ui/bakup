@@ -650,6 +650,11 @@ CREATE TABLE quotations (
   grand_total        DECIMAL(15,2) NOT NULL DEFAULT 0,
   status             VARCHAR(20) NOT NULL DEFAULT 'DRAFT'
                      COMMENT 'DRAFT/SENT/ACCEPTED/REJECTED/EXPIRED',
+  issued_at          DATETIME NULL                     COMMENT '마지막 발행(발송 · 재발행) 시각',
+  issue_count        INT UNSIGNED NOT NULL DEFAULT 0   COMMENT '발행 횟수',
+  revision           INT UNSIGNED NOT NULL DEFAULT 1   COMMENT '발행본 차수 (재발행하면 +1)',
+  reissue_reason     VARCHAR(255) NULL                 COMMENT '마지막 재발행 사유',
+  changed_at         DATETIME NULL                     COMMENT '발행 뒤 내용이 바뀐 시각 (재발행 필요 표시용)',
   converted_shipment_id BIGINT UNSIGNED NULL           COMMENT '수주 시 생성된 매출전표',
   terms              TEXT NULL                         COMMENT '견적 조건 문구',
   remark             TEXT NULL,

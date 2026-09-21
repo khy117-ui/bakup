@@ -512,6 +512,74 @@ function schema_upgrade_tax_invoices(): void
 }
 
 /**
+ * 견적서 재발행용 컬럼을 DB 에 붙입니다 (issued_at · issue_count · revision · reissue_reason · changed_at).
+ * 이미 있으면 아무것도 안 합니다. 기록용 SQL: sql/24_quotation_reissue.sql
+ */
+function schema_upgrade_quotations(): void
+{
+    if (!empty($_SESSION['schema_quotations_v1'])) { return; }
+    $pdo = db();
+    $has = function (string $col) use ($pdo): bool {
+        $st = $pdo->prepare('SELECT COUNT(*) FROM information_schema.COLUMNS
+                              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = \'quotations\' AND COLUMN_NAME = ?');
+        $st->execute([$col]);
+        return (int)$st->fetchColumn() > 0;
+    };
+    try {
+        if (!$has('issued_at')) {
+            $pdo->exec("ALTER TABLE quotations ADD COLUMN issued_at DATETIME NULL
+                          COMMENT '마지막 발행(발송 · 재발행) 시각' AFTER status");
+        }
+        if (!$has('issue_count')) {
+            $pdo->exec("ALTER TABLE quotations ADD COLUMN issue_count INT UNSIGNED NOT NULL DEFAULT 0
+                          COMMENT '발행 횟수' AFTER issued_at");
+            // 이미 발송 · 수주된 견적서는 1회 발행으로 봅니다
+            $pdo->exec("UPDATE quotations SET issue_count = 1, issued_at = COALESCE(issued_at, updated_at)
+                         WHERE status IN ('SENT','ACCEPTED','REJECTED','EXPIRED') AND issue_count = 0");
+        }
+        if (!$has('revision')) {
+            $pdo->exec("ALTER TABLE quotations ADD COLUMN revision INT UNSIGNED NOT NULL DEFAULT 1
+                          COMMENT '발행본 차수 (재발행하면 +1, 출력물에 REV. 로 표시)' AFTER issue_count");
+        }
+        if (!$has('reissue_reason')) {
+            $pdo->exec("ALTER TABLE quotations ADD COLUMN reissue_reason VARCHAR(255) NULL
+                          COMMENT '마지막 재발행 사유' AFTER revision");
+        }
+        if (!$has('changed_at')) {
+            $pdo->exec("ALTER TABLE quotations ADD COLUMN changed_at DATETIME NULL
+                          COMMENT '발행 뒤 내용이 바뀐 시각 — 재발행 필요 표시용' AFTER reissue_reason");
+        }
+        $_SESSION['schema_quotations_v1'] = 1;
+    } catch (Throwable $e) {
+        error_log('schema_upgrade_quotations: ' . $e->getMessage());
+    }
+}
+
+/** 로그에 남길 견적서 요약 (머리 + 항목 줄) */
+function quotation_snapshot(int $quoteId): string
+{
+    $pdo = db();
+    $st = $pdo->prepare('SELECT q.*, ca.code AS carrier FROM quotations q LEFT JOIN carriers ca ON ca.id = q.carrier_id WHERE q.id = ?');
+    $st->execute([$quoteId]);
+    $q = $st->fetch();
+    if (!$q) { return ''; }
+    $st = $pdo->prepare('SELECT item_name, qty, unit_price, supply_amount, tax_type, tax_amount FROM quotation_items
+                          WHERE quotation_id = ? ORDER BY line_no');
+    $st->execute([$quoteId]);
+    $items = [];
+    foreach ($st->fetchAll() as $it) {
+        $items[] = sprintf('%s %s×%s=%s%s', $it['item_name'], rtrim(rtrim(number_format((float)$it['qty'], 2), '0'), '.'),
+            number_format((float)$it['unit_price']), number_format((float)$it['supply_amount']),
+            $it['tax_type'] === 'TAXABLE' ? '(+VAT ' . number_format((float)$it['tax_amount']) . ')' : ($it['tax_type'] === 'EXEMPT' ? '(면세)' : '(영세)'));
+    }
+    return sprintf('합계 %s (공급 %s · VAT %s) · 견적일 %s · 유효 %s · %s %s→%s %skg · REV %d · 상태 %s · 항목: %s',
+        number_format((float)$q['grand_total']), number_format((float)$q['supply_total']), number_format((float)$q['tax_total']),
+        $q['quote_date'], $q['valid_until'] ?: '-', $q['carrier'] ?: '-', $q['origin_country'] ?: '-', $q['dest_country'] ?: '-',
+        $q['charge_weight'] !== null ? rtrim(rtrim(number_format((float)$q['charge_weight'], 2), '0'), '.') : '-',
+        (int)($q['revision'] ?? 1), $q['status'], mb_substr(implode(' ; ', $items), 0, 900));
+}
+
+/**
  * 청구서 금액을 저장하지 않고 현재 값으로만 계산해 돌려줍니다 (재발행 필요 여부 판단용).
  * 전표 금액이 청구서 발행 뒤에 바뀌면 저장된 합계와 달라집니다.
  */

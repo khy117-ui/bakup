@@ -7,6 +7,7 @@ $STATUS = ['DRAFT'=>['작성중','b-warn'], 'SENT'=>['발송','b-info'],
            'EXPIRED'=>['만료','b-err']];
 
 $kw  = query('kw');
+schema_upgrade_quotations();   // 재발행 컬럼 보강
 $sel = query('status');
 $page = max(1, (int)query('page', '1'));
 $per = 20; $off = ($page - 1) * $per;
@@ -90,7 +91,10 @@ layout_head('견적서 관리', 'quotations');
           <?= h($r['valid_until'] ?: '-') ?>
           <?php if ($expired): ?><span style="font-size:11px">지남</span><?php endif; ?></td>
         <td class="r tnum" style="font-weight:700"><?= money($r['grand_total']) ?></td>
-        <td class="c"><span class="badge <?= $cls ?>"><?= h($lab) ?></span></td>
+        <td class="c"><span class="badge <?= $cls ?>"><?= h($lab) ?></span>
+          <?php if ((int)($r['revision'] ?? 1) > 1): ?><div style="font-size:10.5px;color:var(--ink3)">REV. <?= (int)$r['revision'] ?></div><?php endif; ?>
+          <?php if ((int)($r['issue_count'] ?? 0) > 0 && !empty($r['changed_at']) && (empty($r['issued_at']) || $r['changed_at'] > $r['issued_at'])): ?>
+            <div style="font-size:10.5px;color:var(--err-fg)">수정됨 · 재발행 필요</div><?php endif; ?></td>
         <td class="c">
           <a class="btn sm" href="?p=quotation_form&amp;id=<?= (int)$r['id'] ?>">열기</a>
           <?php if ($r['converted_shipment_id']): ?>

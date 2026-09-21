@@ -76,6 +76,10 @@ $stampUri = entity_stamp_data_uri($be ?: null);   // 사업자 관리에서 올�
     <?php endif; ?>
     <?php if ($q['status'] === 'DRAFT'): ?>
       <span style="font-size:12px;color:#A32020;align-self:center">작성중인 견적서입니다</span>
+    <?php elseif ((int)($q['issue_count'] ?? 0) > 0 && !empty($q['changed_at']) && (empty($q['issued_at']) || $q['changed_at'] > $q['issued_at'])): ?>
+      <span style="font-size:12px;color:#A32020;align-self:center">발행 뒤 내용이 바뀌었습니다 — 견적서 화면에서 [재발행] 하세요</span>
+    <?php elseif ((int)($q['revision'] ?? 1) > 1): ?>
+      <span style="font-size:12px;color:#4E6273;align-self:center">재발행 REV. <?= (int)$q['revision'] ?> · 최종 발행 <?= h(substr((string)$q['issued_at'], 0, 16)) ?></span>
     <?php endif; ?>
   </div>
 
@@ -84,6 +88,9 @@ $stampUri = entity_stamp_data_uri($be ?: null);   // 사업자 관리에서 올�
     <?= h($q['quote_no']) ?> &nbsp;·&nbsp; <?= h($q['quote_date']) ?>
     <?php if ($q['valid_until']): ?>
       &nbsp;·&nbsp; 유효기한 <?= h($q['valid_until']) ?>
+    <?php endif; ?>
+    <?php if ((int)($q['revision'] ?? 1) > 1): ?>
+      &nbsp;·&nbsp; REV. <?= (int)$q['revision'] ?> (<?= h(substr((string)$q['issued_at'], 0, 10)) ?>)
     <?php endif; ?>
   </div>
 

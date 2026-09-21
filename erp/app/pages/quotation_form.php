@@ -11,6 +11,7 @@ $TAX     = ['ZERO' => 0.0, 'TAXABLE' => 10.0, 'EXEMPT' => 0.0];
 $STATUS  = ['DRAFT' => '작성중', 'SENT' => '발송', 'ACCEPTED' => '수주',
             'REJECTED' => '실주', 'EXPIRED' => '만료'];
 $MAXLINE = 6;
+schema_upgrade_quotations();   // 재발행 컬럼(issued_at · issue_count · revision · reissue_reason · changed_at) 보강
 
 $companies = db()->prepare('SELECT id, company_code, name_ko FROM companies
                              WHERE deleted_at IS NULL ORDER BY name_ko');
@@ -56,6 +57,37 @@ if ($id > 0) {
                 'tax_type' => $o['tax_type'],
             ];
         }
+    }
+}
+
+// ---------------------------------------------------------------- 발행 · 재발행
+// 처음 [발행] 은 상태를 발송(SENT) 으로 바꾸고 발행 시각 · 횟수를 기록합니다.
+// 발행 뒤 내용을 고쳤으면 [재발행] — 사유가 필수이고 차수(REV.)가 올라가며 이전 · 이후 내용이 로그에 남습니다.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'issue' && $id > 0) {
+    csrf_check();
+    $first = (int)($cur['issue_count'] ?? 0) === 0;
+    $why   = trim(post('reason'));
+    if ($cur['converted_shipment_id'] && !$first) {
+        $err = '매출전표로 전환된 견적서는 재발행할 수 없습니다. 새 견적서를 만드세요.';
+    } elseif (!$first && mb_strlen($why) < 2) {
+        $err = '재발행 사유를 적어 주세요. (예: 단가 정정, 유효기한 연장)';
+    } else {
+        $pdo = db();
+        $pdo->beginTransaction();
+        $before = quotation_snapshot($id);
+        $newStatus = in_array($cur['status'], ['ACCEPTED'], true) ? $cur['status'] : 'SENT';
+        $pdo->prepare('UPDATE quotations
+                          SET status = ?, issued_at = NOW(), issue_count = issue_count + 1,
+                              revision = revision + ?, reissue_reason = ?, changed_at = NULL
+                        WHERE id = ? AND business_entity_id = ?')
+            ->execute([$newStatus, $first ? 0 : 1, $first ? null : $why, $id, $eid]);
+        $after = quotation_snapshot($id);
+        log_action('견적', 'ISSUE', 'quotations', $id, (string)$cur['quote_no'],
+                   $first ? null : $before, $after, $first ? null : $why);
+        $pdo->commit();
+        flash($first ? '견적서를 발행했습니다 (상태: 발송). 출력해서 보내세요.'
+                     : '견적서를 재발행했습니다 (REV. ' . ((int)$cur['revision'] + 1) . '). 출력물을 다시 보내세요.');
+        redirect('?p=quotation_form&id=' . $id);
     }
 }
 
@@ -167,6 +199,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save') {
         $valid[] = $l;
     }
 
+    $issuedQ = $id > 0 && (int)($cur['issue_count'] ?? 0) > 0;
+    $editReason = trim(post('reason'));
+    if ($err === '' && $issuedQ && mb_strlen($editReason) < 2) {
+        $err = '발행된 견적서를 고칠 때는 수정 사유를 적어 주세요.';
+    }
     if ($err === '') {
         if ($in['company_id'] === '' && $in['prospect_name'] === '') {
             $err = '거래처를 고르거나, 미등록이면 상호를 직접 입력하세요.';
@@ -181,6 +218,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save') {
         $pdo = db();
         try {
             $pdo->beginTransaction();
+            $before = $id > 0 ? quotation_snapshot($id) : null;
             $supply = 0; $vat = 0;
             foreach ($valid as $l) {
                 $amt = round(num($l['qty']) * num($l['unit_price']));
@@ -242,10 +280,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save') {
                 $ins->execute([$qid, ++$n, $l['charge_type'], $l['item_name'], $q, $u,
                                $amt, $l['tax_type'], $rate, $tax, $amt + $tax]);
             }
+            $after = quotation_snapshot($qid);
+            $changed = $id > 0 && $before !== $after;
+            if ($issuedQ && $changed) {
+                $pdo->prepare('UPDATE quotations SET changed_at = NOW() WHERE id = ?')->execute([$qid]);
+            }
             log_action('견적', $id > 0 ? 'UPDATE' : 'CREATE', 'quotations', $qid, $no,
-                       null, '합계 ' . number_format($supply + $vat));
+                       $before, $after, $editReason !== '' ? $editReason : null);
             $pdo->commit();
-            flash('견적서 ' . $no . ' 를 저장했습니다.');
+            flash('견적서 ' . $no . ' 를 저장했습니다.' . ($issuedQ && $changed ? ' 발행된 견적서라 내용을 바꿨으면 [재발행] 하세요.' : ''));
             redirect('?p=quotation_form&id=' . $qid);
         } catch (PDOException $e) {
             $pdo->rollBack();
@@ -264,16 +307,45 @@ layout_head($title, 'quotations');
     <span class="badge <?= $cur['status']==='ACCEPTED'?'b-ok':($cur['status']==='REJECTED'?'b-err':'b-info') ?>"
           style="height:24px"><?= h($STATUS[$cur['status']] ?? $cur['status']) ?></span>
   <?php endif; ?>
+  <?php if ($id > 0 && (int)($cur['revision'] ?? 1) > 1): ?>
+    <span class="badge b-info" style="height:24px">REV. <?= (int)$cur['revision'] ?></span>
+  <?php endif; ?>
   <div class="crumb">영업관리 &gt; 견적서</div>
   <div class="right">
     <a class="btn" href="?p=quotations">목록</a>
     <?php if ($id > 0): ?>
       <a class="btn" href="?p=quotation_print&amp;id=<?= $id ?>" target="_blank">출력</a>
+      <?php $issuedQ = (int)($cur['issue_count'] ?? 0) > 0;
+            $needsReissue = $issuedQ && !empty($cur['changed_at']) && (empty($cur['issued_at']) || $cur['changed_at'] > $cur['issued_at']); ?>
+      <?php if (!$issuedQ): ?>
+        <form method="post" style="display:inline">
+          <?= csrf_field() ?><input type="hidden" name="act" value="issue">
+          <button class="btn pri">발행</button>
+        </form>
+      <?php elseif (!$cur['converted_shipment_id']): ?>
+        <form method="post" style="display:inline-flex;gap:6px;align-items:center"
+              onsubmit="return confirm('견적서를 재발행합니다. 차수(REV.)가 올라가고 이전 내용과 사유는 변경 이력에 남습니다. 계속할까요?');">
+          <?= csrf_field() ?><input type="hidden" name="act" value="issue">
+          <input type="text" name="reason" required placeholder="재발행 사유 (필수)" style="width:200px">
+          <button class="btn <?= $needsReissue ? 'pri' : '' ?>">재발행</button>
+        </form>
+      <?php endif; ?>
     <?php endif; ?>
   </div>
 </div>
 
 <?php if ($err !== ''): ?><div class="msg err"><?= h($err) ?></div><?php endif; ?>
+<?php if ($id > 0 && $issuedQ): ?>
+  <div class="msg" style="background:var(--info-bg);color:var(--info-fg)">
+    발행 <?= (int)$cur['issue_count'] ?>회 · 최종 발행 <span class="tnum"><?= h(substr((string)$cur['issued_at'], 0, 16)) ?></span>
+    <?php if ((int)($cur['revision'] ?? 1) > 1): ?> · REV. <?= (int)$cur['revision'] ?><?php endif; ?>
+    <?php if (!empty($cur['reissue_reason'])): ?> · 사유: <?= h($cur['reissue_reason']) ?><?php endif; ?>
+  </div>
+  <?php if ($needsReissue): ?>
+  <div class="msg err">발행 뒤에 내용이 바뀌었습니다 (마지막 수정 <span class="tnum"><?= h(substr((string)$cur['changed_at'], 0, 16)) ?></span>).
+    오른쪽 위 <b>[재발행]</b> 을 눌러 새 차수로 발행하세요. 재발행 전 출력물에는 REV. 가 올라가지 않습니다.</div>
+  <?php endif; ?>
+<?php endif; ?>
 
 <?php if ($id > 0 && $cur['converted_shipment_id']): ?>
   <div class="msg ok">이 견적서는 매출전표로 전환됐습니다 —
@@ -386,9 +458,13 @@ layout_head($title, 'quotations');
   </div>
 </div>
 
-<div style="display:flex;gap:8px">
+<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
   <button class="btn pri">저장</button>
   <a class="btn" href="?p=quotations">취소</a>
+  <?php if ($id > 0 && (int)($cur['issue_count'] ?? 0) > 0): ?>
+    <input type="text" name="reason" required placeholder="수정 사유 (발행된 견적서는 필수)" style="width:280px;margin-left:8px">
+    <span style="font-size:11.5px;color:var(--ink3)">저장 뒤 [재발행] 해야 출력물 차수가 올라갑니다</span>
+  <?php endif; ?>
 </div>
 </form>
 
@@ -420,6 +496,49 @@ layout_head($title, 'quotations');
     전환하면 견적 항목이 그대로 매출전표의 비용항목으로 복사되고, 상태가 <b>수주</b>로 바뀝니다.
     전표일은 오늘로 들어가니 필요하면 전표 화면에서 고치세요.
   </div>
+</div>
+
+<?php
+$st = db()->prepare("SELECT * FROM activity_logs WHERE ref_table = 'quotations' AND ref_id = ? ORDER BY id DESC LIMIT 100");
+$st->execute([$id]);
+$history = $st->fetchAll();
+$ACT = ['CREATE' => ['만듦', 'b-ok'], 'UPDATE' => ['수정', 'b-info'], 'DELETE' => ['삭제', 'b-err'],
+        'CANCEL' => ['취소', 'b-err'], 'ISSUE' => ['발행', 'b-info'], 'CONVERT' => ['전환', 'b-ok'],
+        'PRINT' => ['출력', 'b-warn'], 'EXPORT' => ['내보내기', 'b-warn']];
+?>
+<div class="card">
+  <div class="ch">변경 이력
+    <span style="font-weight:400;color:var(--ink3)">발행 · 재발행 · 수정 · 전환이 이전값 → 이후값(합계 · 항목)과 사유로 남습니다</span>
+    <a class="btn sm" style="margin-left:auto" href="?p=activity_log&amp;kw=<?= h(rawurlencode((string)$cur['quote_no'])) ?>">전체 작업로그</a>
+  </div>
+  <?php if (!$history): ?>
+    <div class="empty">기록이 없습니다.</div>
+  <?php else: ?>
+  <table>
+    <thead><tr>
+      <th style="width:130px">일시</th><th style="width:90px">담당</th><th style="width:80px">구분</th>
+      <th>내용 (이전 → 이후)</th><th style="width:180px">사유</th>
+    </tr></thead>
+    <tbody>
+    <?php foreach ($history as $hrow): [$al, $ac] = $ACT[$hrow['action']] ?? [$hrow['action'], 'b-info']; ?>
+      <tr>
+        <td class="tnum" style="font-size:11.5px"><?= h(substr((string)$hrow['created_at'], 0, 16)) ?></td>
+        <td><?= h($hrow['admin_name']) ?></td>
+        <td><span class="badge <?= $ac ?>"><?= h($al) ?></span></td>
+        <td style="font-size:11.5px;line-height:1.5;word-break:break-all">
+          <?php if ($hrow['before_value'] !== null && $hrow['before_value'] !== ''): ?>
+            <div style="color:var(--ink3)">이전: <?= h(mb_substr((string)$hrow['before_value'], 0, 500)) ?></div>
+          <?php endif; ?>
+          <?php if ($hrow['after_value'] !== null && $hrow['after_value'] !== ''): ?>
+            <div>이후: <?= h(mb_substr((string)$hrow['after_value'], 0, 500)) ?></div>
+          <?php endif; ?>
+        </td>
+        <td style="font-size:11.5px"><?= h((string)$hrow['reason']) ?></td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  <?php endif; ?>
 </div>
 <?php endif; ?>
 <?php layout_foot();
