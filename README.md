@@ -1,6 +1,6 @@
 # 굿배송항공 (GOODPOST) 홈페이지 리뉴얼
 
-postgood.co.kr 리뉴얼 시안(시안 C · 라이트 미니멀)을 반응형 정적 사이트로 구현한 소스입니다.
+굿배송항공 홈페이지(good-post.co.kr, 구 postgood.co.kr) 리뉴얼 시안(시안 C · 라이트 미니멀)을 반응형 정적 사이트로 구현한 소스입니다.
 기존 ASP 사이트 백업(www.zip)의 메뉴 구조와 본문 콘텐츠를 그대로 옮겼고, 데스크톱(1280px 컨테이너)과 모바일(390px)에서 모두 동작합니다.
 
 ## 구성
@@ -43,20 +43,15 @@ assets/img/                로고 · 사진 자산 (백업 사이트 이미지�
 
 시트 구성: `EMS_비서류`, `EMS_서류`, `EMS_발송조건`, `DHL_수출_비서류`, `DHL_수출_서류`, `DHL_수입_비서류`, `DHL_수입_서류`, `중량물_수출`, `중량물_수입`, `지역표` (첫 시트 `안내`에 설명 포함). EMS · DHL 요금 숫자는 기존 사이트 DB에 있던 값이라 현재 비어 있으며, 빈 칸은 "-" 로 표시됩니다.
 
-## 요금표 관리 페이지 접근 제한 (서버 배포 시)
+## 관리자 페이지 접근 제한 · 비밀번호 (AI SPACE 배포)
 
-`admin/` 폴더(요금표 관리 페이지 · 업로드 엔드포인트)는 서버에서 **허용 IP + 관리자 로그인** 두 조건을 모두 만족할 때만 열리도록 설정 파일을 함께 넣어 두었습니다. 사용하는 서버에 맞는 파일 하나만 적용하면 됩니다.
+`/admin/` 폴더(요금표 · 게시판 관리, 업로드 엔드포인트)는 `admin/.htaccess` 로 보호됩니다.
 
-| 서버 | 파일 | 할 일 |
-|---|---|---|
-| Apache | `admin/.htaccess` | 허용 IP를 사무실 고정 IP로 교체, `htpasswd -c /etc/apache2/goodpost.htpasswd admin` 으로 계정 생성 |
-| IIS (Windows) | `admin/web.config` | 허용 IP 교체, IIS "IP 및 도메인 제한"·"기본 인증" 기능 설치 후 관리자 계정 지정 |
-| nginx | `deploy/nginx-admin.conf` | server 블록에 붙여 넣고 허용 IP 교체, `htpasswd -c /etc/nginx/goodpost.htpasswd admin` |
-
-- 허용 IP 기본값은 기존 관리자 시스템(ADM)에 등록돼 있던 사무실 IP를 옮겨 둔 것이므로 현재 값으로 확인 후 교체하세요.
-- `admin/.htaccess` 맨 위의 `Require expr "%{HTTP_HOST} =~ /\.mycafe24\.ai$/"` 한 줄은 AI SPACE 미리보기(`*.mycafe24.ai`)에서만 관리 페이지를 열어 두기 위한 예외입니다. **실서버에 올릴 때는 이 줄을 삭제**해야 IP · 인증 제한이 온전히 적용됩니다.
-- 공개 페이지가 읽는 `assets/data/rates.xlsx` 는 제한 대상이 아닙니다. 요금표 **관리 화면과 업로드 경로만** 막습니다.
-- PHP 호스팅이면 `admin/upload.php` 로 관리 페이지에서 바로 엑셀을 교체할 수 있습니다. 파일 안 `ADMIN_TOKEN` 에 긴 무작위 문자열을 넣으면 IP·인증에 더해 토큰까지 3중으로 확인하고, 교체 전 파일은 `assets/data/backup/` 에 날짜별로 보관됩니다. PHP가 없는 정적 호스팅에서는 이 폼 대신 FTP로 덮어쓰면 됩니다.
+1. **비밀번호 만들기(최초 1회)**: AI SPACE 콘솔(또는 `project_env`)에 환경변수 `ADMIN_SETUP_TOKEN` 을 설정한 뒤, 기본 제공 도메인으로 `https://khy117-bakup.mycafe24.ai/admin/setup-password.php` 를 열어 토큰 · 아이디 · 비밀번호를 입력합니다. 비밀번호 파일은 영속 폴더 `/app/user_data/goodpost.htpasswd` 에 저장되어 재배포해도 유지됩니다.
+2. **그 뒤로는** 어느 도메인(good-post.co.kr · 기본 도메인)에서 접속하든 브라우저 로그인 창이 뜨고, 아이디 · 비밀번호가 맞아야 `/admin/` 이 열립니다. 비밀번호 변경은 로그인 후 같은 페이지에서 합니다.
+3. 비밀번호 파일이 없는 동안에는 기본 제공 도메인(`*.mycafe24.ai`)과 `.htaccess` 의 허용 IP 에서만 열립니다. 사무실 고정 IP 에서만 열고 싶으면 `.htaccess` 의 주석 처리된 `RequireAll` 블록을 풀어 IP 를 넣으세요.
+4. `admin/upload.php` 는 로그인 + (설정 시) 업로드 토큰으로 보호되며, `ALLOWED_IPS` 를 채우면 IP 도 추가로 검사합니다.
+5. 다른 서버(IIS · nginx)에 올릴 때는 `admin/web.config`, `deploy/nginx-admin.conf` 를 참고하세요.
 
 ## 연동이 필요한 부분
 
@@ -73,7 +68,7 @@ assets/img/                로고 · 사진 자산 (백업 사이트 이미지�
 - **테이블 · 예시 글**: 첫 요청 때 테이블이 없으면 만들고, 비어 있으면 `db/seed/*.json` 의 예시 글을 넣습니다. 실제 글을 등록하기 전에 관리 화면에서 예시 글을 지우면 됩니다.
 - **관리**: `admin/posts.php` (공지사항 · Q&A 탭, 작성 · 수정 · 삭제 · 공지 고정 · 비밀글 · Q&A 답변). `/admin/` 접근 제한(허용 IP + 관리자 인증)이 그대로 적용됩니다.
 - **고객 Q&A 등록**: `helpdesk/qna-write.html` → `api/board.php`(POST). 비밀글은 비밀번호(해시 저장)를 아는 사람과 관리자만 본문을 볼 수 있습니다. 공지사항은 공개 등록이 막혀 있습니다.
-- **ERP 연동**: ERP 가 같은 DB 의 `board_post` 에 INSERT / UPDATE / DELETE 하면 홈페이지에 즉시 반영됩니다. 컬럼 의미는 `db/schema.sql` 주석 참고. 관리자 페이지의 ERP 링크 주소는 `admin/config.js` 에서 바꿉니다.
+- **ERP 연동**: ERP 가 같은 DB 의 `board_post` 에 INSERT / UPDATE / DELETE 하면 홈페이지에 즉시 반영됩니다. 컬럼 의미는 `db/schema.sql` 주석 참고. 관리자 페이지의 ERP 링크는 같은 서버의 `/erp/` 상대 주소이며 `admin/config.js` 에서 바꿉니다.
 
 공개 API (`api/board.php`, 홈페이지 JS 가 사용 · 다른 서버 API 로 바꾸려면 `assets/js/site-config.js` 의 `api` 값을 교체):
 

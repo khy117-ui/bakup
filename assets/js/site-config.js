@@ -7,7 +7,7 @@
  *   - 다른 서버의 API 를 쓰려면 api 값을 절대 주소(https://…)로 바꾸면 됩니다. (형식: README "게시판 API 형식")
  * ------------------------------------------------------------------ */
 (function () {
-  var erp = 'https://postgood.co.kr/erp/';
+  var erp = '/erp/';   // 같은 서버의 ERP (도메인 무관)
   window.GOODPOST_SITE = {
     boards: {
       notice: {

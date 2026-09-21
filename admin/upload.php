@@ -7,15 +7,15 @@
  * .htaccess · web.config · nginx 설정의 IP 제한과 Basic 인증이 그대로 적용됩니다.
  *
  * 추가 방어 (서버 설정이 빠졌을 때를 대비한 이중 잠금):
- *   - 아래 ALLOWED_IPS 에 없는 IP는 403
+ *   - ALLOWED_IPS 를 채우면 그 IP 밖에서는 403 (비워 두면 IP 검사 생략)
  *   - Basic 인증 사용자(REMOTE_USER)가 없으면 403
  *   - POST + 토큰(ADMIN_TOKEN) 일치 + .xlsx 서명 검사 + 5MB 상한
  *   - 교체 전 이전 파일을 assets/data/backup/ 에 날짜별로 보관
  */
 declare(strict_types=1);
 
-const ALLOWED_IPS = ['127.0.0.1', '61.43.120.209', '117.110.98.252', '175.209.40.226', '211.206.111.242'];
-const ALLOWED_PREFIX = ['221.151.149.'];
+const ALLOWED_IPS = [];                 // 비워 두면 IP 검사 생략. 사무실 고정 IP 에서만 허용하려면 ['61.43.120.209', ...] 처럼 입력
+const ALLOWED_PREFIX = [];              // 예: ['221.151.149.']
 const ADMIN_TOKEN = '';                 // 배포 시 긴 무작위 문자열로 설정 (비워 두면 토큰 검사 생략)
 const MAX_BYTES = 5 * 1024 * 1024;
 const TARGET = __DIR__ . '/../assets/data/rates.xlsx';
@@ -32,7 +32,7 @@ function fail(int $code, string $msg): void {
 }
 
 $ip = $_SERVER['REMOTE_ADDR'] ?? '';
-$ipOk = in_array($ip, ALLOWED_IPS, true);
+$ipOk = (ALLOWED_IPS === [] && ALLOWED_PREFIX === []) || in_array($ip, ALLOWED_IPS, true);
 foreach (ALLOWED_PREFIX as $prefix) {
     if (strpos($ip, $prefix) === 0) { $ipOk = true; }
 }

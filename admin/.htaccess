@@ -1,38 +1,44 @@
 # ------------------------------------------------------------------
-# 굿배송항공 요금표 관리 페이지(/admin/) 외부 접근 제한 — Apache 2.4
-#   1) 허용 IP(사무실 고정 IP)에서 접속했고
-#   2) 관리자 계정(Basic 인증)으로 로그인한 경우에만 열립니다.
-#   두 조건을 모두 만족해야 하므로 IP가 유출되거나 비밀번호가 유출되어도
-#   한 가지만으로는 접근할 수 없습니다.
+# 굿배송항공 관리자 페이지(/admin/) 접근 제한 — Apache 2.4 (AI SPACE 호스팅 기준)
 #
-#   ※ 공개 요금표(/service/*.html)가 읽는 assets/data/rates.xlsx 는
-#      이 제한 대상이 아니므로 그대로 공개되어야 합니다.
+#   관리자 비밀번호 파일 : /app/user_data/goodpost.htpasswd  (영속 폴더, 배포해도 유지됨)
+#   비밀번호 만들기     : /admin/setup-password.php  (최초 1회, 서버 환경변수 ADMIN_SETUP_TOKEN 필요)
+#
+#   1) 비밀번호 파일이 있으면  → 어디서 접속하든 관리자 아이디 · 비밀번호(Basic 인증)를 요구합니다.
+#   2) 비밀번호 파일이 없으면  → 기본 제공 도메인(*.mycafe24.ai) 또는 허용 IP 에서만 열립니다.
+#      (이 상태에서 setup-password.php 로 비밀번호를 만들면 곧바로 1) 로 바뀝니다)
+#
+#   ※ 공개 요금표가 읽는 /assets/data/rates.xlsx 와 게시판 API(/api/) 는 제한 대상이 아닙니다.
 # ------------------------------------------------------------------
 
-<RequireAny>
-    # [미리보기 전용] AI SPACE 미리보기 주소(*.mycafe24.ai)에서는 제한 없이 열람합니다.
-    #   ※ 실서버(postgood.co.kr)에 올릴 때는 아래 한 줄을 반드시 삭제하세요.
-    Require expr "%{HTTP_HOST} =~ /\.mycafe24\.ai$/"
+<IfFile "/app/user_data/goodpost.htpasswd">
+    AuthType Basic
+    AuthName "GOODPOST 관리자"
+    AuthUserFile /app/user_data/goodpost.htpasswd
+    # 사무실 고정 IP 에서만 열고 싶으면 아래 주석을 풀고 IP 를 넣으세요. (IP + 비밀번호 둘 다 필요)
+    #<RequireAll>
+    #    <RequireAny>
+    #        Require ip 61.43.120.209
+    #        Require ip 221.151.149.0/24
+    #    </RequireAny>
+    #    Require valid-user
+    #</RequireAll>
+    Require valid-user
+</IfFile>
 
-    # [실서버] 허용 IP 목록: 사무실 고정 IP로 교체하세요. (기존 관리자 시스템의 허용 IP를 옮겨 둔 값)
-    <RequireAll>
-        <RequireAny>
-            Require ip 127.0.0.1
-            Require ip 61.43.120.209
-            Require ip 117.110.98.252
-            Require ip 175.209.40.226
-            Require ip 211.206.111.242
-            Require ip 221.151.149.0/24
-        </RequireAny>
-        Require valid-user
-    </RequireAll>
-</RequireAny>
-
-# 관리자 계정: 서버에서 아래 명령으로 웹 루트 밖에 비밀번호 파일을 만든 뒤 경로를 맞추세요.
-#   htpasswd -c /etc/apache2/goodpost.htpasswd admin
-AuthType Basic
-AuthName "GOODPOST 요금표 관리"
-AuthUserFile /etc/apache2/goodpost.htpasswd
+<IfFile !"/app/user_data/goodpost.htpasswd">
+    <RequireAny>
+        # 기본 제공 도메인(미리보기 주소)에서는 비밀번호 설정을 위해 열어 둡니다.
+        Require expr "%{HTTP_HOST} =~ /\.mycafe24\.ai$/"
+        # 허용 IP (기존 관리자 시스템의 사무실 IP)
+        Require ip 127.0.0.1
+        Require ip 61.43.120.209
+        Require ip 117.110.98.252
+        Require ip 175.209.40.226
+        Require ip 211.206.111.242
+        Require ip 221.151.149.0/24
+    </RequireAny>
+</IfFile>
 
 # 관리 페이지는 검색엔진 색인 · 캐시 금지
 <IfModule mod_headers.c>
