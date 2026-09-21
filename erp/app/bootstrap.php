@@ -650,6 +650,91 @@ function statement_snapshot(int $stmtId): string
 }
 
 /**
+ * 입금확인서 표를 DB 에 붙입니다 (receipts · receipt_transactions). 이미 있으면 아무것도 안 합니다.
+ * 기록용 SQL: sql/26_receipts.sql
+ */
+function schema_upgrade_receipts(): void
+{
+    if (!empty($_SESSION['schema_receipts_v1'])) { return; }
+    $pdo = db();
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS receipts (
+            id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            business_entity_id BIGINT UNSIGNED NOT NULL,
+            receipt_no         VARCHAR(40) NOT NULL              COMMENT 'GPA-RC-202609-001',
+            company_id         BIGINT UNSIGNED NOT NULL,
+            receipt_date       DATE NOT NULL                     COMMENT '확인서 일자',
+            period_from        DATE NULL,
+            period_to          DATE NULL,
+            amount_total       DECIMAL(15,2) NOT NULL DEFAULT 0  COMMENT '입금 합계 (발행 시점 고정)',
+            txn_count          INT UNSIGNED NOT NULL DEFAULT 0,
+            status             VARCHAR(20) NOT NULL DEFAULT 'ISSUED' COMMENT 'ISSUED/CANCELLED',
+            issued_at          DATETIME NULL                     COMMENT '마지막 발행(재발행) 시각',
+            issue_count        INT UNSIGNED NOT NULL DEFAULT 1   COMMENT '발행 횟수',
+            revision           INT UNSIGNED NOT NULL DEFAULT 1   COMMENT '발행본 차수 (재발행하면 +1)',
+            reissue_reason     VARCHAR(255) NULL                 COMMENT '마지막 재발행 사유',
+            remark             VARCHAR(255) NULL                 COMMENT '확인서에 찍는 비고',
+            created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            created_by         BIGINT UNSIGNED NULL,
+            deleted_at         DATETIME NULL,
+            PRIMARY KEY (id),
+            UNIQUE KEY uq_rc_no (business_entity_id, receipt_no),
+            KEY ix_rc_company (company_id, receipt_date),
+            CONSTRAINT fk_rc_entity  FOREIGN KEY (business_entity_id) REFERENCES business_entities(id),
+            CONSTRAINT fk_rc_company FOREIGN KEY (company_id) REFERENCES companies(id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='입금확인서'");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS receipt_transactions (
+            id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            receipt_id     BIGINT UNSIGNED NOT NULL,
+            transaction_id BIGINT UNSIGNED NOT NULL              COMMENT 'financial_transactions.id (입금)',
+            line_no        SMALLINT NOT NULL,
+            amount         DECIMAL(15,2) NOT NULL DEFAULT 0      COMMENT '발행 시점 금액',
+            PRIMARY KEY (id),
+            UNIQUE KEY uq_rt (receipt_id, transaction_id),
+            KEY ix_rt_txn (transaction_id),
+            CONSTRAINT fk_rt_receipt FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE,
+            CONSTRAINT fk_rt_txn FOREIGN KEY (transaction_id) REFERENCES financial_transactions(id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='입금확인서 수록 입금'");
+        $_SESSION['schema_receipts_v1'] = 1;
+    } catch (Throwable $e) {
+        error_log('schema_upgrade_receipts: ' . $e->getMessage());
+    }
+}
+
+/** 입금확인서 수록 입금의 현재 합 (취소된 입금 제외) — 저장값과 비교해 재발행 필요 여부를 봅니다 */
+function receipt_live_totals(int $receiptId): array
+{
+    $st = db()->prepare(
+        "SELECT COUNT(*) AS cnt, COALESCE(SUM(f.amount),0) AS amt
+           FROM receipt_transactions x
+           JOIN financial_transactions f ON f.id = x.transaction_id AND f.status = 'CONFIRMED' AND f.txn_type = 'IN'
+          WHERE x.receipt_id = ?");
+    $st->execute([$receiptId]);
+    $r = $st->fetch() ?: ['cnt' => 0, 'amt' => 0];
+    return ['cnt' => (int)$r['cnt'], 'amount_total' => (float)$r['amt']];
+}
+
+/** 로그에 남길 입금확인서 요약 한 줄 */
+function receipt_snapshot(int $receiptId): string
+{
+    $pdo = db();
+    $st = $pdo->prepare('SELECT * FROM receipts WHERE id = ?');
+    $st->execute([$receiptId]);
+    $r = $st->fetch();
+    if (!$r) { return ''; }
+    $st = $pdo->prepare('SELECT f.doc_no, f.txn_date, x.amount FROM receipt_transactions x
+                          JOIN financial_transactions f ON f.id = x.transaction_id WHERE x.receipt_id = ? ORDER BY x.line_no');
+    $st->execute([$receiptId]);
+    $lines = [];
+    foreach ($st->fetchAll() as $l) { $lines[] = ($l['doc_no'] ?: '#') . ' ' . $l['txn_date'] . ' ' . number_format((float)$l['amount']); }
+    return sprintf('합계 %s · 입금 %d건 · 일자 %s · 기간 %s~%s · REV %d · 발행 %d회 · 상태 %s%s · 내역: %s',
+        number_format((float)$r['amount_total']), (int)$r['txn_count'], $r['receipt_date'], $r['period_from'] ?: '-', $r['period_to'] ?: '-',
+        (int)$r['revision'], (int)$r['issue_count'], $r['status'],
+        $r['remark'] !== null && $r['remark'] !== '' ? ' · 비고 ' . mb_substr((string)$r['remark'], 0, 60) : '',
+        mb_substr(implode(' ; ', $lines), 0, 700));
+}
+
+/**
  * 청구서 금액을 저장하지 않고 현재 값으로만 계산해 돌려줍니다 (재발행 필요 여부 판단용).
  * 전표 금액이 청구서 발행 뒤에 바뀌면 저장된 합계와 달라집니다.
  */

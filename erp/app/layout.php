@@ -40,6 +40,7 @@ function layout_head(string $title, string $active): void
             ['cash_in', '입금 등록', true],
             ['cash_out', '출금 등록', true],
             ['cash_list', '입출금 내역', true],
+            ['receipts', '입금확인서', true],
             ['receivables', '미수금 관리', true],
             ['ledger', '거래처별 원장', true],
             ['opening_balances', '기초잔액 관리', true],
