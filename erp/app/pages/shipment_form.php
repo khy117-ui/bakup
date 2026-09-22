@@ -679,6 +679,7 @@ layout_head($title, 'shipments');
       <th style="width:150px" class="r">공급가액</th>
       <th style="width:130px" class="r">부가세 (10%)</th>
       <th style="width:150px" class="r">합계</th>
+      <th style="width:44px" class="c">삭제</th>
     </tr></thead>
     <tbody>
     <?php foreach ($lines as $i => $l):
@@ -711,6 +712,8 @@ layout_head($title, 'shipments');
                    name="line[<?= $i ?>][vat_amount]" value="<?= h($l['vat_amount']) ?>"
                    <?= $l['tax_type'] === 'TAXABLE' ? '' : 'readonly' ?>></td>
         <td class="r tnum linesum" style="font-weight:700">0</td>
+        <td class="c"><button type="button" class="btn sm delline" title="이 줄 비우기"
+                style="color:#A32020;padding:0 8px">🗑</button></td>
       </tr>
     <?php endforeach; ?>
       <tr style="background:#F7FAFB">
@@ -718,6 +721,7 @@ layout_head($title, 'shipments');
         <td class="r tnum" style="font-weight:700"><span id="sum-supply">0</span></td>
         <td class="r tnum" style="font-weight:700"><span id="sum-vat">0</span></td>
         <td class="r tnum" style="font-weight:700"><span id="sum-total">0</span></td>
+        <td></td>
       </tr>
     </tbody>
   </table>
@@ -871,6 +875,24 @@ layout_head($title, 'shipments');
     if (sup) { sup.addEventListener('input', function () { chRow(tr, false); chAll(); }); }
     if (vat) { vat.addEventListener('input', function () { vat.dataset.touched = '1'; chRow(tr, false); chAll(); }); }
     if (tax) { tax.addEventListener('change', function () { delete vat.dataset.touched; chRow(tr, true); chAll(); }); }
+  });
+
+  // 줄 삭제 — 값을 비우고, 기본 두 줄이 아니면 다시 접습니다 (접힌 줄은 저장되지 않습니다)
+  document.querySelectorAll('tr.chline').forEach(function (tr, idx) {
+    var b = tr.querySelector('.delline');
+    if (!b) { return; }
+    b.addEventListener('click', function () {
+      var sup = tr.querySelector('input.supply'), vat = tr.querySelector('input.vat');
+      if ((sup && sup.value.trim() !== '') || (vat && vat.value.trim() !== '')) {
+        if (!confirm('이 줄의 금액을 지울까요?')) { return; }
+      }
+      if (sup) { sup.value = ''; }
+      if (vat) { vat.value = ''; delete vat.dataset.touched; }
+      if (idx >= 2) { tr.hidden = true; }
+      var add = document.getElementById('addline');
+      if (add) { add.disabled = false; }
+      chAll();
+    });
   });
 
   // 항목 추가 — 숨겨 둔 줄을 하나씩 폅니다
