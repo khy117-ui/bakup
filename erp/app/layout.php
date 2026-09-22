@@ -40,7 +40,6 @@ function layout_head(string $title, string $active): void
             ['cash_in', '입금 등록', true],
             ['cash_out', '출금 등록', true],
             ['cash_list', '입출금 내역', true],
-            ['receipts', '입금확인서', true],
             ['receivables', '미수금 관리', true],
             ['ledger', '거래처별 원장', true],
             ['opening_balances', '기초잔액 관리', true],
@@ -157,6 +156,7 @@ function layout_foot(): void
   </div>
 </div>
 <script>
+window.GP_CSRF = '<?= h(csrf_token()) ?>';
 // 넓은 표는 감싸서 표만 좌우로 밀리게 한다 (휴대폰에서 화면 전체가 옆으로 밀리지 않게)
 document.querySelectorAll('.body table').forEach(function (t) {
   var p = t.parentNode;
@@ -169,6 +169,64 @@ document.querySelectorAll('.body table').forEach(function (t) {
 document.addEventListener('keydown', function (e) {
   if (e.key === 'Escape') document.body.classList.remove('nav-open');
 });
+// 삭제 승인 대기 알림줄 — 화면 위 가운데. 여기서 바로 승인 · 반려합니다
+(function () {
+  var bar = null;
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+  function post(act, id, note) {
+    var f = document.createElement('form');
+    f.method = 'post';
+    f.action = '?p=delete_requests';
+    var add = function (n, v) {
+      var i = document.createElement('input');
+      i.type = 'hidden'; i.name = n; i.value = v; f.appendChild(i);
+    };
+    add('_csrf', window.GP_CSRF || '');
+    add('act', act); add('id', id);
+    if (note) { add('note', note); }
+    document.body.appendChild(f);
+    f.submit();
+  }
+
+  window.gpDelReq = function (d) {
+    if (!d || !d.delreq) { return; }
+    var n = d.delreq.wait || 0;
+    if (n === 0) { if (bar) { bar.remove(); bar = null; } return; }
+    var it = (d.delreq.items || [])[0] || {};
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'gp-delreq';
+      bar.style.cssText = 'position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:9998;'
+        + 'background:#8A1C1C;color:#fff;padding:10px 16px;border-radius:0 0 10px 10px;'
+        + 'box-shadow:0 6px 20px rgba(0,0,0,.25);font-size:13px;display:flex;gap:10px;align-items:center;'
+        + 'max-width:min(860px,94vw)';
+      document.body.appendChild(bar);
+    }
+    bar.innerHTML =
+      '<b style="white-space:nowrap">🗑 삭제 승인 대기 ' + n + '건</b>'
+      + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+      + esc(it.title || '') + ' <span style="opacity:.8">' + esc(it.sub || '') + '</span></span>'
+      + '<button type="button" id="dr-ok" style="border:0;border-radius:6px;padding:5px 12px;font-weight:700;'
+      + 'background:#fff;color:#8A1C1C;cursor:pointer">승인</button>'
+      + '<button type="button" id="dr-no" style="border:1px solid rgba(255,255,255,.6);border-radius:6px;'
+      + 'padding:5px 12px;background:transparent;color:#fff;cursor:pointer">반려</button>'
+      + '<a href="?p=delete_requests" style="color:#fff;opacity:.85;font-size:12px;white-space:nowrap">전체 보기</a>';
+    document.getElementById('dr-ok').addEventListener('click', function () {
+      if (confirm('"' + (it.title || '') + '" 을(를) 승인하면 바로 삭제 · 취소됩니다. 진행할까요?')) {
+        post('approve', it.id);
+      }
+    });
+    document.getElementById('dr-no').addEventListener('click', function () {
+      var why = prompt('반려 사유를 적어 주세요. 요청한 사람이 봅니다.');
+      if (why === null) { return; }
+      if (why.trim().length < 2) { alert('반려 사유를 두 글자 이상 적어 주세요.'); return; }
+      post('reject', it.id, why.trim());
+    });
+  };
+})();
+
 // 실시간 알림 — 30초마다 새 온라인 접수 · Q&A 를 확인해 메뉴 숫자를 고치고, 새로 들어오면 오른쪽 아래에 알림
 (function () {
   var KEY = 'gp_live_seen';
@@ -221,6 +279,11 @@ document.addEventListener('keydown', function (e) {
           }
           seen.q = d.qna.max_id;
         }
+        if (window.gpDelReq) { gpDelReq(d); }
+        if (!first && d.delreq && d.delreq.max_id > (seen.d || 0) && (seen.d || 0) > 0) {
+          toast('🗑 새 삭제 승인 요청 · ' + ((d.delreq.items || [])[0] || {}).title, '?p=delete_requests');
+        }
+        if (d.delreq) { seen.d = d.delreq.max_id; }
         seen.init = 1;
         try { localStorage.setItem(KEY, JSON.stringify(seen)); } catch (e) {}
         document.dispatchEvent(new CustomEvent('gp:live', { detail: d }));   // 대시보드가 목록을 다시 그림

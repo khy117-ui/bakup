@@ -12,6 +12,31 @@ header('Cache-Control: no-store');
 session_write_close();   // 다른 화면이 이 요청을 기다리지 않게
 
 $out = [];
+
+// 삭제 승인 대기 — 승인 권한이 있는 사람에게만 (화면 위 알림줄에 씁니다)
+if (can('sys.delete.approve')) {
+    try {
+        $st = db()->query("SELECT id, route, target_label, reason, requested_name, requested_at
+                             FROM delete_requests WHERE status = 'PENDING'
+                            ORDER BY requested_at DESC, id DESC LIMIT 5");
+        $rows = $st->fetchAll();
+        $cnt = (int)db()->query("SELECT COUNT(*) FROM delete_requests WHERE status = 'PENDING'")->fetchColumn();
+        $out['delreq'] = [
+            'wait'   => $cnt,
+            'max_id' => $rows ? (int)$rows[0]['id'] : 0,
+            'items'  => array_map(static fn ($r) => [
+                'id'    => (int)$r['id'],
+                'title' => (string)$r['target_label'],
+                'sub'   => ($r['requested_name'] ?: '') . ($r['reason'] ? ' · ' . $r['reason'] : ''),
+                'route' => (string)$r['route'],
+                'at'    => (string)$r['requested_at'],
+                'url'   => '?p=delete_requests',
+            ], $rows),
+        ];
+    } catch (PDOException $e) {
+        // 표가 아직 없으면 조용히 넘어갑니다
+    }
+}
 $pdo = db();
 if (route_can_view('web_pickups')) {
     try {
