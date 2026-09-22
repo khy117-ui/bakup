@@ -60,7 +60,7 @@ $in = [
 $lines = [];
 for ($i = 0; $i < $MAXLINE; $i++) {
     $lines[] = ['charge_type' => $i === 0 ? 'AIR_FREIGHT' : 'OTHER', 'item_name' => '',
-                'supply_amount' => '', 'tax_type' => 'ZERO'];
+                'supply_amount' => '', 'tax_type' => 'ZERO', 'vat_amount' => ''];
 }
 $reason = '';
 
@@ -83,7 +83,7 @@ if ($id > 0) {
         // 가격표에서 가져온 단가면 '직접입력' 칸은 비워 둡니다 (그래야 다시 저장할 때도 가격표를 봅니다)
         if (!empty($cur['snap_rate_table_id'])) { $in['snap_base_price'] = ''; }
         $st = db()->prepare(
-            'SELECT charge_type, item_name, supply_amount, tax_type
+            'SELECT charge_type, item_name, supply_amount, tax_type, tax_amount
                FROM shipment_charges WHERE shipment_id = ? ORDER BY line_no');
         $st->execute([$id]);
         $old = $st->fetchAll();
@@ -96,6 +96,7 @@ if ($id > 0) {
                 'item_name'     => $o['item_name'],
                 'supply_amount' => (string)(int)round((float)$o['supply_amount']),
                 'tax_type'      => $o['tax_type'],
+                'vat_amount'    => (string)(int)round((float)$o['tax_amount']),
             ];
         }
     }
@@ -206,6 +207,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
                 'item_name'     => trim((string)($l['item_name'] ?? '')),
                 'supply_amount' => (string)($l['supply_amount'] ?? ''),
                 'tax_type'      => (string)($l['tax_type'] ?? 'ZERO'),
+                'vat_amount'    => (string)($l['vat_amount'] ?? ''),
             ];
         }
     }
@@ -389,7 +391,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
                 $no++;
                 $supply = round(num($l['supply_amount']));
                 $rate   = $TAX[$l['tax_type']];
-                $tax    = round($supply * $rate / 100);
+                // 과세 줄은 화면에서 고친 부가세를 그대로 씁니다 (비워 두면 공급가액의 10%)
+                $tax = ($l['tax_type'] === 'TAXABLE' && trim((string)$l['vat_amount']) !== '')
+                     ? round(num($l['vat_amount']))
+                     : round($supply * $rate / 100);
                 $ins->execute([$sid, $no, $l['charge_type'], $l['item_name'],
                                $supply, $supply, $l['tax_type'], $rate, $tax,
                                $supply + $tax]);
@@ -432,22 +437,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
             $after = snapshot($sid);
             log_action('매출전표', $id > 0 ? 'UPDATE' : 'CREATE', 'shipments', $sid, $awb,
                        $before, $after, $id > 0 ? $reason : null);
-            // 이미 청구서에 수록된 전표를 고쳤으면 청구서에 '내용 바뀜' 표시를 남깁니다 (청구서 화면에서 재발행)
-            $billNote = '';
-            if ($id > 0 && $before !== $after) {
-                $bi = $pdo->prepare("SELECT i.id, i.invoice_no FROM invoice_shipments xs
-                                       JOIN invoices i ON i.id = xs.invoice_id
-                                      WHERE xs.shipment_id = ? AND i.status <> 'CANCELLED' AND i.deleted_at IS NULL LIMIT 1");
-                $bi->execute([$sid]);
-                if ($biRow = $bi->fetch()) {
-                    try {
-                        $pdo->prepare('UPDATE invoices SET changed_at = NOW() WHERE id = ?')->execute([(int)$biRow['id']]);
-                    } catch (PDOException $e) { /* changed_at 컬럼이 아직 없으면 넘어감 */ }
-                    log_action('청구', 'UPDATE', 'invoices', (int)$biRow['id'], (string)$biRow['invoice_no'],
-                               null, '수록 전표 ' . $awb . ' 내용 변경 — 재발행 필요', $id > 0 ? $reason : null);
-                    $billNote = ' 이 전표는 청구서 ' . $biRow['invoice_no'] . ' 에 수록되어 있습니다. 금액이 바뀌었으면 청구서 화면에서 [재발행] 하세요.';
-                }
-            }
             $pdo->commit();
 
             // 새 전표와 같이 고른 관련서류 — 전표가 저장된 뒤에 올립니다
@@ -479,7 +468,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
             } catch (PDOException $e) {
                 error_log('전표 자동 추적 등록 실패: ' . $e->getMessage());
             }
-            flash('매출전표 ' . $awb . ' 을 ' . ($id > 0 ? '수정' : '등록') . '했습니다.' . $docMsg . $trkMsg . $billNote);
+            flash('매출전표 ' . $awb . ' 을 ' . ($id > 0 ? '수정' : '등록') . '했습니다.' . $docMsg . $trkMsg);
             // 서류를 같이 올렸으면 그 전표로 가서 목록을 보여줍니다
             redirect($files ? '?p=shipment_form&id=' . $sid : '?p=shipments');
         } catch (PDOException $e) {
@@ -683,12 +672,17 @@ layout_head($title, 'shipments');
       <th style="width:40px" class="c">#</th>
       <th style="width:150px">종류</th>
       <th>항목명</th>
-      <th style="width:150px" class="r">공급가액</th>
       <th style="width:120px">세금구분</th>
+      <th style="width:150px" class="r">공급가액</th>
+      <th style="width:130px" class="r">부가세 (10%)</th>
+      <th style="width:150px" class="r">합계</th>
     </tr></thead>
     <tbody>
-    <?php foreach ($lines as $i => $l): ?>
-      <tr>
+    <?php foreach ($lines as $i => $l):
+      // 기본은 두 줄만 보여 주고, 나머지는 [항목 추가] 로 폅니다 (적어 둔 줄은 늘 보입니다)
+      $used = $l['item_name'] !== '' || $l['supply_amount'] !== '';
+      $hide = $i >= 2 && !$used; ?>
+      <tr class="chline"<?= $hide ? ' hidden' : '' ?>>
         <td class="c tnum"><?= $i+1 ?></td>
         <td><select name="line[<?= $i ?>][charge_type]" class="ctype">
           <?php foreach ($CHARGE as $k=>$v): ?>
@@ -697,17 +691,37 @@ layout_head($title, 'shipments');
         </select></td>
         <td><input type="text" name="line[<?= $i ?>][item_name]" value="<?= h($l['item_name']) ?>"
                    placeholder="<?= $i===0 ? 'EXPRESS WORLDWIDE' : '' ?>"></td>
-        <td><input type="text" class="tnum" style="text-align:right"
-                   name="line[<?= $i ?>][supply_amount]" value="<?= h($l['supply_amount']) ?>"></td>
-        <td><select name="line[<?= $i ?>][tax_type]">
+        <td><select name="line[<?= $i ?>][tax_type]" class="ttype">
           <option value="ZERO"<?= $l['tax_type']==='ZERO'?' selected':'' ?>>영세율 0%</option>
           <option value="TAXABLE"<?= $l['tax_type']==='TAXABLE'?' selected':'' ?>>과세 10%</option>
-          <option value="EXEMPT"<?= $l['tax_type']==='EXEMPT'?' selected':'' ?>>면세</option>
+          <?php if ($l['tax_type'] === 'EXEMPT'): ?>
+            <!-- 예전에 면세로 넣어 둔 줄 — 값을 함부로 바꾸지 않으려고 이 줄에만 남겨 둡니다 -->
+            <option value="EXEMPT" selected>면세 (예전 입력)</option>
+          <?php endif; ?>
         </select></td>
+        <td><input type="text" class="tnum supply" style="text-align:right"
+                   name="line[<?= $i ?>][supply_amount]" value="<?= h($l['supply_amount']) ?>"></td>
+        <td><input type="text" class="tnum vat" style="text-align:right"
+                   name="line[<?= $i ?>][vat_amount]" value="<?= h($l['vat_amount']) ?>"
+                   <?= $l['tax_type'] === 'TAXABLE' ? '' : 'readonly' ?>></td>
+        <td class="r tnum linesum" style="font-weight:700">0</td>
       </tr>
     <?php endforeach; ?>
+      <tr style="background:#F7FAFB">
+        <td colspan="4" class="r" style="font-weight:700">합계</td>
+        <td class="r tnum" style="font-weight:700"><span id="sum-supply">0</span></td>
+        <td class="r tnum" style="font-weight:700"><span id="sum-vat">0</span></td>
+        <td class="r tnum" style="font-weight:700"><span id="sum-total">0</span></td>
+      </tr>
     </tbody>
   </table>
+  <div class="cb" style="border-top:1px solid var(--line2);display:flex;gap:8px;align-items:center">
+    <button type="button" class="btn sm" id="addline">＋ 항목 추가</button>
+    <span style="font-size:11.5px;color:var(--ink3)">
+      기본 두 줄입니다. 더 필요하면 누르세요 (최대 <?= (int)$MAXLINE ?>줄).
+      <b>과세</b>를 고르면 공급가액의 <b>10%</b>가 부가세에 저절로 들어가고, 손으로 고칠 수도 있습니다.
+    </span>
+  </div>
   <script>
   // 단가 자동계산 — 가격표의 원가격 → 할인 → 유류할증 → 적용운임
   (function () {
@@ -800,9 +814,66 @@ layout_head($title, 'shipments');
     s.addEventListener('change', function () {
       var tax = s.options[s.selectedIndex].getAttribute('data-tax');
       var t = s.closest('tr').querySelector('select[name$="[tax_type]"]');
-      if (tax && t) { t.value = tax; }
+      if (tax && t) { t.value = tax; chRow(s.closest('tr'), true); }
     });
   });
+
+  // 금액 — 과세면 공급가액의 10%를 부가세에 넣고(손으로 고치면 그 값을 둡니다), 줄 합계와 총합계를 셉니다
+  function chNum(v) { v = (v || '').toString().replace(/[^0-9.-]/g, ''); return v === '' ? 0 : parseFloat(v) || 0; }
+  function chFmt(n) { return Math.round(n).toLocaleString('ko-KR'); }
+
+  function chRow(tr, force) {
+    var tax = tr.querySelector('select.ttype'), sup = tr.querySelector('input.supply'),
+        vat = tr.querySelector('input.vat'), out = tr.querySelector('.linesum');
+    if (!tax || !sup || !vat) { return; }
+    var taxable = tax.value === 'TAXABLE';
+    vat.readOnly = !taxable;
+    if (!taxable) {
+      vat.value = '';
+    } else if (force || !vat.dataset.touched) {
+      var s = chNum(sup.value);
+      vat.value = s > 0 ? chFmt(Math.round(s / 10)) : '';
+    }
+    if (out) { out.textContent = chFmt(chNum(sup.value) + chNum(vat.value)); }
+  }
+
+  function chAll() {
+    var s = 0, v = 0;
+    document.querySelectorAll('tr.chline').forEach(function (tr) {
+      if (tr.hidden) { return; }
+      chRow(tr, false);
+      s += chNum((tr.querySelector('input.supply') || {}).value);
+      v += chNum((tr.querySelector('input.vat') || {}).value);
+    });
+    document.getElementById('sum-supply').textContent = chFmt(s);
+    document.getElementById('sum-vat').textContent = chFmt(v);
+    document.getElementById('sum-total').textContent = chFmt(s + v);
+  }
+
+  document.querySelectorAll('tr.chline').forEach(function (tr) {
+    var sup = tr.querySelector('input.supply'), vat = tr.querySelector('input.vat'),
+        tax = tr.querySelector('select.ttype');
+    if (sup) { sup.addEventListener('input', function () { chRow(tr, false); chAll(); }); }
+    if (vat) { vat.addEventListener('input', function () { vat.dataset.touched = '1'; chRow(tr, false); chAll(); }); }
+    if (tax) { tax.addEventListener('change', function () { delete vat.dataset.touched; chRow(tr, true); chAll(); }); }
+  });
+
+  // 항목 추가 — 숨겨 둔 줄을 하나씩 폅니다
+  var addBtn = document.getElementById('addline');
+  if (addBtn) {
+    addBtn.addEventListener('click', function () {
+      var next = Array.prototype.find.call(document.querySelectorAll('tr.chline'), function (tr) { return tr.hidden; });
+      if (!next) { addBtn.disabled = true; alert('줄을 더 늘릴 수 없습니다. 항목이 더 필요하면 전표를 나누세요.'); return; }
+      next.hidden = false;
+      var f = next.querySelector('input[name$="[item_name]"]');
+      if (f) { f.focus(); }
+      if (!Array.prototype.some.call(document.querySelectorAll('tr.chline'), function (tr) { return tr.hidden; })) {
+        addBtn.disabled = true;
+      }
+      chAll();
+    });
+  }
+  chAll();
   </script>
   <div class="pager"><span>비어 있는 줄은 저장하지 않습니다. VAT 는 과세 항목에만 10% 로 계산됩니다.
     종류를 고르면 세금구분이 회사 기준으로 바뀝니다 (운송 = 영세율 · 핸드링 · 도큐멘트 · 국내운송 · 창고 · 검사 · 통관 = 과세).
