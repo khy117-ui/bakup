@@ -118,6 +118,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!@move_uploaded_file((string)$f['tmp_name'], fs_local_path('uploads', $newRel))) {
                     throw new RuntimeException('직인 파일을 저장하지 못했습니다.');
                 }
+                // 직인은 인쇄물에 작게 찍히므로 긴 변 800px · 200KB 면 넉넉합니다
+                require_once APP_DIR . '/imgshrink.php';
+                $newExt = img_shrink(fs_local_path('uploads', $newRel), $ext, 800, 200 * 1024, $shrunk);
+                // 파일 이름은 img_shrink 가 이미 바꿔 두었습니다 — DB 에 적을 이름만 맞춥니다
+                if ($newExt !== $ext) {
+                    $newRel = preg_replace('/\.[A-Za-z0-9]+$/', '', $newRel) . '.' . $newExt;
+                }
                 if (fs_cfg()['nas'] && !fs_push('uploads', $newRel, $why)) {
                     error_log('직인 NAS 저장 실패: ' . $why);   // 서버 사본으로 계속 씀
                 }
@@ -130,7 +137,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (fs_cfg()['nas']) { fs_dav('DELETE', fs_dav_url('uploads', $oldPath), null, null, 15); }
             }
             log_action('시스템', 'UPDATE', 'business_entities', $eidS, '직인', null, $newRel ? '직인 이미지 등록' : '직인 이미지 삭제');
-            flash($newRel ? '직인을 등록했습니다. 청구서 인쇄 화면에 찍힙니다.' : '직인을 지웠습니다.');
+            flash($newRel
+                ? '직인을 등록했습니다. 청구서 인쇄 화면에 찍힙니다.'
+                    . (!empty($shrunk) ? ' 그림이 커서 줄였습니다 — ' . $shrunk : '')
+                : '직인을 지웠습니다.');
             redirect('?p=business_entity&id=' . $eidS . '#stamp');
         }
     } catch (RuntimeException $e) {

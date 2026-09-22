@@ -215,6 +215,17 @@ function fs_store_public_image(array $f, string $purpose, ?string &$why = null):
     $local = fs_local_path('public', $rel);
     if (!is_dir(dirname($local)) && !@mkdir(dirname($local), 0750, true)) { $why = '임시 폴더를 만들지 못함'; return 0; }
     if (!@move_uploaded_file((string)$f['tmp_name'], $local)) { $why = '파일을 받지 못함'; return 0; }
+
+    // 화면에 쓰는 그림이라 크게 올려도 소용이 없습니다 — 긴 변 1600px · 300KB 로 줄입니다
+    require_once APP_DIR . '/imgshrink.php';
+    $newExt = img_shrink($local, $ext, IMG_MAX_DIM, IMG_MAX_BYTES, $shrunk);
+    if ($newExt !== $ext) {
+        $rel = preg_replace('/\.[A-Za-z0-9]+$/', '', $rel) . '.' . $newExt;
+        $local = fs_local_path('public', $rel);
+        $ext = $newExt;
+    }
+    $info = @getimagesize($local) ?: $info;
+
     $sha = hash_file('sha256', $local) ?: null;
     $size = (int)filesize($local);
     if (!fs_push('public', $rel, $why)) { @unlink($local); return 0; }
@@ -224,7 +235,9 @@ function fs_store_public_image(array $f, string $purpose, ?string &$why = null):
         ->execute([$rel, mb_substr((string)$f['name'], 0, 255), $info['mime'], $size, (int)$info[0], (int)$info[1],
                    $sha, mb_substr($purpose, 0, 50), $_SESSION['admin_id'] ?? null]);
     $id = (int)db()->lastInsertId();
-    log_action('시스템', 'CREATE', 'public_files', $id, (string)$f['name'], null, '공개 이미지 → NAS ' . $rel);
+    log_action('시스템', 'CREATE', 'public_files', $id, (string)$f['name'], null,
+               '공개 이미지 → NAS ' . $rel . ($shrunk ? ' · 자동 축소 ' . $shrunk : ''));
+    if ($shrunk) { $why = '자동 축소: ' . $shrunk; }   // 오류가 아니라 알림입니다
     return $id;
 }
 

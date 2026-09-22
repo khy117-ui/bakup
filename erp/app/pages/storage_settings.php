@@ -191,7 +191,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(post('act'), ['fs_test', '
             $f = $_FILES['img'] ?? null;
             $newId = $f ? fs_store_public_image($f, post('purpose'), $why) : 0;
             if ($newId > 0) {
-                flash('공개 이미지를 올렸습니다. 아래 목록의 주소를 복사해 쓰세요.');
+                flash('공개 이미지를 올렸습니다. 아래 목록의 주소를 복사해 쓰세요.'
+                    . ($why ? ' (' . $why . ')' : ''));
                 redirect('?p=storage_settings#pub');
             }
             $err = '공개 이미지를 올리지 못했습니다 — ' . ($why ?: '파일을 고르세요');
