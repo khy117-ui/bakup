@@ -674,8 +674,7 @@ layout_head($title, 'shipments');
   <table>
     <thead><tr>
       <th style="width:40px" class="c">#</th>
-      <th style="width:220px">종류</th>
-      <th style="width:120px">세금구분</th>
+      <th style="width:220px">종류 <span style="font-weight:400;color:var(--ink3)">운임 = 영세율 · 과세운임 = 과세 10%</span></th>
       <th style="width:150px" class="r">공급가액</th>
       <th style="width:130px" class="r">부가세 (10%)</th>
       <th style="width:150px" class="r">합계</th>
@@ -698,14 +697,8 @@ layout_head($title, 'shipments');
               <?= h($CHARGE[$l['charge_type']]) ?> (예전 입력)</option>
           <?php endif; ?>
         </select></td>
-        <td><select name="line[<?= $i ?>][tax_type]" class="ttype">
-          <option value="ZERO"<?= $l['tax_type']==='ZERO'?' selected':'' ?>>영세율 0%</option>
-          <option value="TAXABLE"<?= $l['tax_type']==='TAXABLE'?' selected':'' ?>>과세 10%</option>
-          <?php if ($l['tax_type'] === 'EXEMPT'): ?>
-            <!-- 예전에 면세로 넣어 둔 줄 — 값을 함부로 바꾸지 않으려고 이 줄에만 남겨 둡니다 -->
-            <option value="EXEMPT" selected>면세 (예전 입력)</option>
-          <?php endif; ?>
-        </select></td>
+        <!-- 세금구분은 종류가 정합니다. 화면에는 두지 않고 값만 같이 보냅니다 -->
+        <input type="hidden" name="line[<?= $i ?>][tax_type]" class="ttype" value="<?= h($l['tax_type']) ?>">
         <td><input type="text" class="tnum supply" style="text-align:right"
                    name="line[<?= $i ?>][supply_amount]" value="<?= h($l['supply_amount']) ?>"></td>
         <td><input type="text" class="tnum vat" style="text-align:right"
@@ -717,7 +710,7 @@ layout_head($title, 'shipments');
       </tr>
     <?php endforeach; ?>
       <tr style="background:#F7FAFB">
-        <td colspan="3" class="r" style="font-weight:700">합계</td>
+        <td colspan="2" class="r" style="font-weight:700">합계</td>
         <td class="r tnum" style="font-weight:700"><span id="sum-supply">0</span></td>
         <td class="r tnum" style="font-weight:700"><span id="sum-vat">0</span></td>
         <td class="r tnum" style="font-weight:700"><span id="sum-total">0</span></td>
@@ -824,10 +817,8 @@ layout_head($title, 'shipments');
   document.querySelectorAll('select.ctype').forEach(function (s) {
     var apply = function (force) {
       var tax = s.options[s.selectedIndex].getAttribute('data-tax');
-      var tr = s.closest('tr'), t = tr.querySelector('select.ttype');
+      var tr = s.closest('tr'), t = tr.querySelector('.ttype');
       if (tax && t) { t.value = tax; }
-      // 세금구분은 종류를 따라가므로 손대지 못하게 둡니다
-      if (t) { t.disabled = !!tax; }
       var vat = tr.querySelector('input.vat');
       if (vat && force) { delete vat.dataset.touched; }
       chRow(tr, force);
@@ -842,7 +833,7 @@ layout_head($title, 'shipments');
   function chFmt(n) { return Math.round(n).toLocaleString('ko-KR'); }
 
   function chRow(tr, force) {
-    var tax = tr.querySelector('select.ttype'), sup = tr.querySelector('input.supply'),
+    var tax = tr.querySelector('.ttype'), sup = tr.querySelector('input.supply'),
         vat = tr.querySelector('input.vat'), out = tr.querySelector('.linesum');
     if (!tax || !sup || !vat) { return; }
     var taxable = tax.value === 'TAXABLE';
@@ -871,10 +862,10 @@ layout_head($title, 'shipments');
 
   document.querySelectorAll('tr.chline').forEach(function (tr) {
     var sup = tr.querySelector('input.supply'), vat = tr.querySelector('input.vat'),
-        tax = tr.querySelector('select.ttype');
+        tax = tr.querySelector('.ttype');
     if (sup) { sup.addEventListener('input', function () { chRow(tr, false); chAll(); }); }
     if (vat) { vat.addEventListener('input', function () { vat.dataset.touched = '1'; chRow(tr, false); chAll(); }); }
-    if (tax) { tax.addEventListener('change', function () { delete vat.dataset.touched; chRow(tr, true); chAll(); }); }
+
   });
 
   // 줄 삭제 — 값을 비우고, 기본 두 줄이 아니면 다시 접습니다 (접힌 줄은 저장되지 않습니다)
@@ -935,7 +926,10 @@ layout_head($title, 'shipments');
   </div>
   <div class="cb" style="border-top:1px solid var(--line2)">
     <div class="kpis" style="gap:10px">
-      <div class="kpi"><div class="lab">매출 공급가</div><div class="val tnum" id="k-rev">0</div></div>
+      <div class="kpi"><div class="lab">매출 공급가</div><div class="val tnum" id="k-rev">0</div>
+        <div class="sub" id="k-vat">부가세 0</div></div>
+      <div class="kpi"><div class="lab">청구금액 <span style="font-weight:400">(부가세 포함)</span></div>
+        <div class="val tnum" id="k-total">0</div></div>
       <div class="kpi"><div class="lab">매입원가</div><div class="val tnum" id="k-cost">0</div>
         <div class="sub" id="k-cost-sub"><?= $pur['other'] > 0 ? '매입관리에서 넣은 ' . money($pur['other']) . '원 포함' : '운송사 + 추가' ?></div></div>
       <div class="kpi"><div class="lab">이익</div><div class="val tnum" id="k-profit">0</div>
@@ -952,10 +946,17 @@ layout_head($title, 'shipments');
   function n(v) { var t = String(v || '').replace(/[,\s]/g, ''); return t === '' || isNaN(Number(t)) ? 0 : Number(t); }
   function fmt(v) { return Math.round(v).toLocaleString('ko-KR'); }
   function calc() {
-    var rev = 0;
-    document.querySelectorAll('input[name$="[supply_amount]"]').forEach(function (i) { rev += n(i.value); });
+    var rev = 0, vat = 0;
+    // 접어 둔 줄은 저장되지 않으므로 세지 않습니다
+    document.querySelectorAll('tr.chline').forEach(function (tr) {
+      if (tr.hidden) { return; }
+      rev += n((tr.querySelector('input.supply') || {}).value);
+      vat += n((tr.querySelector('input.vat') || {}).value);
+    });
     var cost = n(document.getElementById('cost_base').value) + n(document.getElementById('cost_extra').value) + OTHER;
     var profit = rev - cost;
+    document.getElementById('k-vat').textContent = '부가세 ' + fmt(vat);
+    document.getElementById('k-total').textContent = fmt(rev + vat);
     document.getElementById('k-rev').textContent = fmt(rev);
     document.getElementById('k-cost').textContent = fmt(cost);
     var p = document.getElementById('k-profit');
@@ -964,7 +965,13 @@ layout_head($title, 'shipments');
     document.getElementById('k-rate').textContent = rev > 0 ? '이익률 ' + (profit / rev * 100).toFixed(1) + '%' : '이익률 -';
   }
   document.addEventListener('input', function (e) {
-    if (e.target.matches('.cost, input[name$="[supply_amount]"]')) { calc(); }
+    if (e.target.matches('.cost, input.supply, input.vat')) { calc(); }
+  });
+  document.addEventListener('change', function (e) {
+    if (e.target.matches('select.ctype')) { setTimeout(calc, 0); }
+  });
+  document.addEventListener('click', function (e) {
+    if (e.target.matches('.delline, #addline')) { setTimeout(calc, 0); }
   });
   calc();
 })();
