@@ -50,52 +50,169 @@ $st->execute([$id]);
 $items = $st->fetchAll();
 
 // ---------------------------------------------------------------- 엑셀로 저장 (?xlsx=1)
+// 인쇄 화면과 같은 모양으로 — 칸 테두리 · 바탕색 · 직인까지 넣습니다
 if (query('xlsx') === '1') {
-    require_once APP_DIR . '/xlsx.php';
+    require_once APP_DIR . '/xlsx_rich.php';
     $num = fn($v) => (int)round((float)$v);
-    $rows = [
-        ['INVOICE', $inv['invoice_no']],
-        ['DATE', $inv['invoice_date'], 'PERIOD', $inv['period_from'] . ' ~ ' . $inv['period_to'], 'DUE', (string)($inv['due_date'] ?? '')],
-        [],
-        ['공급자', $be['name_ko'], '사업자등록번호', $be['business_number'], '대표자', $be['representative']],
-        ['주소', (string)$be['address_ko'], 'TEL', (string)$be['phone'], 'FAX', (string)$be['fax']],
-        [],
-        ['MESSRS', $inv['name_ko'], '사업자번호', (string)$inv['business_number'], '대표자', (string)$inv['representative']],
-        ['ADDRESS', (string)$inv['address_ko'], '결제조건', (string)($inv['payment_terms'] ?? '')],
-        [],
-        ['NO', 'DATE', 'AWB NO', '구분', 'DESTINATION', 'WEIGHT', '영세율', '과세', 'VAT', 'AMOUNT'],
-    ];
-    foreach ($ships as $s) {
-        $rows[] = [(int)$s['line_no'], $s['voucher_date'], $s['awb_no'], $s['trade_type'] === 'IMPORT' ? '수입' : '수출',
-                   (string)$s['dest_city'], $s['charge_weight'] !== null ? (float)$s['charge_weight'] : '',
-                   $num($s['zero_supply']), $num($s['taxable_supply']), $num($s['tax_total']), $num($s['grand_total'])];
+    $rows = [];
+    $merges = [];
+    $heights = [];
+    $r = 0;                       // 지금 쓰는 줄 (0부터)
+    $put = static function (array $cells) use (&$rows, &$r): int {
+        $rows[] = $cells;
+        return $r++;
+    };
+    $blank = static fn (int $n = 10): array => array_fill(0, $n, '');
+    $cell = static fn ($v, string $st = ''): array => ['v' => $v, 's' => $st];
+
+    // ── 머리: 왼쪽 제목 / 오른쪽 공급자
+    $line = $blank();
+    $line[0] = $cell('INVOICE', 'title');
+    $line[7] = $cell((string)($be['name_en'] ?: $be['name_ko']), 'co');
+    $heights[$r] = 30;
+    $merges[] = 'A' . ($r + 1) . ':C' . ($r + 1);
+    $merges[] = 'H' . ($r + 1) . ':J' . ($r + 1);
+    $put($line);
+
+    $line = $blank();
+    $line[0] = $cell((string)$inv['invoice_no'], 'tdb');
+    $line[7] = $cell(trim((string)$be['address_ko']), 'cor');
+    $merges[] = 'A' . ($r + 1) . ':C' . ($r + 1);
+    $merges[] = 'H' . ($r + 1) . ':J' . ($r + 1);
+    $put($line);
+
+    $line = $blank();
+    $line[0] = $cell('DATE ' . $inv['invoice_date'] . '  ·  PERIOD ' . $inv['period_from'] . ' ~ '
+                   . $inv['period_to'] . ($inv['due_date'] ? '  ·  DUE ' . $inv['due_date'] : ''), 'sub');
+    $line[7] = $cell('TEL ' . (string)$be['phone'] . '   FAX ' . (string)$be['fax'], 'cor');
+    $merges[] = 'A' . ($r + 1) . ':E' . ($r + 1);
+    $merges[] = 'H' . ($r + 1) . ':J' . ($r + 1);
+    $put($line);
+
+    $line = $blank();
+    $line[7] = $cell('사업자등록번호 ' . (string)$be['business_number'], 'cor');
+    $merges[] = 'H' . ($r + 1) . ':J' . ($r + 1);
+    $put($line);
+
+    $line = $blank();
+    $line[7] = $cell('대표자 ' . (string)$be['representative']
+                   . ($be['doc_manager'] ? '  ·  담당 ' . $be['doc_manager'] : ''), 'cor');
+    $merges[] = 'H' . ($r + 1) . ':J' . ($r + 1);
+    $put($line);
+
+    $put($blank());
+
+    // ── 받는 곳
+    $line = $blank();
+    $line[0] = $cell('MESSRS', 'lbl');
+    $line[1] = $cell($inv['name_ko'] . ($inv['name_en'] ? ' / ' . $inv['name_en'] : ''), 'box');
+    $line[5] = $cell('사업자번호', 'lbl');
+    $line[6] = $cell((string)$inv['business_number'], 'box');
+    $line[7] = $cell('대표자', 'lbl');
+    $line[8] = $cell((string)$inv['representative'], 'box');
+    $heights[$r] = 22;
+    $merges[] = 'B' . ($r + 1) . ':E' . ($r + 1);
+    $merges[] = 'I' . ($r + 1) . ':J' . ($r + 1);
+    $put($line);
+
+    $line = $blank();
+    $line[0] = $cell('ADDRESS', 'lbl');
+    $line[1] = $cell((string)$inv['address_ko'], 'box');
+    $line[7] = $cell('결제조건', 'lbl');
+    $line[8] = $cell((string)($inv['payment_terms'] ?: '-'), 'box');
+    $heights[$r] = 22;
+    $merges[] = 'B' . ($r + 1) . ':G' . ($r + 1);
+    $merges[] = 'I' . ($r + 1) . ':J' . ($r + 1);
+    $put($line);
+
+    $put($blank());
+
+    // ── 명세 표
+    $head = ['NO', 'DATE', 'AWB NO', '구분', 'DESTINATION', 'WEIGHT', '영세율', '과세', 'VAT', 'AMOUNT'];
+    $line = [];
+    foreach ($head as $i => $t) { $line[] = $cell($t, $i >= 5 ? 'thr' : 'th'); }
+    $heights[$r] = 20;
+    $put($line);
+
+    foreach ($ships as $sh) {
+        $put([
+            $cell((int)$sh['line_no'], 'tdc'),
+            $cell((string)$sh['voucher_date'], 'tdc'),
+            $cell((string)$sh['awb_no'], 'tdb'),
+            $cell($sh['trade_type'] === 'IMPORT' ? '수입' : '수출', 'tdc'),
+            $cell((string)$sh['dest_city'], 'td'),
+            $cell($sh['charge_weight'] !== null ? (float)$sh['charge_weight'] : '', 'tdn'),
+            $cell($num($sh['zero_supply']), 'tdn'),
+            $cell($num($sh['taxable_supply']), 'tdn'),
+            $cell($num($sh['tax_total']), 'tdn'),
+            $cell($num($sh['grand_total']), 'tdn'),
+        ]);
     }
     foreach ($items as $it) {
-        $rows[] = ['', '', $it['item_name'] . ($it['remark'] ? ' (' . $it['remark'] . ')' : ''), '', '', '',
-                   $it['tax_type'] === 'ZERO' ? $num($it['supply_amount']) : '',
-                   $it['tax_type'] === 'TAXABLE' ? $num($it['supply_amount']) : '',
-                   $num($it['tax_amount']), $num($it['total_amount'])];
+        $put([
+            $cell('', 'tdc'), $cell('', 'tdc'),
+            $cell($it['item_name'] . ($it['remark'] ? ' (' . $it['remark'] . ')' : ''), 'td'),
+            $cell('', 'tdc'), $cell('', 'td'), $cell('', 'tdn'),
+            $cell($it['tax_type'] === 'ZERO' ? $num($it['supply_amount']) : '', 'tdn'),
+            $cell($it['tax_type'] === 'TAXABLE' ? $num($it['supply_amount']) : '', 'tdn'),
+            $cell($num($it['tax_amount']), 'tdn'),
+            $cell($num($it['total_amount']), 'tdn'),
+        ]);
     }
-    $pad = ['', '', '', '', '', '', '', ''];
-    $rows[] = [];
-    $rows[] = array_merge($pad, ['영세율 공급가액', $num($inv['zero_supply'])]);
-    $rows[] = array_merge($pad, ['과세 공급가액', $num($inv['taxable_supply'])]);
-    if ((float)$inv['exempt_supply'] != 0.0) {
-        $rows[] = array_merge($pad, ['면세 공급가액', $num($inv['exempt_supply'])]);
-    }
-    $rows[] = array_merge($pad, ['부가세 (VAT)', $num($inv['tax_total'])]);
-    $rows[] = array_merge($pad, ['합계 금액', $num($inv['grand_total'])]);
+
+    $put($blank());
+
+    // ── 아래: 왼쪽 입금계좌 / 오른쪽 합계
+    $sums = [['영세율 공급가액', $num($inv['zero_supply'])], ['과세 공급가액', $num($inv['taxable_supply'])]];
+    if ((float)$inv['exempt_supply'] != 0.0) { $sums[] = ['면세 공급가액', $num($inv['exempt_supply'])]; }
+    $sums[] = ['부가세 (VAT)', $num($inv['tax_total'])];
+    $sums[] = ['합계 금액', $num($inv['grand_total'])];
     if ((float)$inv['paid_amount'] > 0) {
-        $rows[] = array_merge($pad, ['기수금', $num($inv['paid_amount'])]);
-        $rows[] = array_merge($pad, ['미수 잔액', $num($inv['balance'])]);
+        $sums[] = ['기수금', $num($inv['paid_amount'])];
+        $sums[] = ['미수 잔액', $num($inv['balance'])];
     }
-    $rows[] = [];
-    $rows[] = ['입금계좌'];
+    $left = [];
+    $left[] = ['입금계좌', ''];
     foreach ($banks as $b) {
-        $rows[] = ['', $b['bank_name'] . ' ' . $b['account_no'] . ' 예금주 ' . $b['account_holder']];
+        $left[] = ['', $b['bank_name'] . ' ' . $b['account_no'] . ' 예금주 ' . $b['account_holder']];
     }
-    if ($inv['remark']) { $rows[] = ['비고', (string)$inv['remark']]; }
-    $bin = xlsx_build('INVOICE', $rows, [10, 16, 22, 10, 18, 10, 14, 14, 16, 16]);
+    if ($inv['remark']) { $left[] = ['비고', (string)$inv['remark']]; }
+
+    $n = max(count($sums), count($left));
+    for ($i = 0; $i < $n; $i++) {
+        $line = $blank();
+        if (isset($left[$i])) {
+            $line[0] = $cell($left[$i][0], $left[$i][0] !== '' ? 'lbl' : 'box');
+            $line[1] = $cell($left[$i][1], 'box');
+            $merges[] = 'B' . ($r + 1) . ':F' . ($r + 1);
+        }
+        if (isset($sums[$i])) {
+            $isTotal = $sums[$i][0] === '합계 금액';
+            $line[7] = $cell($sums[$i][0], $isTotal ? 'totlbl' : 'sumlbl');
+            $line[8] = $cell($sums[$i][1], $isTotal ? 'totn' : 'sumn');
+            $merges[] = 'I' . ($r + 1) . ':J' . ($r + 1);
+            if ($isTotal) { $heights[$r] = 24; }
+        }
+        $heights[$r] = $heights[$r] ?? 20;
+        $put($line);
+    }
+
+    $put($blank());
+    $line = $blank();
+    $line[0] = $cell('위와 같이 청구합니다.  ·  ' . $be['name_ko'] . '  ·  ' . $inv['invoice_date'], 'foot');
+    $merges[] = 'A' . ($r + 1) . ':J' . ($r + 1);
+    $put($line);
+
+    $bin = xlsx_rich([
+        'sheet'   => 'INVOICE',
+        'widths'  => [6, 13, 20, 8, 20, 10, 13, 13, 13, 14],
+        'heights' => $heights,
+        'merges'  => $merges,
+        'rows'    => $rows,
+        // 직인 — 인쇄물과 같은 자리(오른쪽 위)에 넣습니다
+        'image'   => ($png = xlsx_png_from_data_uri(entity_stamp_data_uri($be ?: null)))
+            ? ['bin' => $png, 'col' => 9, 'row' => 0, 'dx' => 6, 'dy' => 2, 'w' => 76, 'h' => 76] : null,
+    ]);
     log_action('청구', 'EXPORT', 'invoices', $id, (string)$inv['invoice_no'], null, '엑셀 저장');
     $fn = 'INVOICE_' . $inv['invoice_no'] . '_' . $inv['name_ko'] . '.xlsx';
     header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -167,8 +284,6 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
     <a class="btn" href="?p=invoice_view&amp;id=<?= $id ?>">돌아가기</a>
     <?php if ($inv['status'] === 'DRAFT'): ?>
       <span style="font-size:12px;color:#A32020">아직 발행하지 않은 청구서입니다 (작성중)</span>
-    <?php elseif ((int)($inv['issue_count'] ?? 0) > 1): ?>
-      <span style="font-size:12px;color:#4E6273">재발행 <?= (int)$inv['issue_count'] ?>회차 · 최종 발행 <?= h(substr((string)$inv['issued_at'], 0, 16)) ?></span>
     <?php elseif ($inv['status'] === 'CANCELLED'): ?>
       <span style="font-size:12px;color:#A32020">취소된 청구서입니다</span>
     <?php endif; ?>
@@ -184,9 +299,6 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
         &nbsp;·&nbsp; PERIOD <?= h($inv['period_from']) ?> ~ <?= h($inv['period_to']) ?>
         <?php if ($inv['due_date']): ?>
           &nbsp;·&nbsp; DUE <?= h($inv['due_date']) ?>
-        <?php endif; ?>
-        <?php if ((int)($inv['issue_count'] ?? 0) > 1): ?>
-          &nbsp;·&nbsp; REV. <?= (int)$inv['issue_count'] - 1 ?> (<?= h(substr((string)$inv['issued_at'], 0, 10)) ?>)
         <?php endif; ?>
       </div>
     </div>
