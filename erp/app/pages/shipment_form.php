@@ -7,6 +7,8 @@ $id  = (int)query('id', '0');          // 0 이면 신규, 그 외는 수정
 $cur = null;                            // 수정 대상 원본
 
 $CHARGE = charge_labels();   // 종류와 기본 세금구분은 bootstrap 의 CHARGE_TYPES
+/** 매출전표에서 고를 수 있는 종류 — 운임(영세) · 과세운임. 세금구분은 종류를 따라갑니다 */
+const SHIP_CHARGES = ['FREIGHT' => '운임', 'FREIGHT_TAX' => '과세운임'];
 $TAX    = ['ZERO' => 0.0, 'TAXABLE' => 10.0, 'EXEMPT' => 0.0];
 $MAXLINE = 8;
 
@@ -59,8 +61,8 @@ $in = [
 ];
 $lines = [];
 for ($i = 0; $i < $MAXLINE; $i++) {
-    $lines[] = ['charge_type' => $i === 0 ? 'AIR_FREIGHT' : 'OTHER', 'item_name' => '',
-                'supply_amount' => '', 'tax_type' => 'ZERO', 'vat_amount' => ''];
+    $lines[] = ['charge_type' => $i === 1 ? 'FREIGHT_TAX' : 'FREIGHT', 'item_name' => '',
+                'supply_amount' => '', 'tax_type' => $i === 1 ? 'TAXABLE' : 'ZERO', 'vat_amount' => ''];
 }
 $reason = '';
 
@@ -204,7 +206,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
             }
             $lines[$i] = [
                 'charge_type'   => (string)($l['charge_type'] ?? 'OTHER'),
-                'item_name'     => trim((string)($l['item_name'] ?? '')),
+                'item_name'     => trim((string)($l['item_name'] ?? '')),   // 화면에는 없음 — 종류 이름으로 채웁니다
                 'supply_amount' => (string)($l['supply_amount'] ?? ''),
                 'tax_type'      => (string)($l['tax_type'] ?? 'ZERO'),
                 'vat_amount'    => (string)($l['vat_amount'] ?? ''),
@@ -214,21 +216,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
 
     $valid = [];
     foreach ($lines as $l) {
-        if ($l['item_name'] === '' && num($l['supply_amount']) == 0.0) {
+        // 금액이 없으면 빈 줄로 봅니다
+        if (num($l['supply_amount']) == 0.0) {
             continue;
         }
         if (!isset($CHARGE[$l['charge_type']])) {
             $err = '비용항목의 종류가 올바르지 않습니다.';
             break;
         }
+        // 세금구분은 종류를 따라갑니다 (운임 = 영세율 · 과세운임 = 과세)
+        $auto = charge_default_tax($l['charge_type']);
+        if ($auto !== '') { $l['tax_type'] = $auto; }   // 화면에서 잠겨 있어 안 올라오는 경우도 있습니다
         if (!isset($TAX[$l['tax_type']])) {
             $err = '세금구분이 올바르지 않습니다.';
             break;
         }
-        if ($l['item_name'] === '') {
-            $err = '금액이 있는 항목에는 항목명이 필요합니다.';
-            break;
-        }
+        // 항목명은 종류 이름을 그대로 씁니다 (청구서 · 통계에 종류로 나옵니다)
+        if ($l['item_name'] === '') { $l['item_name'] = $CHARGE[$l['charge_type']]; }
         $valid[] = $l;
     }
 
@@ -670,8 +674,7 @@ layout_head($title, 'shipments');
   <table>
     <thead><tr>
       <th style="width:40px" class="c">#</th>
-      <th style="width:150px">종류</th>
-      <th>항목명</th>
+      <th style="width:220px">종류</th>
       <th style="width:120px">세금구분</th>
       <th style="width:150px" class="r">공급가액</th>
       <th style="width:130px" class="r">부가세 (10%)</th>
@@ -680,17 +683,20 @@ layout_head($title, 'shipments');
     <tbody>
     <?php foreach ($lines as $i => $l):
       // 기본은 두 줄만 보여 주고, 나머지는 [항목 추가] 로 폅니다 (적어 둔 줄은 늘 보입니다)
-      $used = $l['item_name'] !== '' || $l['supply_amount'] !== '';
+      $used = $l['supply_amount'] !== '';
       $hide = $i >= 2 && !$used; ?>
       <tr class="chline"<?= $hide ? ' hidden' : '' ?>>
         <td class="c tnum"><?= $i+1 ?></td>
         <td><select name="line[<?= $i ?>][charge_type]" class="ctype">
-          <?php foreach ($CHARGE as $k=>$v): ?>
+          <?php foreach (SHIP_CHARGES as $k => $v): ?>
             <option value="<?= h($k) ?>" data-tax="<?= h(charge_default_tax($k)) ?>"<?= $l['charge_type']===$k?' selected':'' ?>><?= h($v) ?></option>
           <?php endforeach; ?>
+          <?php if (!isset(SHIP_CHARGES[$l['charge_type']]) && isset($CHARGE[$l['charge_type']])): ?>
+            <!-- 예전에 다른 종류로 넣어 둔 줄 — 값을 함부로 바꾸지 않으려고 이 줄에만 남겨 둡니다 -->
+            <option value="<?= h($l['charge_type']) ?>" data-tax="<?= h(charge_default_tax($l['charge_type'])) ?>" selected>
+              <?= h($CHARGE[$l['charge_type']]) ?> (예전 입력)</option>
+          <?php endif; ?>
         </select></td>
-        <td><input type="text" name="line[<?= $i ?>][item_name]" value="<?= h($l['item_name']) ?>"
-                   placeholder="<?= $i===0 ? 'EXPRESS WORLDWIDE' : '' ?>"></td>
         <td><select name="line[<?= $i ?>][tax_type]" class="ttype">
           <option value="ZERO"<?= $l['tax_type']==='ZERO'?' selected':'' ?>>영세율 0%</option>
           <option value="TAXABLE"<?= $l['tax_type']==='TAXABLE'?' selected':'' ?>>과세 10%</option>
@@ -708,7 +714,7 @@ layout_head($title, 'shipments');
       </tr>
     <?php endforeach; ?>
       <tr style="background:#F7FAFB">
-        <td colspan="4" class="r" style="font-weight:700">합계</td>
+        <td colspan="3" class="r" style="font-weight:700">합계</td>
         <td class="r tnum" style="font-weight:700"><span id="sum-supply">0</span></td>
         <td class="r tnum" style="font-weight:700"><span id="sum-vat">0</span></td>
         <td class="r tnum" style="font-weight:700"><span id="sum-total">0</span></td>
@@ -719,7 +725,8 @@ layout_head($title, 'shipments');
     <button type="button" class="btn sm" id="addline">＋ 항목 추가</button>
     <span style="font-size:11.5px;color:var(--ink3)">
       기본 두 줄입니다. 더 필요하면 누르세요 (최대 <?= (int)$MAXLINE ?>줄).
-      <b>과세</b>를 고르면 공급가액의 <b>10%</b>가 부가세에 저절로 들어가고, 손으로 고칠 수도 있습니다.
+      종류는 <b>운임(영세율)</b>과 <b>과세운임(과세 10%)</b> 둘입니다 — 세금구분은 종류를 따라갑니다.
+      <b>과세운임</b>이면 공급가액의 <b>10%</b>가 부가세에 저절로 들어가고, 손으로 고칠 수도 있습니다.
     </span>
   </div>
   <script>
@@ -811,11 +818,19 @@ layout_head($title, 'shipments');
 
   // 종류를 고르면 회사 기준 세금구분으로 (운송 = 영세율, 핸드링 · 도큐멘트 · 국내운송 · 창고 · 검사 · 통관 = 과세)
   document.querySelectorAll('select.ctype').forEach(function (s) {
-    s.addEventListener('change', function () {
+    var apply = function (force) {
       var tax = s.options[s.selectedIndex].getAttribute('data-tax');
-      var t = s.closest('tr').querySelector('select[name$="[tax_type]"]');
-      if (tax && t) { t.value = tax; chRow(s.closest('tr'), true); }
-    });
+      var tr = s.closest('tr'), t = tr.querySelector('select.ttype');
+      if (tax && t) { t.value = tax; }
+      // 세금구분은 종류를 따라가므로 손대지 못하게 둡니다
+      if (t) { t.disabled = !!tax; }
+      var vat = tr.querySelector('input.vat');
+      if (vat && force) { delete vat.dataset.touched; }
+      chRow(tr, force);
+      chAll();
+    };
+    s.addEventListener('change', function () { apply(true); });
+    setTimeout(function () { apply(false); }, 0);
   });
 
   // 금액 — 과세면 공급가액의 10%를 부가세에 넣고(손으로 고치면 그 값을 둡니다), 줄 합계와 총합계를 셉니다
@@ -865,7 +880,7 @@ layout_head($title, 'shipments');
       var next = Array.prototype.find.call(document.querySelectorAll('tr.chline'), function (tr) { return tr.hidden; });
       if (!next) { addBtn.disabled = true; alert('줄을 더 늘릴 수 없습니다. 항목이 더 필요하면 전표를 나누세요.'); return; }
       next.hidden = false;
-      var f = next.querySelector('input[name$="[item_name]"]');
+      var f = next.querySelector('input.supply');
       if (f) { f.focus(); }
       if (!Array.prototype.some.call(document.querySelectorAll('tr.chline'), function (tr) { return tr.hidden; })) {
         addBtn.disabled = true;
