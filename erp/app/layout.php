@@ -53,6 +53,7 @@ function layout_head(string $title, string $active): void
             ['delete_requests', '삭제 요청 · 승인', true],
             ['boards', '홈페이지 게시판', true],
             ['activity_log', '작업로그', true],
+            ['error_log', '오류 기록', true],
             ['settings', '환경설정', true],
             ['storage_settings', '저장소 설정', true],
             ['backup', '백업 / 복구', true],

@@ -46,6 +46,54 @@ if (is_file($localCfg)) {
 @ini_set('display_errors', '0');
 @ini_set('log_errors', '1');
 
+/**
+ * 오류 기록 — 500 이 나면 화면에는 짧은 안내만, 내용은 파일에 남깁니다.
+ * 서버 로그를 열어 볼 수 없는 환경이라 시스템 → 오류 기록 화면에서 바로 봅니다.
+ */
+function gp_log_error(string $kind, string $msg, string $file = '', int $line = 0): string
+{
+    $code = date('md-His') . '-' . substr(bin2hex(random_bytes(3)), 0, 4);
+    $who  = ($_SESSION['admin_name'] ?? '-') . '#' . ($_SESSION['admin_id'] ?? 0);
+    $rec = sprintf("[%s] %s | %s | %s | %s:%d | %s %s\n", date('Y-m-d H:i:s'), $code, $kind, $who,
+                   $file, $line, ($_SERVER['REQUEST_METHOD'] ?? ''), ($_SERVER['REQUEST_URI'] ?? ''));
+    $rec .= '    ' . str_replace("\n", ' ', $msg) . "\n";
+    error_log('GP ' . $code . ' ' . $kind . ': ' . $msg . ' @ ' . $file . ':' . $line);
+    try {
+        $dir = storage_root() . DIRECTORY_SEPARATOR . 'logs';
+        if (!is_dir($dir)) { @mkdir($dir, 0750, true); }
+        $path = $dir . DIRECTORY_SEPARATOR . 'php_errors.log';
+        if (is_file($path) && filesize($path) > 512 * 1024) { @rename($path, $path . '.1'); }
+        @file_put_contents($path, $rec, FILE_APPEND | LOCK_EX);
+    } catch (Throwable $e) {
+        // 기록에 실패해도 화면은 계속 안내를 냅니다
+    }
+    return $code;
+}
+
+/** 500 화면 — 내용은 남기고, 사람에게는 번호만 */
+function gp_fatal_page(string $code): void
+{
+    if (!headers_sent()) { http_response_code(500); header('Content-Type: text/html; charset=utf-8'); }
+    echo '<!doctype html><meta charset="utf-8"><div style="font:15px/1.8 system-ui,sans-serif;'
+       . 'max-width:560px;margin:60px auto;padding:24px;border:1px solid #E1E8ED;border-radius:10px">'
+       . '<b style="font-size:17px">화면을 여는 중 문제가 생겼습니다.</b><br>'
+       . '잠시 뒤 다시 해 보시고, 계속 그러면 아래 번호를 알려 주세요.<br>'
+       . '<div style="margin-top:12px;font-family:monospace;font-size:15px;background:#F5F8FA;'
+       . 'padding:10px 12px;border-radius:6px">' . htmlspecialchars($code, ENT_QUOTES, 'UTF-8') . '</div>'
+       . '<div style="margin-top:14px"><a href="?p=dashboard">첫 화면으로</a> · '
+       . '<a href="?p=error_log">오류 기록 보기 (관리자)</a></div></div>';
+}
+
+set_exception_handler(static function (Throwable $e): void {
+    gp_fatal_page(gp_log_error(get_class($e), $e->getMessage(), $e->getFile(), $e->getLine()));
+});
+register_shutdown_function(static function (): void {
+    $e = error_get_last();
+    if ($e && in_array($e['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        gp_fatal_page(gp_log_error('FatalError', (string)$e['message'], (string)$e['file'], (int)$e['line']));
+    }
+});
+
 mb_internal_encoding('UTF-8');
 date_default_timezone_set('Asia/Seoul');
 
