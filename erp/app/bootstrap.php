@@ -70,8 +70,8 @@ function gp_log_error(string $kind, string $msg, string $file = '', int $line = 
     return $code;
 }
 
-/** 500 화면 — 내용은 남기고, 사람에게는 번호만 */
-function gp_fatal_page(string $code): void
+/** 500 화면 — 내용은 남기고, 사람에게는 번호만 (최고관리자에게는 내용까지) */
+function gp_fatal_page(string $code, string $detail = ''): void
 {
     if (!headers_sent()) { http_response_code(500); header('Content-Type: text/html; charset=utf-8'); }
     echo '<!doctype html><meta charset="utf-8"><div style="font:15px/1.8 system-ui,sans-serif;'
@@ -81,16 +81,27 @@ function gp_fatal_page(string $code): void
        . '<div style="margin-top:12px;font-family:monospace;font-size:15px;background:#F5F8FA;'
        . 'padding:10px 12px;border-radius:6px">' . htmlspecialchars($code, ENT_QUOTES, 'UTF-8') . '</div>'
        . '<div style="margin-top:14px"><a href="?p=dashboard">첫 화면으로</a> · '
-       . '<a href="?p=error_log">오류 기록 보기 (관리자)</a></div></div>';
+       . '<a href="?p=error_log">오류 기록 보기 (관리자)</a></div>';
+    // 최고관리자에게는 무엇이 잘못됐는지 그대로 보여 줍니다 — 고칠 사람이 봐야 하는 내용입니다
+    if ($detail !== '' && ($_SESSION['role'] ?? '') === 'SUPER_ADMIN') {
+        echo '<pre style="margin-top:14px;white-space:pre-wrap;word-break:break-all;font-size:12px;'
+           . 'line-height:1.6;background:#FFF4F4;border:1px solid #F0CACA;border-radius:6px;padding:10px">'
+           . htmlspecialchars($detail, ENT_QUOTES, 'UTF-8') . '</pre>';
+    }
+    echo '</div>';
 }
 
 set_exception_handler(static function (Throwable $e): void {
-    gp_fatal_page(gp_log_error(get_class($e), $e->getMessage(), $e->getFile(), $e->getLine()));
+    gp_fatal_page(gp_log_error(get_class($e), $e->getMessage(), $e->getFile(), $e->getLine()),
+                  get_class($e) . ': ' . $e->getMessage() . "
+" . $e->getFile() . ':' . $e->getLine());
 });
 register_shutdown_function(static function (): void {
     $e = error_get_last();
     if ($e && in_array($e['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
-        gp_fatal_page(gp_log_error('FatalError', (string)$e['message'], (string)$e['file'], (int)$e['line']));
+        gp_fatal_page(gp_log_error('FatalError', (string)$e['message'], (string)$e['file'], (int)$e['line']),
+                      (string)$e['message'] . "
+" . (string)$e['file'] . ':' . (int)$e['line']);
     }
 });
 
