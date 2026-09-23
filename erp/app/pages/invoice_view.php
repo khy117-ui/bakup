@@ -106,8 +106,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $err = '취소된 청구서는 고칠 수 없습니다.';
             } else {
                 $note = trim(post('remark'));
-                db()->prepare('UPDATE invoices SET remark = ?, updated_by = ? WHERE id = ? AND business_entity_id = ?')
-                    ->execute([$note !== '' ? mb_substr($note, 0, 1000) : null, $_SESSION['admin_id'] ?? null, $id, $eid]);
+                // invoices 에는 updated_by 칸이 없습니다 — 누가 고쳤는지는 작업로그에 남습니다
+                db()->prepare('UPDATE invoices SET remark = ? WHERE id = ? AND business_entity_id = ?')
+                    ->execute([$note !== '' ? mb_substr($note, 0, 1000) : null, $id, $eid]);
                 log_action('청구', 'UPDATE', 'invoices', $id, (string)$inv['invoice_no'], null, '비고 수정');
                 flash('비고를 저장했습니다. 청구서 인쇄 화면과 엑셀에 나옵니다.');
                 redirect('?p=invoice_view&id=' . $id);
