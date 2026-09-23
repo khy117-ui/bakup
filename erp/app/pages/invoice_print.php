@@ -284,6 +284,8 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
     <a class="btn" href="?p=invoice_view&amp;id=<?= $id ?>">돌아가기</a>
     <?php if ($inv['status'] === 'DRAFT'): ?>
       <span style="font-size:12px;color:#A32020">아직 발행하지 않은 청구서입니다 (작성중)</span>
+    <?php elseif ((int)($inv['issue_count'] ?? 0) > 1): ?>
+      <span style="font-size:12px;color:#4E6273">재발행 <?= (int)$inv['issue_count'] ?>회차 · 최종 발행 <?= h(substr((string)$inv['issued_at'], 0, 16)) ?></span>
     <?php elseif ($inv['status'] === 'CANCELLED'): ?>
       <span style="font-size:12px;color:#A32020">취소된 청구서입니다</span>
     <?php endif; ?>
@@ -299,6 +301,9 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
         &nbsp;·&nbsp; PERIOD <?= h($inv['period_from']) ?> ~ <?= h($inv['period_to']) ?>
         <?php if ($inv['due_date']): ?>
           &nbsp;·&nbsp; DUE <?= h($inv['due_date']) ?>
+        <?php endif; ?>
+        <?php if ((int)($inv['issue_count'] ?? 0) > 1): ?>
+          &nbsp;·&nbsp; REV. <?= (int)$inv['issue_count'] - 1 ?> (<?= h(substr((string)$inv['issued_at'], 0, 10)) ?>)
         <?php endif; ?>
       </div>
     </div>
