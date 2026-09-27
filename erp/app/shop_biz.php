@@ -414,6 +414,12 @@ function shop_alert_lines(): array
     if ($open['cnt'] > 0) {
         $lines[] = "답변 안 한 상품 문의 {$open['cnt']}건" . ($open['old'] ? " (하루 넘은 것 {$open['old']}건)" : '');
     }
+    // 주문받고 하루가 지나도 송장이 없는 주문
+    require_once APP_DIR . '/shop_ship.php';
+    $late = array_filter(shop_ship_waiting(14), fn($r) => (string)$r['ordered_at'] < date('Y-m-d H:i:s', strtotime('-1 day')));
+    if ($late) {
+        $lines[] = '하루 넘게 송장이 없는 주문 ' . count($late) . '건 — 쇼핑몰관리 > 송장 등록';
+    }
     // 오늘 발주해야 할 상품
     $ro = array_values(array_filter(shop_reorder_rows(), fn($r) => $r['order_now'] && $r['qty'] > 0 && !(int)$r['hidden']));
     if ($ro) {

@@ -28,7 +28,7 @@ function shop_channel_label(string $code): string
 /** 표 · 설정 자리 · 권한 (세션당 한 번) */
 function shop_ensure_schema(): void
 {
-    if (!empty($_SESSION['schema_shop_v1'])) { return; }
+    if (!empty($_SESSION['schema_shop_v1'])) { shop_upgrade_dispatch(); return; }
     $pdo = db();
     try {
         $pdo->exec("CREATE TABLE IF NOT EXISTS shop_orders (
@@ -69,6 +69,47 @@ function shop_ensure_schema(): void
     } catch (PDOException $e) {
         error_log('쇼핑몰 주문 표 준비 실패: ' . $e->getMessage());
     }
+    shop_upgrade_dispatch();
+}
+
+/** 송장 등록용: 판매채널 상품주문 번호 · 쿠팡 묶음배송번호 · 등록한 송장, 송장 등록 기록 */
+function shop_upgrade_dispatch(): void
+{
+    if (!empty($_SESSION['schema_shop_v2'])) { return; }
+    $pdo = db();
+    try {
+        $st = $pdo->query("SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'shop_orders'");
+        $cols = array_flip($st->fetchAll(PDO::FETCH_COLUMN));
+        if (!isset($cols['line_id'])) {
+            $pdo->exec("ALTER TABLE shop_orders
+                          ADD COLUMN line_id       VARCHAR(80) NULL COMMENT '상품주문 번호 (쿠팡 vendorItemId · 스마트스토어 productOrderId · 카페24 order_item_code)' AFTER line_key,
+                          ADD COLUMN ship_id       VARCHAR(40) NULL COMMENT '쿠팡 묶음배송번호 (shipmentBoxId)' AFTER line_id,
+                          ADD COLUMN courier       VARCHAR(30) NULL COMMENT 'ERP 에서 등록한 택배사' AFTER status,
+                          ADD COLUMN tracking_no   VARCHAR(40) NULL COMMENT 'ERP 에서 등록한 송장번호' AFTER courier,
+                          ADD COLUMN dispatched_at DATETIME    NULL COMMENT '송장 등록한 때' AFTER tracking_no,
+                          ADD KEY ix_so_line_id (line_id)");
+        }
+        $pdo->exec("CREATE TABLE IF NOT EXISTS shop_dispatch_log (
+                      id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                      batch       CHAR(16)      NOT NULL COMMENT '한 번에 올린 묶음',
+                      channel     VARCHAR(20)   NOT NULL,
+                      order_id    VARCHAR(60)   NOT NULL,
+                      courier     VARCHAR(30)   NOT NULL,
+                      tracking_no VARCHAR(40)   NOT NULL,
+                      ok          TINYINT(1)    NOT NULL DEFAULT 0,
+                      message     VARCHAR(300)  NULL,
+                      sent_by     BIGINT UNSIGNED NULL,
+                      sent_at     DATETIME      NOT NULL,
+                      PRIMARY KEY (id),
+                      KEY ix_sdl_order (channel, order_id),
+                      KEY ix_sdl_sent (sent_at)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                      COMMENT='쇼핑몰 송장 등록 기록'");
+        $_SESSION['schema_shop_v2'] = 1;
+    } catch (PDOException $e) {
+        error_log('쇼핑몰 송장 표 준비 실패: ' . $e->getMessage());
+    }
 }
 
 /** 주문일시 문자열 → 'Y-m-d H:i:s' (한국 시간). 못 읽으면 null */
@@ -90,10 +131,12 @@ function shop_datetime(string $s): ?string
  */
 function shop_upsert(array $orders, string $source): array
 {
+    shop_ensure_schema();
     $pdo = db();
-    $st = $pdo->prepare("INSERT INTO shop_orders (channel, order_id, line_key, ordered_at, product, qty, amount, status, source)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    $st = $pdo->prepare("INSERT INTO shop_orders (channel, order_id, line_key, line_id, ship_id, ordered_at, product, qty, amount, status, source)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                          ON DUPLICATE KEY UPDATE qty = VALUES(qty), amount = VALUES(amount), status = VALUES(status),
+                                                 line_id = COALESCE(VALUES(line_id), line_id), ship_id = COALESCE(VALUES(ship_id), ship_id),
                                                  ordered_at = COALESCE(VALUES(ordered_at), ordered_at)");
     $new = 0;
     $chg = 0;
@@ -105,6 +148,8 @@ function shop_upsert(array $orders, string $source): array
                 shop_channel_code((string)$o['channel']),
                 mb_substr(trim((string)$o['orderId']), 0, 60),
                 sha1($product),
+                mb_substr(trim((string)($o['lineId'] ?? '')), 0, 80) ?: null,
+                mb_substr(trim((string)($o['shipId'] ?? '')), 0, 40) ?: null,
                 shop_datetime((string)($o['orderedAt'] ?? '')),
                 $product,
                 (int)num((string)($o['qty'] ?? '0')),

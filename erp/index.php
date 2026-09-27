@@ -76,6 +76,7 @@ $routes = [
     'ad_keywords'      => 'ad_keywords.php',
     'shop_products'    => 'shop_products.php',
     'shop_inquiries'   => 'shop_inquiries.php',
+    'shop_dispatch'    => 'shop_dispatch.php',
 ];
 
 if ($page === 'logout') {
