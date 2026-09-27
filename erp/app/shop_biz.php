@@ -30,7 +30,7 @@ function shop_biz_ensure_schema(): void
 {
     shop_ensure_schema();
     shop_ads_ensure_schema();
-    if (!empty($_SESSION['schema_shop_biz_v1'])) { return; }
+    if (!empty($_SESSION['schema_shop_biz_v1'])) { shop_biz_upgrade_reorder(); return; }
     $pdo = db();
     try {
         $pdo->exec("CREATE TABLE IF NOT EXISTS shop_products (
@@ -67,6 +67,36 @@ function shop_biz_ensure_schema(): void
             ['shop_stock_warn_days', '7', '품절 경고 (일)', '최근 14일 판매 속도로 이 날짜 안에 재고가 떨어질 상품을 경고', 'number', null, 13],
         ] as $r) { $ins->execute($r); }
         $_SESSION['schema_shop_biz_v1'] = 1;
+    } catch (PDOException $e) {
+        error_log('쇼핑몰 상품 표 준비 실패: ' . $e->getMessage());
+    }
+    shop_biz_upgrade_reorder();
+}
+
+/** 발주 추천용 칸 · 설정 (v2) */
+function shop_biz_upgrade_reorder(): void
+{
+    if (!empty($_SESSION['schema_shop_biz_v2'])) { return; }
+    $pdo = db();
+    try {
+        $st = $pdo->query("SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'shop_products'");
+        $cols = array_flip($st->fetchAll(PDO::FETCH_COLUMN));
+        if (!isset($cols['supplier'])) {
+            $pdo->exec("ALTER TABLE shop_products
+                          ADD COLUMN supplier   VARCHAR(100) NULL COMMENT '매입처 (발주할 곳)' AFTER ship_cost,
+                          ADD COLUMN lead_days  SMALLINT     NULL COMMENT '발주 후 입고까지 걸리는 날 — 비우면 환경설정 기본값' AFTER supplier,
+                          ADD COLUMN order_unit INT          NULL COMMENT '발주 단위 (박스 입수 등) — 비우면 1' AFTER lead_days");
+        }
+        $ins = $pdo->prepare("INSERT IGNORE INTO app_settings
+                                (setting_key, setting_val, group_ko, label_ko, help_ko, input_type, options_csv, sort_order)
+                              VALUES (?, ?, '쇼핑몰', ?, ?, 'number', NULL, ?)");
+        foreach ([
+            ['shop_lead_days', '7', '발주 → 입고 기본 일수', '상품에 입고 기간을 따로 안 넣었을 때 씁니다', 20],
+            ['shop_cover_days', '30', '한 번에 발주할 판매 일수', '입고된 뒤 이만큼 팔 수 있게 수량을 추천', 21],
+            ['shop_safety_days', '3', '안전 재고 (일)', '판매가 갑자기 늘어도 버틸 여유분', 22],
+        ] as $r) { $ins->execute($r); }
+        $_SESSION['schema_shop_biz_v2'] = 1;
     } catch (PDOException $e) {
         error_log('쇼핑몰 상품 표 준비 실패: ' . $e->getMessage());
     }
@@ -120,19 +150,55 @@ function shop_stock_rows(bool $withHidden = false): array
                      WHERE o.line_key = p.line_key AND p.stock_base_at IS NOT NULL AND o.ordered_at >= p.stock_base_at AND NOT $cx) AS sold_since,
                    (SELECT COALESCE(SUM(o.qty), 0) FROM shop_orders o
                      WHERE o.line_key = p.line_key AND o.ordered_at >= ? AND NOT $cx) AS sold14,
+                   (SELECT COALESCE(SUM(o.qty), 0) FROM shop_orders o
+                     WHERE o.line_key = p.line_key AND o.ordered_at >= ? AND NOT $cx) AS sold7,
                    (SELECT MAX(o.ordered_at) FROM shop_orders o WHERE o.line_key = p.line_key) AS last_order
               FROM shop_products p " . ($withHidden ? '' : 'WHERE p.hidden = 0') . '
              ORDER BY sold14 DESC, p.product');
     // 주문 시각은 한국 시간으로 저장되어 있어 DB 의 NOW() 대신 PHP 시각을 씁니다
-    $st->execute([date('Y-m-d H:i:s', strtotime('-14 days'))]);
+    $st->execute([date('Y-m-d H:i:s', strtotime('-14 days')), date('Y-m-d H:i:s', strtotime('-7 days'))]);
     $rows = $st->fetchAll();
     foreach ($rows as &$r) {
-        $r['daily'] = round((int)$r['sold14'] / 14, 2);
+        // 최근 7일이 더 빠르면 그 속도로 (잘 팔리기 시작한 상품을 늦게 알아채지 않게)
+        $r['daily'] = round(max((int)$r['sold14'] / 14, (int)$r['sold7'] / 7), 2);
         $r['stock_now'] = $r['stock_base'] === null ? null : (int)$r['stock_base'] - (int)$r['sold_since'];
         $r['days_left'] = ($r['stock_now'] !== null && $r['daily'] > 0) ? (int)floor(max(0, $r['stock_now']) / $r['daily']) : null;
     }
     unset($r);
     return $rows;
+}
+
+/**
+ * 발주 추천 — 재고를 입력한 상품만.
+ *   발주 시점 = 남은 재고가 (입고 일수 + 안전 일수) 동안 팔 양보다 적어지는 날
+ *   추천 수량 = 하루 판매 × (입고 일수 + 한 번에 발주할 일수 + 안전 일수) − 남은 재고, 발주 단위로 올림
+ */
+function shop_reorder_rows(?array $rows = null): array
+{
+    $defLead = max(0, (int)shop_setting('shop_lead_days', '7'));
+    $cover   = max(1, (int)shop_setting('shop_cover_days', '30'));
+    $safety  = max(0, (int)shop_setting('shop_safety_days', '3'));
+    $out = [];
+    foreach ($rows ?? shop_stock_rows() as $r) {
+        if ($r['stock_now'] === null || $r['daily'] <= 0) { continue; }
+        $lead = $r['lead_days'] !== null ? (int)$r['lead_days'] : $defLead;
+        $unit = max(1, (int)($r['order_unit'] ?? 1));
+        $now = max(0, (int)$r['stock_now']);
+        $point = $r['daily'] * ($lead + $safety);                 // 이 아래로 내려가면 지금 발주
+        $daysToOrder = (int)floor(($now - $point) / $r['daily']);  // 0 이하 = 지금
+        $need = $r['daily'] * ($lead + $cover + $safety) - $now;
+        $qty = $need > 0 ? (int)(ceil($need / $unit) * $unit) : 0;
+        $r['lead'] = $lead;
+        $r['unit'] = $unit;
+        $r['order_in'] = max(0, $daysToOrder);
+        $r['order_date'] = date('Y-m-d', strtotime('+' . max(0, $daysToOrder) . ' days'));
+        $r['order_now'] = $daysToOrder <= 0;
+        $r['qty'] = $qty;
+        $r['amount'] = $r['unit_cost'] === null ? null : $qty * (float)$r['unit_cost'];
+        $out[] = $r;
+    }
+    usort($out, fn($a, $b) => [$a['order_in'], (string)$a['supplier']] <=> [$b['order_in'], (string)$b['supplier']]);
+    return $out;
 }
 
 /** 품절 · 품절 임박 상품 */
@@ -314,6 +380,12 @@ function shop_alert_lines(): array
         if ($a['roas'] !== null && $a['roas'] < $target) {
             $lines[] = "{$name} 광고 ROAS {$a['roas']}% (목표 {$target}%) — 제외할 키워드 {$a['exclude']}개";
         }
+    }
+    // 오늘 발주해야 할 상품
+    $ro = array_values(array_filter(shop_reorder_rows(), fn($r) => $r['order_now'] && $r['qty'] > 0 && !(int)$r['hidden']));
+    if ($ro) {
+        $lines[] = '발주 필요 ' . count($ro) . '개: ' . implode(', ', array_map(fn($r) => $r['product'] . ' ' . $r['qty'] . '개', array_slice($ro, 0, 5)))
+                 . (count($ro) > 5 ? ' 외' : '');
     }
     // 품절 · 품절 임박
     foreach (array_slice(shop_stock_alerts(), 0, 10) as $r) {
