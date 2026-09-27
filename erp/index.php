@@ -73,6 +73,7 @@ $routes = [
     'web_pickups'      => 'web_pickups.php',
     'live_feed'        => 'live_feed.php',
     'shop_orders'      => 'shop_orders.php',
+    'ad_keywords'      => 'ad_keywords.php',
 ];
 
 if ($page === 'logout') {

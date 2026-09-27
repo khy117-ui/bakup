@@ -76,6 +76,7 @@ const ROUTE_PERMS = [
     'boards'           => ['web.board.read', 'web.board.write'],
 
     'shop_orders'      => ['shop.order.read', 'shop.order.write'],   // 쇼핑몰 주문 · 매출 (commerce-hub 연동)
+    'ad_keywords'      => ['shop.ad.read', 'shop.ad.write'],         // 광고 · 키워드 분석 · 추천
 
     'business_entity'  => ['sys.entity.write', 'sys.entity.write'],
     'permissions'      => ['sys.admin.read', 'sys.admin.write'],
