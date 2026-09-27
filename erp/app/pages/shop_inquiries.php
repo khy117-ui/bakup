@@ -6,7 +6,7 @@ require_once APP_DIR . '/layout.php';
 require_once APP_DIR . '/shop_biz.php';
 
 /**
- * 고객 문의 — 쿠팡 · 스마트스토어 상품 문의를 한 화면에서 보고 답변합니다.
+ * 고객 문의 — 쿠팡 · 스마트스토어 · 카페24(상품 Q&A 게시판) 상품 문의를 한 화면에서 보고 답변합니다.
  * 쇼핑몰 통합관리 서버(commerce-hub)의 /inquiries 로 가져오고, 답변은 /inquiries/reply 로 판매채널에 바로 등록됩니다.
  * 자동 가져오기가 켜져 있으면 주문과 함께 1시간마다 최근 3일 문의를 가져옵니다.
  */
@@ -64,7 +64,7 @@ layout_head('고객 문의', 'shop_inquiries');
 ?>
 <div class="head">
   <h1>고객 문의</h1>
-  <div class="crumb">쇼핑몰관리 &gt; 쿠팡 · 스마트스토어 상품 문의 (답변하면 판매채널에 바로 등록)</div>
+  <div class="crumb">쇼핑몰관리 &gt; 쿠팡 · 스마트스토어 · 카페24 상품 문의 (답변하면 판매채널에 바로 등록)</div>
 </div>
 <?php if ($err !== ''): ?><div class="msg err"><?= h($err) ?></div><?php endif; ?>
 
@@ -76,7 +76,7 @@ layout_head('고객 문의', 'shop_inquiries');
     <form method="get" style="display:flex;gap:6px;margin-left:12px">
       <input type="hidden" name="p" value="shop_inquiries"><input type="hidden" name="f" value="<?= h($f) ?>">
       <select name="ch" style="width:auto"><option value="">전체 판매처</option>
-        <?php foreach (['coupang', 'naver'] as $k): ?><option value="<?= $k ?>"<?= $ch === $k ? ' selected' : '' ?>><?= h(shop_channel_label($k)) ?></option><?php endforeach; ?></select>
+        <?php foreach (array_keys(SHOP_CHANNELS) as $k): ?><option value="<?= $k ?>"<?= $ch === $k ? ' selected' : '' ?>><?= h(shop_channel_label($k)) ?></option><?php endforeach; ?></select>
       <input type="text" name="kw" value="<?= h($kw) ?>" placeholder="상품명 · 문의 내용" style="width:180px">
       <button class="btn sm">검색</button></form>
     <?php if ($canEdit): ?>
@@ -88,14 +88,14 @@ layout_head('고객 문의', 'shop_inquiries');
   </div>
   <div class="cb" style="font-size:12px;color:var(--ink2);border-bottom:1px solid var(--line2)">
     마지막으로 가져온 때: <?= h($lastFetch ?? '-') ?> · 자동 가져오기가 켜져 있으면 주문과 함께 1시간마다 가져옵니다.
-    카페24 게시판 문의는 아직 가져오지 않습니다.
+    카페24는 상품 Q&amp;A 게시판 글을 가져오고, 답변은 그 글에 관리자 댓글로 달립니다.
   </div>
   <?php if (!$rows): ?>
     <div class="empty"><?= $f === 'open' ? '답변할 문의가 없습니다.' : '문의가 없습니다.' ?><?= $hasApi ? '' : ' 환경설정 → 연동 에 쇼핑몰 서버 주소와 토큰을 넣으세요.' ?></div>
   <?php else: foreach ($rows as $q): $late = !(int)$q['answered'] && $q['asked_at'] && strtotime((string)$q['asked_at']) < strtotime('-1 day'); ?>
     <div class="cb" style="border-bottom:1px solid var(--line2)<?= $late ? ';background:#FFF7F6' : '' ?>">
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--ink2)">
-        <span class="badge <?= $q['channel'] === 'coupang' ? 'b-info' : 'b-ok' ?>"><?= h(shop_channel_label($q['channel'])) ?></span>
+        <span class="badge <?= ['coupang' => 'b-info', 'naver' => 'b-ok'][$q['channel']] ?? '' ?>"><?= h(shop_channel_label($q['channel'])) ?></span>
         <b style="color:var(--ink)"><?= h($q['product'] ?: '(상품명 없음)') ?></b>
         <span class="tnum"><?= h(substr((string)$q['asked_at'], 0, 16)) ?></span>
         <?= (int)$q['answered'] ? '<span class="badge b-ok">답변 완료</span>' : ($late ? '<span class="badge b-err">하루 넘음</span>' : '<span class="badge b-warn">답변 대기</span>') ?>

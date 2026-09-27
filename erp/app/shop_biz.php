@@ -365,6 +365,13 @@ function shop_auto_tick(): array
                     } catch (RuntimeException $e) {
                         $qn = ' · 문의 실패';
                     }
+                    try {
+                        require_once APP_DIR . '/shop_claims.php';
+                        [$cNew] = shop_claims_sync(3);
+                        $qn .= " · 새 반품·교환 {$cNew}";
+                    } catch (RuntimeException $e) {
+                        $qn .= ' · 반품 실패';
+                    }
                     shop_state_set('last_fetch_result', date('Y-m-d H:i') . " 새 {$new} · 바뀜 {$chg}{$qn}");
                     $res['shop_fetch'] = "$new/$chg";
                 } catch (RuntimeException $e) {
@@ -416,6 +423,11 @@ function shop_alert_lines(): array
     $open = shop_inquiries_open();
     if ($open['cnt'] > 0) {
         $lines[] = "답변 안 한 상품 문의 {$open['cnt']}건" . ($open['old'] ? " (하루 넘은 것 {$open['old']}건)" : '');
+    }
+    // 처리할 반품 · 교환
+    require_once APP_DIR . '/shop_claims.php';
+    if (($cl = shop_claims_open()) > 0) {
+        $lines[] = "처리할 반품 · 교환 {$cl}건 — 쇼핑몰관리 > 반품 · 교환";
     }
     // 주문받고 하루가 지나도 송장이 없는 주문
     require_once APP_DIR . '/shop_ship.php';
@@ -512,4 +524,75 @@ function shop_inquiries_open(): array
     } catch (PDOException $e) {
         return ['cnt' => 0, 'old' => 0];
     }
+}
+
+/** 판매가 계산용 설정 (목표 이익률) */
+function shop_price_ensure_schema(): void
+{
+    if (!empty($_SESSION['schema_shop_price_v1'])) { return; }
+    try {
+        db()->exec("INSERT IGNORE INTO app_settings
+                      (setting_key, setting_val, group_ko, label_ko, help_ko, input_type, options_csv, sort_order)
+                    VALUES ('shop_target_margin', '20', '쇼핑몰', '목표 이익률 (%)',
+                            '판매가 계산에 씁니다. 원가 · 수수료 · 배송비 · 광고비를 빼고 남길 비율', 'number', NULL, 5)");
+        $_SESSION['schema_shop_price_v1'] = 1;
+    } catch (PDOException $e) {
+        error_log('판매가 설정 준비 실패: ' . $e->getMessage());
+    }
+}
+
+/** 판매가 = (원가 + 배송비) ÷ (1 − 수수료율 − 광고비율 − 목표 이익률), 100원 단위 올림 */
+function shop_price_calc(float $cost, float $ship, float $margin, array $ch): ?int
+{
+    $den = 1 - ($ch['fee'] + $ch['ad'] + $margin) / 100;
+    if ($den <= 0.05) { return null; }   // 수수료 + 광고 + 이익률이 95% 를 넘으면 계산 안 함
+    return (int)(ceil(($cost + $ship) / $den / 100) * 100);
+}
+
+/**
+ * 상품마다 판매처별 추천 판매가 · 지금 평균 판매가 · 지금 이익률.
+ * 광고비율은 최근 30일 판매처 광고비 ÷ 판매처 매출 (광고 보고서가 없으면 0).
+ * @return array{channels: array, rows: array} channels[코드] = [label, fee, ad]
+ */
+function shop_price_rows(float $margin): array
+{
+    $from = date('Y-m-d', strtotime('-29 days'));
+    $to = date('Y-m-d');
+    $pdo = db();
+    $cx = shop_cancel_sql();
+    $st = $pdo->prepare("SELECT channel, line_key, SUM(amount) AS sales, SUM(qty) AS qty FROM shop_orders
+                          WHERE ordered_at >= ? AND ordered_at < DATE_ADD(?, INTERVAL 1 DAY) AND NOT $cx GROUP BY channel, line_key");
+    $st->execute([$from, $to]);
+    $cur = [];
+    $chSales = [];
+    foreach ($st->fetchAll() as $r) {
+        if ((int)$r['qty'] > 0) { $cur[$r['line_key']][$r['channel']] = (float)$r['sales'] / (int)$r['qty']; }
+        $chSales[$r['channel']] = ($chSales[$r['channel']] ?? 0) + (float)$r['sales'];
+    }
+    $ad = shop_ad_spend($from, $to);
+    $chs = [];
+    foreach (SHOP_CHANNELS as $k => $label) {
+        $chs[$k] = ['label' => $label, 'fee' => (float)shop_setting('shop_fee_' . $k, ['coupang' => '10.8', 'naver' => '5.5', 'cafe24' => '3.3'][$k]),
+                    'ad' => ($chSales[$k] ?? 0) > 0 ? round(($ad[$k] ?? 0) / $chSales[$k] * 100, 1) : 0.0];
+    }
+    $rows = [];
+    shop_products_sync();
+    foreach ($pdo->query('SELECT id, line_key, product, unit_cost, ship_cost FROM shop_products WHERE hidden = 0 ORDER BY product')->fetchAll() as $p) {
+        $r = ['id' => (int)$p['id'], 'product' => $p['product'], 'cost' => $p['unit_cost'] === null ? null : (float)$p['unit_cost'],
+              'ship' => (float)($p['ship_cost'] ?? 0), 'ch' => []];
+        foreach ($chs as $k => $c) {
+            $now = $cur[$p['line_key']][$k] ?? null;
+            $rec = $r['cost'] === null ? null : shop_price_calc($r['cost'], $r['ship'], $margin, $c);
+            $m = ($now !== null && $r['cost'] !== null && $now > 0)
+                ? round(($now - $r['cost'] - $r['ship'] - $now * ($c['fee'] + $c['ad']) / 100) / $now * 100, 1) : null;
+            $r['ch'][$k] = ['now' => $now, 'rec' => $rec, 'margin' => $m];
+        }
+        $rows[] = $r;
+    }
+    // 지금 이익률이 목표보다 낮은 상품이 위로
+    usort($rows, function ($a, $b) {
+        $low = fn($r) => min(array_map(fn($c) => $c['margin'] ?? 999, $r['ch']));
+        return $low($a) <=> $low($b);
+    });
+    return ['channels' => $chs, 'rows' => $rows];
 }

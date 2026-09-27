@@ -79,6 +79,7 @@ const ROUTE_PERMS = [
     'ad_keywords'      => ['shop.ad.read', 'shop.ad.write'],         // 광고 · 키워드 분석 · 추천
     'shop_products'    => ['shop.order.read', 'shop.order.write'],   // 쇼핑몰 상품 · 재고 · 순이익
     'shop_inquiries'   => ['shop.order.read', 'shop.order.write'],   // 쇼핑몰 고객 문의 · 답변
+    'shop_claims'      => ['shop.order.read', 'shop.order.write'],   // 쇼핑몰 반품 · 교환 (반품 승인)
     'shop_dispatch'    => ['shop.order.read', 'shop.order.write'],   // 쇼핑몰 송장 등록 (발송처리)
     'shop_report'      => ['shop.order.read', 'shop.order.write'],   // 쇼핑몰 월간 보고서 (PDF · 메일)
 

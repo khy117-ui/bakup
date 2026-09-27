@@ -12,7 +12,7 @@ require_once APP_DIR . '/shop_biz.php';
 $err = '';
 shop_biz_ensure_schema();
 $pdo = db();
-$tab = in_array(query('tab'), ['profit', 'order'], true) ? query('tab') : 'stock';
+$tab = in_array(query('tab'), ['profit', 'order', 'price'], true) ? query('tab') : 'stock';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save_order') {
     csrf_check();
@@ -116,6 +116,11 @@ if ($tab === 'order') {
         echo xlsx_build('발주', $x, [16, 40, 10, 10, 12, 10, 12]);
         exit;
     }
+} elseif ($tab === 'price') {
+    shop_price_ensure_schema();
+    $margin = query('margin') !== '' && is_numeric(query('margin')) ? max(0.0, min(80.0, (float)query('margin'))) : (float)shop_setting('shop_target_margin', '20');
+    $pr = shop_price_rows($margin);
+    $qc = ['cost' => num(query('qcost')), 'ship' => num(query('qship'))];
 } elseif ($tab === 'stock') {
     $showHidden = query('hidden') === '1';
     $rows = shop_stock_rows($showHidden);
@@ -142,6 +147,7 @@ layout_head('상품 · 재고 · 순이익', 'shop_products');
   <a class="btn sm<?= $tab === 'stock' ? ' pri' : '' ?>" href="?p=shop_products">재고 · 원가 입력</a>
   <a class="btn sm<?= $tab === 'order' ? ' pri' : '' ?>" href="?p=shop_products&amp;tab=order">발주 추천</a>
   <a class="btn sm<?= $tab === 'profit' ? ' pri' : '' ?>" href="?p=shop_products&amp;tab=profit">상품별 순이익</a>
+  <a class="btn sm<?= $tab === 'price' ? ' pri' : '' ?>" href="?p=shop_products&amp;tab=price">판매가 계산</a>
   <?php if (route_can_edit('settings')): ?><a class="btn sm" style="margin-left:auto" href="?p=settings">수수료 · 알림 기준 (환경설정 → 쇼핑몰)</a><?php endif; ?>
 </div></div>
 
@@ -242,6 +248,52 @@ layout_head('상품 · 재고 · 순이익', 'shop_products');
   <?php endif; ?>
 </div>
 
+<?php elseif ($tab === 'price'): ?>
+<div class="card">
+  <div class="ch">판매가 계산
+    <span style="font-weight:400;color:var(--ink3);font-size:12px">판매가 = (원가 + 배송비) ÷ (1 − 수수료 − 광고비율 − 목표 이익률), 100원 단위 올림</span></div>
+  <div class="cb">
+    <form method="get" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+      <input type="hidden" name="p" value="shop_products"><input type="hidden" name="tab" value="price">
+      <label style="font-size:12px">목표 이익률 (%)<br><input type="number" name="margin" step="0.5" min="0" max="80" value="<?= h((string)$margin) ?>" style="width:90px"></label>
+      <label style="font-size:12px">새 상품 원가 (선택)<br><input type="text" name="qcost" value="<?= $qc['cost'] ? h((string)$qc['cost']) : '' ?>" placeholder="예) 15000" style="width:110px"></label>
+      <label style="font-size:12px">배송비<br><input type="text" name="qship" value="<?= $qc['ship'] ? h((string)$qc['ship']) : '' ?>" placeholder="예) 3000" style="width:90px"></label>
+      <button class="btn pri">계산</button>
+      <span style="font-size:12px;color:var(--ink2)">
+        <?php foreach ($pr['channels'] as $c): ?><?= h($c['label']) ?> 수수료 <?= h((string)$c['fee']) ?>% · 광고비율 <?= h((string)$c['ad']) ?>%&nbsp;&nbsp; <?php endforeach; ?>
+        (수수료는 환경설정 → 쇼핑몰, 광고비율은 최근 30일 광고 보고서 기준)</span>
+    </form>
+    <?php if ($qc['cost'] > 0): ?>
+    <div class="kpis" style="margin-top:12px">
+      <?php foreach ($pr['channels'] as $c): $v = shop_price_calc($qc['cost'], $qc['ship'], $margin, $c); ?>
+        <div class="kpi"><div class="lab"><?= h($c['label']) ?> 추천 판매가</div><div class="val tnum"><?= $v === null ? '계산 불가' : money($v) . '원' ?></div>
+          <div class="sub"><?= $v === null ? '수수료 + 광고비 + 이익률이 너무 큽니다' : '남는 돈 약 ' . money(round($v * $margin / 100)) . '원 / 개' ?></div></div>
+      <?php endforeach; ?>
+    </div>
+    <?php endif; ?>
+  </div>
+</div>
+<div class="card">
+  <div class="ch">상품별 추천 판매가 <span style="font-weight:400;color:var(--ink3);font-size:12px">지금 가격은 최근 30일 평균 판매가. 지금 이익률이 목표보다 낮으면 빨간색 — 낮은 상품부터 보입니다</span></div>
+  <?php if (!$pr['rows']): ?><div class="empty">상품이 없습니다. 주문을 먼저 가져오세요.</div><?php else: ?>
+  <table>
+    <thead><tr><th rowspan="2">상품명</th><th class="r" rowspan="2">원가</th><th class="r" rowspan="2">배송비</th>
+      <?php foreach ($pr['channels'] as $c): ?><th colspan="3" style="text-align:center;border-left:1px solid var(--line2)"><?= h($c['label']) ?></th><?php endforeach; ?></tr>
+      <tr><?php foreach ($pr['channels'] as $c): ?><th class="r" style="border-left:1px solid var(--line2)">추천가</th><th class="r">지금 가격</th><th class="r">지금 이익률</th><?php endforeach; ?></tr></thead>
+    <tbody>
+    <?php foreach ($pr['rows'] as $r): ?>
+      <tr><td style="font-size:12.5px;font-weight:600"><?= h($r['product']) ?><?= $r['cost'] === null ? ' <span class="badge b-warn">원가 없음</span>' : '' ?></td>
+        <td class="r tnum"><?= $r['cost'] === null ? '-' : money($r['cost']) ?></td><td class="r tnum"><?= money($r['ship']) ?></td>
+        <?php foreach ($r['ch'] as $k => $c): $low = $c['margin'] !== null && $c['margin'] < $margin; ?>
+          <td class="r tnum" style="border-left:1px solid var(--line2);font-weight:700"><?= $c['rec'] === null ? '-' : money($c['rec']) ?></td>
+          <td class="r tnum"><?= $c['now'] === null ? '<span style="color:var(--ink3)">판매 없음</span>' : money(round($c['now'])) ?></td>
+          <td class="r tnum" style="<?= $low ? 'color:#C62828;font-weight:700' : '' ?>"><?= $c['margin'] === null ? '-' : h((string)$c['margin']) . '%' ?></td>
+        <?php endforeach; ?></tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  <?php endif; ?>
+</div>
 <?php else: ?>
 <div class="card"><div class="cb">
   <form class="f" method="get" style="align-items:flex-end">
