@@ -3,7 +3,7 @@
 if (!defined('APP_DIR')) { http_response_code(403); exit('Forbidden'); }
 
 require_once APP_DIR . '/layout.php';
-require_once APP_DIR . '/shop.php';
+require_once APP_DIR . '/shop_biz.php';
 
 /**
  * 쇼핑몰 주문 · 매출 — 쇼핑몰 통합관리 프로그램(commerce-hub)이 모은 쿠팡 · 스마트스토어 · 카페24 주문.
@@ -12,7 +12,7 @@ require_once APP_DIR . '/shop.php';
  *   목록은 CSV 로 내려받을 수 있습니다.
  */
 $err = '';
-shop_ensure_schema();
+shop_biz_ensure_schema();
 $cfg = shop_api_cfg();
 $hasApi = $cfg['shop_api_url'] !== '' && $cfg['shop_api_token'] !== '';
 
@@ -53,9 +53,8 @@ if ($kw !== '') { $w[] = '(product LIKE ? OR order_id LIKE ?)'; array_push($pa, 
 $where = implode(' AND ', $w);
 $pdo = db();
 
-// 취소 · 반품은 매출에서 뺍니다 (상태 문구가 채널마다 달라 글자로 봅니다)
-$cancelSql = "(status LIKE '%CANCEL%' OR status LIKE '%RETURN%' OR status LIKE '%취소%' OR status LIKE '%반품%'
-               OR status LIKE 'C%' AND channel = 'cafe24' OR status LIKE 'R%' AND channel = 'cafe24')";
+// 취소 · 반품은 매출에서 뺍니다
+$cancelSql = shop_cancel_sql();
 
 $byCh = [];
 $st = $pdo->prepare("SELECT channel, COUNT(DISTINCT order_id) AS orders, SUM(qty) AS qty,
@@ -114,6 +113,10 @@ if ($repDays > 0) {
 $pct = fn($v) => $v === null ? '-' : '<span style="color:' . ($v >= 0 ? '#1B7F5A' : '#C62828') . '">' . ($v >= 0 ? '+' : '') . (int)$v . '%</span>';
 
 $last = $pdo->query('SELECT MAX(updated_at) FROM shop_orders')->fetchColumn();
+$autoOn = shop_setting('shop_auto_fetch', '예') === '예';
+$autoRes = shop_state_get('last_fetch_result');
+$alertRes = shop_state_get('last_alert_result');
+$alertNow = shop_alert_lines();
 $canEdit = route_can_edit('shop_orders');
 $qs = http_build_query(['p' => 'shop_orders', 'from' => $from, 'to' => $to, 'ch' => $ch, 'kw' => $kw]);
 
@@ -142,6 +145,10 @@ layout_head('쇼핑몰 주문 · 매출', 'shop_orders');
     <?php endforeach; ?>
   </form>
 </div></div>
+
+<?php if ($alertNow): ?>
+<div class="msg err"><b>확인할 일</b><br><?= implode('<br>', array_map('h', $alertNow)) ?></div>
+<?php endif; ?>
 
 <div class="kpis">
   <div class="kpi"><div class="lab">매출 합계</div>
@@ -175,7 +182,10 @@ layout_head('쇼핑몰 주문 · 매출', 'shop_orders');
     같은 주문을 다시 가져와도 두 번 쌓이지 않고 수량 · 금액 · 상태만 새 값으로 바뀝니다.<br>
     쇼핑몰 통합관리 프로그램에서 <code>node src/cli.js serve</code> 를 띄운 뒤
     <?= route_can_edit('settings') ? '<a href="?p=settings">환경설정 → 연동</a>' : '환경설정 → 연동' ?> 에 서버 주소와 토큰을 넣으면 켜집니다.
-    서버 연결: <?= $hasApi ? '<span class="badge b-ok">설정됨</span>' : '<span class="badge b-warn">없음</span>' ?>
+    서버 연결: <?= $hasApi ? '<span class="badge b-ok">설정됨</span>' : '<span class="badge b-warn">없음</span>' ?><br>
+    자동 가져오기: <?= $autoOn && $hasApi ? '<span class="badge b-ok">1시간마다</span>' : '<span class="badge b-warn">꺼짐</span>' ?>
+    (ERP 화면이 하나라도 열려 있을 때 돕니다) · 마지막 <?= h($autoRes ?? '-') ?>
+    · 알림(하루 한 번 오전 9시 이후): 마지막 <?= h($alertRes ?? '-') ?>
   </div>
 </div>
 

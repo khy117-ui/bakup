@@ -74,6 +74,7 @@ $routes = [
     'live_feed'        => 'live_feed.php',
     'shop_orders'      => 'shop_orders.php',
     'ad_keywords'      => 'ad_keywords.php',
+    'shop_products'    => 'shop_products.php',
 ];
 
 if ($page === 'logout') {

@@ -147,6 +147,50 @@ $today = date('Y-m-d');
 </div>
 <?php endif; ?>
 
+<?php
+// 쇼핑몰 요약 — 오늘 매출 · 새 주문 · 제외할 키워드 · 품절 임박 (쇼핑몰관리 메뉴를 볼 수 있는 사람만)
+if (route_can_view('shop_orders')):
+    require_once APP_DIR . '/shop_biz.php';
+    $shop = null;
+    try {
+        shop_biz_ensure_schema();
+        $shopToday = shop_sales_between($today, date('Y-m-d', strtotime('+1 day')));
+        $shopYday  = shop_sales_between(date('Y-m-d', strtotime('-1 day')), $today);
+        $shopAd    = route_can_view('ad_keywords') ? shop_ad_latest() : [];
+        $shopStock = shop_stock_alerts();
+        $shop = true;
+    } catch (PDOException $e) {
+        error_log('대시보드 쇼핑몰 요약 실패: ' . $e->getMessage());
+    }
+    if ($shop):
+        $diff = $shopYday['sales'] > 0 ? (int)round(($shopToday['sales'] - $shopYday['sales']) / $shopYday['sales'] * 100) : null;
+        $exCnt = array_sum(array_map(fn($a) => $a['exclude'], $shopAd)); ?>
+<div class="kpis">
+  <?= $kpi('shop_orders', '?p=shop_orders&from=' . $today . '&to=' . $today) ?>
+    <div class="lab">쇼핑몰 오늘 매출</div>
+    <div class="val tnum"><?= money($shopToday['sales']) ?><span style="font-size:13px;font-weight:600"> 원</span></div>
+    <div class="sub tnum">어제 <?= money($shopYday['sales']) ?>원<?= $diff === null ? '' : ' · <span style="color:' . ($diff >= 0 ? '#1B7F5A' : '#C62828') . '">' . ($diff >= 0 ? '+' : '') . $diff . '%</span>' ?> (오늘은 지금까지)</div>
+  <?= $kpiEnd('shop_orders') ?>
+  <?= $kpi('shop_orders', '?p=shop_orders&from=' . $today . '&to=' . $today) ?>
+    <div class="lab">쇼핑몰 오늘 주문</div>
+    <div class="val tnum"><?= money($shopToday['orders']) ?><span style="font-size:13px;font-weight:600"> 건</span></div>
+    <div class="sub">어제 <?= money($shopYday['orders']) ?>건 · 쿠팡 · 스마트스토어 · 카페24</div>
+  <?= $kpiEnd('shop_orders') ?>
+  <?php if (route_can_view('ad_keywords')): ?>
+  <?= $kpi('ad_keywords', '?p=ad_keywords&act=' . rawurlencode('제외키워드 등록')) ?>
+    <div class="lab">제외할 광고 키워드</div>
+    <div class="val tnum" style="<?= $exCnt ? 'color:var(--err-fg)' : '' ?>"><?= $exCnt ?><span style="font-size:13px;font-weight:600"> 개</span></div>
+    <div class="sub"><?= $shopAd ? h(implode(' · ', array_map(fn($k, $a) => ($k === 'coupang' ? '쿠팡' : '네이버') . ' ROAS ' . ($a['roas'] ?? '-') . '%', array_keys($shopAd), $shopAd))) : '광고 보고서를 올리면 보입니다' ?></div>
+  <?= $kpiEnd('ad_keywords') ?>
+  <?php endif; ?>
+  <?= $kpi('shop_products', '?p=shop_products') ?>
+    <div class="lab">품절 · 품절 임박</div>
+    <div class="val tnum" style="<?= $shopStock ? 'color:var(--err-fg)' : '' ?>"><?= count($shopStock) ?><span style="font-size:13px;font-weight:600"> 개</span></div>
+    <div class="sub"><?= $shopStock ? h(mb_strimwidth($shopStock[0]['product'], 0, 30, '…')) . (count($shopStock) > 1 ? ' 외' : '') : '재고를 넣은 상품 기준' ?></div>
+  <?= $kpiEnd('shop_products') ?>
+</div>
+<?php endif; endif; ?>
+
 <?php if ($cashReady && $seeCash): ?>
 <div class="kpis">
   <?= $kpi('cash_list', '?p=cash_list&from=' . $today . '&to=' . $today) ?>
@@ -175,7 +219,7 @@ $today = date('Y-m-d');
 </div>
 <?php endif; ?>
 
-<?php if (!$seeSales && !$seeComp && !$seeCash): ?>
+<?php if (!$seeSales && !$seeComp && !$seeCash && !route_can_view('shop_orders')): ?>
   <div class="card"><div class="empty">왼쪽 메뉴에서 맡은 업무 화면으로 들어가세요.</div></div>
 <?php endif; ?>
 

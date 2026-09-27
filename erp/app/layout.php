@@ -30,6 +30,7 @@ function layout_head(string $title, string $active): void
         ]],
         ['쇼핑몰관리', [
             ['shop_orders', '주문 · 매출', true],
+            ['shop_products', '상품 · 재고 · 순이익', true],
             ['ad_keywords', '광고 · 키워드', true],
         ]],
         ['회계관리', [
