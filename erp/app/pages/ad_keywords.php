@@ -7,6 +7,7 @@ require_once APP_DIR . '/shop_ads.php';
 
 /**
  * 광고 · 키워드 — 쿠팡 · 스마트스토어 광고 키워드 분석과 키워드 추천 (자세한 기준은 shop_ads.php).
+ * 같은 판매처의 지난 보고서와 키워드별로 비교합니다 (ROAS 차이 · 광고비 · 매출 변화, 새 키워드 · 빠진 키워드).
  */
 $err = '';
 shop_ads_ensure_schema();
@@ -44,7 +45,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'upload') {
                            round($a['cost']), round($a['revenue']), $a['orders']]);
         }
         $pdo->commit();
-        log_action('쇼핑몰', 'INSERT', 'ad_keyword_batches', $bid, AD_CHANNELS[$chn] . ' 키워드 보고서', null, count($rows) . '개 키워드');
+        log_action('쇼핑몰', 'CREATE', 'ad_keyword_batches', $bid, AD_CHANNELS[$chn] . ' 키워드 보고서', null, count($rows) . '개 키워드');
         flash(AD_CHANNELS[$chn] . ' 키워드 ' . count($rows) . '개를 분석했습니다.');
         redirect('?p=ad_keywords&ch=' . $chn . '&b=' . $bid);
     } catch (RuntimeException $e) {
@@ -65,6 +66,14 @@ $batches = $st->fetchAll();
 $batch = null;
 foreach ($batches as $b) { if ((int)$b['id'] === (int)query('b')) { $batch = $b; } }
 $batch = $batch ?? ($batches[0] ?? null);
+// 비교할 보고서 — 고르지 않으면 이번 보고서 바로 전에 올린 것, cmp=0 이면 비교 안 함
+$prevBatch = null;
+if ($batch && query('cmp') !== '0') {
+    foreach ($batches as $b) {
+        if ((int)$b['id'] === (int)$batch['id']) { continue; }
+        if (query('cmp') !== '' ? (int)$b['id'] === (int)query('cmp') : (int)$b['id'] < (int)$batch['id']) { $prevBatch = $b; break; }
+    }
+}
 
 $rows = [];
 if ($batch) {
@@ -78,15 +87,37 @@ if ($batch) {
         $rows[] = $r;
     }
 }
+$cmp = null;
+if ($prevBatch) {
+    $st = $pdo->prepare('SELECT keyword, impressions, clicks, cost, revenue FROM ad_keyword_stats WHERE batch_id = ?');
+    $st->execute([(int)$prevBatch['id']]);
+    $cmp = shop_ads_compare($rows, $st->fetchAll(), $batch, $prevBatch);
+    $rows = $cmp['rows'];
+}
 $sum = ['cost' => 0, 'revenue' => 0, 'clicks' => 0, 'impressions' => 0];
 $byAct = [];
 foreach ($rows as $r) {
     foreach ($sum as $k => $_) { $sum[$k] += (float)$r[$k]; }
     $byAct[$r['action']][] = $r;
+    if (!empty($r['cmp']['new'])) { $byAct['새 키워드'][] = $r; }
+    if (!empty($r['cmp']['trend'])) { $byAct[$r['cmp']['trend'] === 'up' ? 'ROAS 좋아짐' : 'ROAS 나빠짐'][] = $r; }
 }
 $excludeCost = array_sum(array_map(fn($r) => (float)$r['cost'], $byAct['제외키워드 등록'] ?? []));
 $act = query('act');
 $shown = $act !== '' && isset($byAct[$act]) ? $byAct[$act] : $rows;
+// 지난 보고서 합계 (기간 길이가 다르면 이번 기간 길이로 맞춤)
+$prevSum = null;
+if ($cmp) {
+    $st = $pdo->prepare('SELECT SUM(cost) cost, SUM(revenue) revenue, SUM(clicks) clicks FROM ad_keyword_stats WHERE batch_id = ?');
+    $st->execute([(int)$prevBatch['id']]);
+    $prevSum = array_map('floatval', $st->fetch());
+}
+$pctTxt = function (float $now, float $was): string {
+    if ($was <= 0) { return '-'; }
+    $v = round(($now - $was) / $was * 100);
+    return ($v > 0 ? '+' : '') . $v . '%';
+};
+$batchLabel = fn(array $b) => $b['period_from'] ? $b['period_from'] . '~' . $b['period_to'] : substr((string)$b['uploaded_at'], 0, 10) . ' 올림';
 
 // 분석 결과 CSV 내려받기
 if (query('download') === '1' && $batch) {
@@ -94,9 +125,12 @@ if (query('download') === '1' && $batch) {
     header('Content-Disposition: attachment; filename="ad-keywords-' . $ch . '-' . (int)$batch['id'] . '.csv"');
     $out = fopen('php://output', 'w');
     fwrite($out, "\xEF\xBB\xBF");
-    fputcsv($out, ['키워드', '노출수', '클릭수', '클릭률(%)', 'CPC', '광고비', '전환매출', 'ROAS(%)', '할 일'], ',', '"', '');
+    fputcsv($out, array_merge(['키워드', '노출수', '클릭수', '클릭률(%)', 'CPC', '광고비', '전환매출', 'ROAS(%)', '할 일'],
+                              $cmp ? ['지난 ROAS(%)', 'ROAS 차이(%p)', '지난 광고비', '광고비 변화(%)', '매출 변화(%)'] : []), ',', '"', '');
     foreach ($shown as $r) {
-        fputcsv($out, [$r['keyword'], $r['impressions'], $r['clicks'], $r['ctr'], $r['cpc'], $r['cost'], $r['revenue'], $r['roas'], $r['action']], ',', '"', '');
+        $c = $r['cmp'] ?? null;
+        fputcsv($out, array_merge([$r['keyword'], $r['impressions'], $r['clicks'], $r['ctr'], $r['cpc'], $r['cost'], $r['revenue'], $r['roas'], $r['action']],
+                                  !$cmp ? [] : (!empty($c['new']) ? ['새 키워드', '', '', '', ''] : [$c['prev_roas'], $c['roas_diff'], $c['prev_cost'], $c['cost_pct'] ?? '', $c['rev_pct'] ?? ''])), ',', '"', '');
     }
     fclose($out);
     exit;
@@ -124,7 +158,7 @@ if ($seedIn !== '') {
     }
 }
 $canEdit = route_can_edit('ad_keywords');
-$base = '?p=ad_keywords&ch=' . $ch . ($batch ? '&b=' . (int)$batch['id'] : '');
+$base = '?p=ad_keywords&ch=' . $ch . ($batch ? '&b=' . (int)$batch['id'] : '') . (query('cmp') !== '' ? '&cmp=' . (int)query('cmp') : '');
 
 layout_head('광고 · 키워드', 'ad_keywords');
 ?>
@@ -167,23 +201,47 @@ layout_head('광고 · 키워드', 'ad_keywords');
         <?php foreach ($batches as $b): ?>
           <option value="<?= (int)$b['id'] ?>"<?= $batch && (int)$batch['id'] === (int)$b['id'] ? ' selected' : '' ?>>
             <?= h(substr((string)$b['uploaded_at'], 0, 16)) ?> · <?= h($b['period_from'] ? $b['period_from'] . '~' . $b['period_to'] : (string)$b['file_name']) ?> (<?= (int)$b['rows_cnt'] ?>개)</option>
-        <?php endforeach; ?></select></form>
+        <?php endforeach; ?></select>
+      <?php if (count($batches) > 1): ?>
+      <span style="font-size:12px;color:var(--ink2)">비교</span>
+      <select name="cmp" onchange="this.form.submit()" style="width:auto">
+        <option value="0"<?= !$prevBatch ? ' selected' : '' ?>>비교 안 함</option>
+        <?php foreach ($batches as $b): if ($batch && (int)$b['id'] === (int)$batch['id']) { continue; } ?>
+          <option value="<?= (int)$b['id'] ?>"<?= $prevBatch && (int)$prevBatch['id'] === (int)$b['id'] ? ' selected' : '' ?>>
+            <?= h(substr((string)$b['uploaded_at'], 0, 16)) ?> · <?= h($b['period_from'] ? $b['period_from'] . '~' . $b['period_to'] : (string)$b['file_name']) ?></option>
+        <?php endforeach; ?></select>
+      <?php endif; ?></form>
     <?php endif; ?>
   </div>
   <?php if (!$batch): ?>
     <div class="empty"><?= h(AD_CHANNELS[$ch]) ?> 키워드 보고서를 아직 올리지 않았습니다. 위에서 CSV 를 올리면 키워드마다 할 일을 알려 드립니다.</div>
   <?php else: $roasAll = $sum['cost'] > 0 ? round($sum['revenue'] / $sum['cost'] * 100) : 0; ?>
   <div class="cb kpis" style="padding-top:12px">
+    <?php $pRoasAll = $prevSum && $prevSum['cost'] > 0 ? round($prevSum['revenue'] / $prevSum['cost'] * 100) : null; $sc = $cmp['scale'] ?? 1; ?>
     <div class="kpi"><div class="lab">광고비</div><div class="val tnum"><?= money($sum['cost']) ?></div>
-      <div class="sub">클릭 <?= money($sum['clicks']) ?> · 노출 <?= money($sum['impressions']) ?></div></div>
-    <div class="kpi"><div class="lab">전환매출</div><div class="val tnum"><?= money($sum['revenue']) ?></div></div>
+      <div class="sub">클릭 <?= money($sum['clicks']) ?> · 노출 <?= money($sum['impressions']) ?><?= $prevSum ? '<br>지난 대비 ' . $pctTxt($sum['cost'], $prevSum['cost'] * $sc) : '' ?></div></div>
+    <div class="kpi"><div class="lab">전환매출</div><div class="val tnum"><?= money($sum['revenue']) ?></div>
+      <?php if ($prevSum): ?><div class="sub">지난 대비 <?= $pctTxt($sum['revenue'], $prevSum['revenue'] * $sc) ?></div><?php endif; ?></div>
     <div class="kpi"><div class="lab">ROAS</div><div class="val tnum" style="color:<?= $roasAll >= $target ? '#1B7F5A' : '#C62828' ?>"><?= $roasAll ?>%</div>
-      <div class="sub">목표 <?= (int)$target ?>%</div></div>
+      <div class="sub">목표 <?= (int)$target ?>%<?= $pRoasAll !== null ? ' · 지난 ' . $pRoasAll . '% (' . ($roasAll - $pRoasAll >= 0 ? '+' : '') . ($roasAll - $pRoasAll) . '%p)' : '' ?></div></div>
     <div class="kpi"><div class="lab">제외할 키워드</div><div class="val tnum" style="color:#C62828"><?= count($byAct['제외키워드 등록'] ?? []) ?>개</div>
       <div class="sub">매출 없이 쓴 광고비 <?= money($excludeCost) ?>원</div></div>
   </div>
+  <?php if ($cmp): ?>
+  <div class="cb" style="border-top:1px solid var(--line2);font-size:12px;color:var(--ink2)">
+    <b>지난 보고서</b> <?= h($batchLabel($prevBatch)) ?> 와 비교합니다.
+    <?= $cmp['scale'] != 1 ? '기간 길이가 달라(' . (int)$cmp['days'][0] . '일 → ' . (int)$cmp['days'][1] . '일) 광고비 · 매출 변화는 하루 평균으로 맞췄습니다. ' : '' ?>
+    <?= !$cmp['days'][0] || !$cmp['days'][1] ? '보고서 기간을 넣지 않은 보고서가 있어 광고비 · 매출은 합계 그대로 비교합니다. ' : '' ?>
+    좋아짐 · 나빠짐은 두 보고서 모두 클릭 20회 이상이고 ROAS 가 30% 넘게 달라진 키워드입니다.
+  </div>
+  <?php endif; ?>
   <div class="cb" style="border-top:1px solid var(--line2);display:flex;gap:6px;flex-wrap:wrap;align-items:center">
     <a class="btn sm<?= $act === '' ? ' pri' : '' ?>" href="<?= h($base) ?>">전체 <?= count($rows) ?></a>
+    <?php foreach (['ROAS 나빠짐' => 'b-err', 'ROAS 좋아짐' => 'b-ok', '새 키워드' => 'b-info'] as $a => $_): if (empty($byAct[$a])) { continue; } ?>
+      <a class="btn sm<?= $act === $a ? ' pri' : '' ?>" href="<?= h($base . '&act=' . rawurlencode($a)) ?>"><?= h($a) ?> <?= count($byAct[$a]) ?></a>
+    <?php endforeach; ?>
+    <?php if ($cmp && $cmp['dropped']): ?><a class="btn sm" href="#dropped">빠진 키워드 <?= count($cmp['dropped']) ?></a><?php endif; ?>
+    <span style="width:1px;height:18px;background:var(--line2)"></span>
     <?php foreach (['제외키워드 등록', '입찰가 대폭 인하 또는 OFF', '입찰가 -10~20%', '유지', '입찰가 +10~20%', '데이터 부족 - 유지'] as $a): if (empty($byAct[$a])) { continue; } ?>
       <a class="btn sm<?= $act === $a ? ' pri' : '' ?>" href="<?= h($base . '&act=' . rawurlencode($a)) ?>"><?= h($a) ?> <?= count($byAct[$a]) ?></a>
     <?php endforeach; ?>
@@ -197,7 +255,7 @@ layout_head('광고 · 키워드', 'ad_keywords');
   <?php endif; ?>
   <table>
     <thead><tr><th>키워드</th><th class="r">노출</th><th class="r">클릭</th><th class="r">클릭률</th><th class="r">CPC</th>
-      <th class="r">광고비</th><th class="r">전환매출</th><th class="r">ROAS</th><th class="c">할 일</th><th class="c" style="width:60px"></th></tr></thead>
+      <th class="r">광고비</th><th class="r">전환매출</th><th class="r">ROAS</th><?= $cmp ? '<th class="r">지난 대비</th>' : '' ?><th class="c">할 일</th><th class="c" style="width:60px"></th></tr></thead>
     <tbody>
     <?php foreach (array_slice($shown, 0, 500) as $r): ?>
       <tr><td style="font-weight:600"><?= h($r['keyword']) ?></td>
@@ -205,12 +263,35 @@ layout_head('광고 · 키워드', 'ad_keywords');
         <td class="r tnum"><?= h($r['ctr']) ?>%</td><td class="r tnum"><?= money($r['cpc']) ?></td>
         <td class="r tnum"><?= money($r['cost']) ?></td><td class="r tnum"><?= money($r['revenue']) ?></td>
         <td class="r tnum"><?= (int)$r['roas'] ?>%</td>
+        <?php if ($cmp): $c = $r['cmp']; ?>
+        <td class="r tnum" style="font-size:12px;white-space:nowrap">
+          <?php if ($c['new']): ?><span class="badge b-info">새 키워드</span>
+          <?php else: ?>
+            <span style="font-weight:600;color:<?= $c['trend'] === 'up' ? '#1B7F5A' : ($c['trend'] === 'down' ? '#C62828' : 'var(--ink2)') ?>"
+                  title="지난 ROAS <?= (int)$c['prev_roas'] ?>%"><?= $c['roas_diff'] >= 0 ? '+' : '' ?><?= (int)$c['roas_diff'] ?>%p</span>
+            <br><span style="color:var(--ink3)" title="지난 광고비 <?= h(money($c['prev_cost'])) ?>원">광고비 <?= $c['cost_pct'] === null ? '-' : ($c['cost_pct'] > 0 ? '+' : '') . $c['cost_pct'] . '%' ?></span>
+          <?php endif; ?></td>
+        <?php endif; ?>
         <td class="c"><span class="badge <?= $r['cls'] ?>"><?= h($r['action']) ?></span></td>
         <td class="c"><a class="btn sm" href="<?= h($base . '&seed=' . rawurlencode($r['keyword'])) ?>#rec" title="이 키워드로 연관 키워드 추천">추천</a></td></tr>
     <?php endforeach; ?>
     </tbody>
   </table>
   <?php if (count($shown) > 500): ?><div class="cb" style="font-size:12px;color:var(--ink3)">500개까지 표시합니다. 전체는 CSV 로 내려받으세요.</div><?php endif; ?>
+  <?php if ($cmp && $cmp['dropped']): ?>
+  <details class="cb" id="dropped" style="border-top:1px solid var(--line2)">
+    <summary style="cursor:pointer;font-size:12.5px;font-weight:600">빠진 키워드 <?= count($cmp['dropped']) ?>개 — 지난 보고서엔 있었지만 이번엔 없음 (광고를 껐거나 노출이 없었음)</summary>
+    <table style="margin-top:6px">
+      <thead><tr><th>키워드</th><th class="r">지난 클릭</th><th class="r">지난 광고비</th><th class="r">지난 ROAS</th></tr></thead>
+      <tbody>
+      <?php foreach (array_slice($cmp['dropped'], 0, 200) as $d): ?>
+        <tr><td><?= h($d['keyword']) ?></td><td class="r tnum"><?= money($d['clicks']) ?></td>
+          <td class="r tnum"><?= money($d['cost']) ?></td><td class="r tnum"><?= (int)$d['roas'] ?>%</td></tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+  </details>
+  <?php endif; ?>
   <?php endif; ?>
 </div>
 

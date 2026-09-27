@@ -238,3 +238,68 @@ function shop_ads_recommend(array $seeds, array $known = []): array
     usort($out, fn($a, $b) => $b['score'] <=> $a['score']);
     return $out;
 }
+
+/** 키워드 비교용 키 — 대소문자 · 띄어쓰기 무시 ("캠핑 의자" = "캠핑의자") */
+function shop_ads_kw_key(string $kw): string
+{
+    return mb_strtolower(str_replace(' ', '', trim($kw)));
+}
+
+/** 보고서 기간 일수 (기간을 안 넣었으면 null) */
+function shop_ads_batch_days(?array $b): ?int
+{
+    if (!$b || empty($b['period_from']) || empty($b['period_to'])) { return null; }
+    return max(1, (int)((strtotime((string)$b['period_to']) - strtotime((string)$b['period_from'])) / 86400) + 1);
+}
+
+/**
+ * 지난 보고서 대비 — 키워드별 ROAS 차이(%p) · 광고비 · 매출 변화율.
+ * 두 보고서의 기간 길이가 다르면 광고비 · 매출은 하루 평균으로 맞춰 비교합니다 (ROAS 는 비율이라 그대로).
+ * 좋아짐 · 나빠짐은 두 보고서 모두 클릭이 $minClicks 이상이고 ROAS 가 30% 넘게 달라진 키워드만.
+ * @param array $rows 이번 보고서 줄 (keyword, clicks, cost, revenue, roas)
+ * @param array $prevRows 지난 보고서 ad_keyword_stats 줄
+ * @return array{rows:array, dropped:array, scale:float, days:array}
+ */
+function shop_ads_compare(array $rows, array $prevRows, ?array $batch, ?array $prevBatch, int $minClicks = 20): array
+{
+    $d1 = shop_ads_batch_days($batch);
+    $d0 = shop_ads_batch_days($prevBatch);
+    // 지난 값에 곱해 이번 기간 길이로 맞춤
+    $scale = ($d1 && $d0 && $d1 !== $d0) ? $d1 / $d0 : 1.0;
+    $prev = [];
+    foreach ($prevRows as $p) {
+        $k = shop_ads_kw_key((string)$p['keyword']);
+        if (!isset($prev[$k])) { $prev[$k] = ['keyword' => $p['keyword'], 'clicks' => 0, 'cost' => 0.0, 'revenue' => 0.0, 'impressions' => 0]; }
+        foreach (['clicks', 'cost', 'revenue', 'impressions'] as $f) { $prev[$k][$f] += (float)$p[$f]; }
+    }
+    $pct = fn(float $now, float $was) => $was > 0 ? round(($now - $was) / $was * 100) : null;
+    $seen = [];
+    foreach ($rows as &$r) {
+        $k = shop_ads_kw_key((string)$r['keyword']);
+        $seen[$k] = true;
+        $p = $prev[$k] ?? null;
+        if (!$p) { $r['cmp'] = ['new' => true, 'trend' => '']; continue; }
+        $pRoas = $p['cost'] > 0 ? round($p['revenue'] / $p['cost'] * 100) : 0;
+        $trend = '';
+        if ((int)$r['clicks'] >= $minClicks && $p['clicks'] >= $minClicks) {
+            if ($r['roas'] >= $pRoas * 1.3 && $r['roas'] - $pRoas >= 30) { $trend = 'up'; }
+            elseif ($r['roas'] <= $pRoas * 0.7) { $trend = 'down'; }
+        }
+        $r['cmp'] = [
+            'new' => false, 'trend' => $trend,
+            'prev_roas' => $pRoas, 'roas_diff' => (int)$r['roas'] - $pRoas,
+            'prev_cost' => $p['cost'], 'prev_clicks' => (int)$p['clicks'],
+            'cost_pct' => $pct((float)$r['cost'], $p['cost'] * $scale),
+            'rev_pct' => $pct((float)$r['revenue'], $p['revenue'] * $scale),
+        ];
+    }
+    unset($r);
+    $dropped = [];
+    foreach ($prev as $k => $p) {
+        if (isset($seen[$k])) { continue; }
+        $p['roas'] = $p['cost'] > 0 ? round($p['revenue'] / $p['cost'] * 100) : 0;
+        $dropped[] = $p;
+    }
+    usort($dropped, fn($a, $b) => $b['cost'] <=> $a['cost']);
+    return ['rows' => $rows, 'dropped' => $dropped, 'scale' => $scale, 'days' => [$d0, $d1]];
+}
