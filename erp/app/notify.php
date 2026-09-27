@@ -73,9 +73,10 @@ function notify_mime_header(string $s): string
 
 /**
  * 메일 보내기. $to 는 주소 하나 또는 쉼표로 여러 개. 본문은 일반 글(자동으로 HTML 도 같이).
+ * $attachments = [[파일이름, MIME, 내용], ...] (월간 보고서 PDF 등)
  * 465 = SSL, 587 = STARTTLS. 네이버 · 다음 · 구글 등은 '앱 비밀번호' 가 필요할 수 있습니다.
  */
-function notify_mail(string $to, string $subject, string $text, string $replyTo = ''): array
+function notify_mail(string $to, string $subject, string $text, string $replyTo = '', array $attachments = []): array
 {
     $c = notify_cfg();
     $host = $c['smtp_host'] ?? '';
@@ -123,15 +124,27 @@ function notify_mail(string $to, string $subject, string $text, string $replyTo 
             'Subject: ' . notify_mime_header($subject),
             'Message-ID: <' . bin2hex(random_bytes(12)) . '@' . substr(strrchr($from, '@') ?: '@goodpost', 1) . '>',
             'MIME-Version: 1.0',
-            'Content-Type: multipart/alternative; boundary="' . $boundary . '"',
         ];
+        $mixed = 'gm' . bin2hex(random_bytes(8));
+        $headers[] = $attachments ? 'Content-Type: multipart/mixed; boundary="' . $mixed . '"'
+                                  : 'Content-Type: multipart/alternative; boundary="' . $boundary . '"';
         if ($replyTo !== '' && filter_var($replyTo, FILTER_VALIDATE_EMAIL)) { $headers[] = 'Reply-To: ' . $replyTo; }
-        $body = implode("\r\n", $headers) . "\r\n\r\n"
-              . '--' . $boundary . "\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+        $alt = '--' . $boundary . "\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
               . chunk_split(base64_encode($text)) . "\r\n"
               . '--' . $boundary . "\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
               . chunk_split(base64_encode($html)) . "\r\n"
               . '--' . $boundary . "--\r\n";
+        if ($attachments) {
+            $alt = '--' . $mixed . "\r\nContent-Type: multipart/alternative; boundary=\"" . $boundary . "\"\r\n\r\n" . $alt;
+            foreach ($attachments as [$fname, $mime, $data]) {
+                $fname = preg_match('/^[\x20-\x7E]+$/', $fname) ? str_replace('"', '', $fname) : notify_mime_header($fname);
+                $alt .= '--' . $mixed . "\r\nContent-Type: " . $mime . '; name="' . $fname . "\"\r\n"
+                      . 'Content-Disposition: attachment; filename="' . $fname . "\"\r\n"
+                      . "Content-Transfer-Encoding: base64\r\n\r\n" . chunk_split(base64_encode($data)) . "\r\n";
+            }
+            $alt .= '--' . $mixed . "--\r\n";
+        }
+        $body = implode("\r\n", $headers) . "\r\n\r\n" . $alt;
         // 본문의 줄 맨 앞 '.' 은 두 개로 (SMTP 규칙) — base64 라 생기지 않지만 머리말 대비
         $body = preg_replace('/^\./m', '..', $body);
         notify_smtp_cmd($fp, $body . "\r\n.", [250]);

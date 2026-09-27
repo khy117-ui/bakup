@@ -377,6 +377,9 @@ function shop_auto_tick(): array
                 shop_state_set('alert_day', date('Y-m-d'));
                 $res['shop_alert'] = shop_send_alerts();
             }
+            // ③ 매월 1일 지난달 보고서 메일
+            require_once APP_DIR . '/shop_report.php';
+            if (($rep = shop_report_tick()) !== null) { $res['shop_report'] = $rep; }
         } finally {
             $pdo->query("SELECT RELEASE_LOCK('gp_shop_tick')");
         }

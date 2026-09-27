@@ -34,6 +34,7 @@ function layout_head(string $title, string $active): void
             ['shop_dispatch', '송장 등록', true],
             ['shop_inquiries', '고객 문의', true],
             ['ad_keywords', '광고 · 키워드', true],
+            ['shop_report', '월간 보고서', true],
         ]],
         ['회계관리', [
             ['sales_stats', '매출통계', true],
