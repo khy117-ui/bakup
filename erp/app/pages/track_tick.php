@@ -38,5 +38,12 @@ if (empty($res['skipped'])) {
         error_log('파일 저장소 동기화 실패: ' . $e->getMessage());
     }
 }
+// 같은 신호로 — 쇼핑몰 주문 자동 가져오기(1시간마다) · 하루 한 번 알림 (app/shop_biz.php)
+try {
+    require_once APP_DIR . '/shop_biz.php';
+    $res += shop_auto_tick();
+} catch (Throwable $e) {
+    error_log('쇼핑몰 자동 작업 실패: ' . $e->getMessage());
+}
 echo json_encode($res, JSON_UNESCAPED_UNICODE);
 exit;

@@ -72,6 +72,13 @@ $routes = [
     'track_tick'       => 'track_tick.php',
     'web_pickups'      => 'web_pickups.php',
     'live_feed'        => 'live_feed.php',
+    'shop_orders'      => 'shop_orders.php',
+    'ad_keywords'      => 'ad_keywords.php',
+    'shop_products'    => 'shop_products.php',
+    'shop_inquiries'   => 'shop_inquiries.php',
+    'shop_claims'      => 'shop_claims.php',
+    'shop_dispatch'    => 'shop_dispatch.php',
+    'shop_report'      => 'shop_report.php',
 ];
 
 if ($page === 'logout') {

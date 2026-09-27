@@ -66,6 +66,28 @@ foreach ($rows as $r) {
     $maxAbs = max($maxAbs, abs((float)$r['profit']));
 }
 
+// 쇼핑몰 손익 — 쿠팡 · 스마트스토어 · 카페24 (상품 · 재고 · 순이익 과 같은 계산). 운송 전표와 따로 봅니다
+$shopPf = null;
+if (route_can_view('shop_products')) {
+    require_once APP_DIR . '/shop_biz.php';
+    try {
+        shop_biz_ensure_schema();
+        $shopPf = shop_profit($from, $to);
+        $st = db()->prepare("SELECT DATE_FORMAT(ordered_at, '%Y-%m') AS ym FROM shop_orders
+                              WHERE ordered_at >= ? AND ordered_at < DATE_ADD(?, INTERVAL 1 DAY) GROUP BY ym ORDER BY ym");
+        $st->execute([$from, $to]);
+        $shopMonths = [];
+        foreach ($st->fetchAll() as $m) {
+            $mf = max($from, $m['ym'] . '-01');
+            $mt = min($to, date('Y-m-t', strtotime($m['ym'] . '-01')));
+            $shopMonths[$m['ym']] = shop_profit($mf, $mt)['total'];
+        }
+    } catch (PDOException $e) {
+        error_log('손익관리 쇼핑몰 손익 실패: ' . $e->getMessage());
+        $shopPf = null;
+    }
+}
+
 layout_head('손익관리', 'profit');
 ?>
 <div class="head">
@@ -172,4 +194,28 @@ layout_head('손익관리', 'profit');
   </div>
   <?php endif; ?>
 </div>
+<?php if ($shopPf && $shopPf['total']['sales'] > 0): $sp = $shopPf['total']; ?>
+<div class="card">
+  <div class="ch">쇼핑몰 손익 (쿠팡 · 스마트스토어 · 카페24)
+    <span style="font-weight:400;color:var(--ink3);font-size:12px">운송 전표와 별도 · 사업자 구분 없이 쇼핑몰 전체 · 광고비는 추정</span>
+    <a class="btn sm" style="margin-left:auto" href="?p=shop_products&amp;tab=profit&amp;from=<?= h($from) ?>&amp;to=<?= h($to) ?>">상품별 보기</a></div>
+  <?php if ($shopPf['missing_cost'] > 0): ?><div class="cb" style="font-size:12px;color:var(--err-fg)">원가를 넣지 않은 상품 <?= (int)$shopPf['missing_cost'] ?>개 — 이익이 실제보다 크게 나옵니다.</div><?php endif; ?>
+  <table>
+    <thead><tr><th style="width:180px">월</th><th class="r">매출</th><th class="r">원가</th><th class="r">수수료 · 배송</th><th class="r">광고비</th><th class="r">순이익</th><th class="r">이익률</th></tr></thead>
+    <tbody>
+    <?php foreach ($shopMonths as $ym => $m): ?>
+      <tr><td class="tnum"><?= h($ym) ?></td><td class="r tnum"><?= money($m['sales']) ?></td><td class="r tnum"><?= money($m['cost']) ?></td>
+        <td class="r tnum"><?= money($m['fee'] + $m['ship']) ?></td><td class="r tnum"><?= money($m['ad']) ?></td>
+        <td class="r tnum" style="font-weight:700;color:<?= $m['profit'] < 0 ? 'var(--err-fg)' : '#1baf7a' ?>"><?= money($m['profit']) ?></td>
+        <td class="r tnum"><?= h($m['margin']) ?>%</td></tr>
+    <?php endforeach; ?>
+      <tr style="font-weight:700"><td>합계</td><td class="r tnum"><?= money($sp['sales']) ?></td><td class="r tnum"><?= money($sp['cost']) ?></td>
+        <td class="r tnum"><?= money($sp['fee'] + $sp['ship']) ?></td><td class="r tnum"><?= money($sp['ad']) ?></td>
+        <td class="r tnum" style="color:<?= $sp['profit'] < 0 ? 'var(--err-fg)' : '#1baf7a' ?>"><?= money($sp['profit']) ?></td>
+        <td class="r tnum"><?= h($sp['margin']) ?>%</td></tr>
+    </tbody>
+  </table>
+  <div class="cb" style="font-size:12px;color:var(--ink2)">운송 + 쇼핑몰 합계 이익: <b class="tnum"><?= money($tot['profit'] + $sp['profit']) ?></b>원</div>
+</div>
+<?php endif; ?>
 <?php layout_foot();
