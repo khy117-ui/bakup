@@ -72,6 +72,7 @@ $routes = [
     'track_tick'       => 'track_tick.php',
     'web_pickups'      => 'web_pickups.php',
     'live_feed'        => 'live_feed.php',
+    'shop_orders'      => 'shop_orders.php',
 ];
 
 if ($page === 'logout') {

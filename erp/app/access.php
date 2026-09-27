@@ -75,6 +75,8 @@ const ROUTE_PERMS = [
 
     'boards'           => ['web.board.read', 'web.board.write'],
 
+    'shop_orders'      => ['shop.order.read', 'shop.order.write'],   // 쇼핑몰 주문 · 매출 (commerce-hub 연동)
+
     'business_entity'  => ['sys.entity.write', 'sys.entity.write'],
     'permissions'      => ['sys.admin.read', 'sys.admin.write'],
     'activity_log'     => ['sys.log.read', 'sys.log.read'],

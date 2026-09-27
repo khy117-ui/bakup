@@ -53,6 +53,15 @@ assets/img/                로고 · 사진 자산 (백업 사이트 이미지�
 4. `admin/upload.php` 는 로그인 + (설정 시) 업로드 토큰으로 보호되며, `ALLOWED_IPS` 를 채우면 IP 도 추가로 검사합니다.
 5. 다른 서버(IIS · nginx)에 올릴 때는 `admin/web.config`, `deploy/nginx-admin.conf` 를 참고하세요.
 
+## 쇼핑몰 주문 · 매출 (ERP > 쇼핑몰관리)
+
+쇼핑몰 통합관리 프로그램(commerce-hub, `node src/cli.js serve`)에서 쿠팡 · 스마트스토어 · 카페24 주문과 판매 · 마케팅 리포트를 불러옵니다.
+
+1. commerce-hub 를 ERP 서버에서 접속할 수 있는 곳에 띄웁니다 (`.env` 의 `ERP_API_TOKEN` 필요).
+2. ERP 환경설정 → 연동 에 **쇼핑몰 통합관리 서버 주소**와 **토큰**(ERP_API_TOKEN 과 같은 값)을 넣습니다.
+3. 쇼핑몰관리 > 주문 · 매출 에서 [지금 가져오기] 로 주문을 `shop_orders` 표에 쌓고(같은 주문은 한 줄로 갱신), 기간 · 판매처별 매출을 봅니다. 리포트(채널별 ROAS · 상품 TOP 20 · 할 일 추천)는 [최근 N일 불러오기] 를 누를 때 서버에서 만들어 옵니다.
+4. 권한: `shop.order.read`(보기) · `shop.order.write`(가져오기). 최고관리자 · 매니저 역할에 기본으로 들어갑니다.
+
 ## 연동이 필요한 부분
 
 - **게시판(공지사항 · Q&A)**: 이 서버의 DB(`board_post`)에 저장되며 ERP 의 "홈페이지 게시판"(/erp/?p=boards, 로그인 필요)에서 관리합니다. ERP(/erp/)가 같은 DB 를 쓰면 같은 테이블을 읽고 쓰면 됩니다(아래 "게시판 DB · API").

@@ -28,6 +28,9 @@ function layout_head(string $title, string $active): void
             ['tracking', '화물추적', true],
             ['documents', '문서보관함', true],
         ]],
+        ['쇼핑몰관리', [
+            ['shop_orders', '주문 · 매출', true],
+        ]],
         ['회계관리', [
             ['sales_stats', '매출통계', true],
             ['purchases', '매입관리', true],
