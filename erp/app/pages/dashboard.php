@@ -188,6 +188,12 @@ if (route_can_view('shop_orders')):
     <div class="val tnum" style="<?= $shopStock ? 'color:var(--err-fg)' : '' ?>"><?= count($shopStock) ?><span style="font-size:13px;font-weight:600"> 개</span></div>
     <div class="sub"><?= $shopStock ? h(mb_strimwidth($shopStock[0]['product'], 0, 30, '…')) . (count($shopStock) > 1 ? ' 외' : '') : '재고를 넣은 상품 기준' ?></div>
   <?= $kpiEnd('shop_products') ?>
+  <?php $shopQ = shop_inquiries_open(); ?>
+  <?= $kpi('shop_inquiries', '?p=shop_inquiries') ?>
+    <div class="lab">답변 대기 문의</div>
+    <div class="val tnum" style="<?= $shopQ['old'] ? 'color:var(--err-fg)' : '' ?>"><?= $shopQ['cnt'] ?><span style="font-size:13px;font-weight:600"> 건</span></div>
+    <div class="sub"><?= $shopQ['old'] ? '하루 넘은 문의 ' . $shopQ['old'] . '건' : '쿠팡 · 스마트스토어 상품 문의' ?></div>
+  <?= $kpiEnd('shop_inquiries') ?>
 </div>
 <?php endif; endif; ?>
 

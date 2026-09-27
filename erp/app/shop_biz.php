@@ -76,7 +76,7 @@ function shop_biz_ensure_schema(): void
 /** 발주 추천용 칸 · 설정 (v2) */
 function shop_biz_upgrade_reorder(): void
 {
-    if (!empty($_SESSION['schema_shop_biz_v2'])) { return; }
+    if (!empty($_SESSION['schema_shop_biz_v3'])) { return; }
     $pdo = db();
     try {
         $st = $pdo->query("SELECT COLUMN_NAME FROM information_schema.COLUMNS
@@ -96,7 +96,28 @@ function shop_biz_upgrade_reorder(): void
             ['shop_cover_days', '30', '한 번에 발주할 판매 일수', '입고된 뒤 이만큼 팔 수 있게 수량을 추천', 21],
             ['shop_safety_days', '3', '안전 재고 (일)', '판매가 갑자기 늘어도 버틸 여유분', 22],
         ] as $r) { $ins->execute($r); }
-        $_SESSION['schema_shop_biz_v2'] = 1;
+        $pdo->exec("INSERT IGNORE INTO app_settings
+                      (setting_key, setting_val, group_ko, label_ko, help_ko, input_type, options_csv, sort_order)
+                    VALUES ('shop_reply_templates', '안녕하세요, 고객님. 문의 주셔서 감사합니다.|확인 후 다시 안내드리겠습니다.|오늘 오후 3시 이전 주문은 당일 출고됩니다.|추가로 궁금하신 점은 언제든 문의 주세요. 감사합니다.',
+                            '쇼핑몰', '문의 답변 자주 쓰는 문구', '고객 문의 화면의 빠른 문구 버튼. | 로 나눕니다 (500자까지)', 'text', NULL, 30)");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS shop_inquiries (
+                      id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                      channel      VARCHAR(20)   NOT NULL COMMENT 'coupang / naver',
+                      ext_id       VARCHAR(60)   NOT NULL COMMENT '판매채널 문의 번호',
+                      product      VARCHAR(255)  NOT NULL DEFAULT '',
+                      question     TEXT          NOT NULL,
+                      asked_at     DATETIME      NULL,
+                      answered     TINYINT(1)    NOT NULL DEFAULT 0,
+                      answer       TEXT          NULL,
+                      answered_by  BIGINT UNSIGNED NULL COMMENT 'ERP 에서 답변한 사람',
+                      answered_at  DATETIME      NULL,
+                      fetched_at   DATETIME      NULL,
+                      PRIMARY KEY (id),
+                      UNIQUE KEY uq_si (channel, ext_id),
+                      KEY ix_si_open (answered, asked_at)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                      COMMENT='쇼핑몰 상품 문의 (commerce-hub 에서 가져옴)'");
+        $_SESSION['schema_shop_biz_v3'] = 1;
     } catch (PDOException $e) {
         error_log('쇼핑몰 상품 표 준비 실패: ' . $e->getMessage());
     }
@@ -337,7 +358,14 @@ function shop_auto_tick(): array
                 shop_state_set('last_fetch', (string)time());   // 실패해도 1시간 뒤 다시 (서버가 꺼져 있을 때 매번 기다리지 않게)
                 try {
                     [$new, $chg] = shop_upsert(shop_api_fetch(2), 'API');
-                    shop_state_set('last_fetch_result', date('Y-m-d H:i') . " 새 {$new} · 바뀜 {$chg}");
+                    $qn = '';
+                    try {
+                        [$qNew] = shop_inquiries_sync(3);
+                        $qn = " · 새 문의 {$qNew}";
+                    } catch (RuntimeException $e) {
+                        $qn = ' · 문의 실패';
+                    }
+                    shop_state_set('last_fetch_result', date('Y-m-d H:i') . " 새 {$new} · 바뀜 {$chg}{$qn}");
                     $res['shop_fetch'] = "$new/$chg";
                 } catch (RuntimeException $e) {
                     shop_state_set('last_fetch_result', date('Y-m-d H:i') . ' 실패: ' . mb_substr($e->getMessage(), 0, 150));
@@ -381,6 +409,11 @@ function shop_alert_lines(): array
             $lines[] = "{$name} 광고 ROAS {$a['roas']}% (목표 {$target}%) — 제외할 키워드 {$a['exclude']}개";
         }
     }
+    // 답변 안 한 고객 문의
+    $open = shop_inquiries_open();
+    if ($open['cnt'] > 0) {
+        $lines[] = "답변 안 한 상품 문의 {$open['cnt']}건" . ($open['old'] ? " (하루 넘은 것 {$open['old']}건)" : '');
+    }
     // 오늘 발주해야 할 상품
     $ro = array_values(array_filter(shop_reorder_rows(), fn($r) => $r['order_now'] && $r['qty'] > 0 && !(int)$r['hidden']));
     if ($ro) {
@@ -415,4 +448,59 @@ function shop_send_alerts(): string
     $r = date('Y-m-d H:i') . ' ' . count($lines) . '건 · ' . ($sent ? implode(' · ', $sent) : '받는 곳 없음 (알림 설정)');
     shop_state_set('last_alert_result', $r);
     return $r;
+}
+
+/**
+ * 상품 문의 가져오기 — commerce-hub GET /inquiries.
+ * @return array{0:int,1:array} [새로 들어온 문의 수, 판매채널별 오류]
+ */
+function shop_inquiries_sync(int $days): array
+{
+    $r = shop_api_get('/inquiries', min($days, 30));
+    $pdo = db();
+    $st = $pdo->prepare('INSERT INTO shop_inquiries (channel, ext_id, product, question, asked_at, answered, answer, fetched_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                         ON DUPLICATE KEY UPDATE product = VALUES(product), question = VALUES(question),
+                                                 answered = GREATEST(answered, VALUES(answered)),
+                                                 answer = COALESCE(VALUES(answer), answer), fetched_at = VALUES(fetched_at)');
+    $new = 0;
+    $now = date('Y-m-d H:i:s');
+    foreach ($r['items'] ?? [] as $q) {
+        if (!is_array($q) || ($q['id'] ?? '') === '' || ($q['channel'] ?? '') === '') { continue; }
+        $st->execute([mb_substr((string)$q['channel'], 0, 20), mb_substr((string)$q['id'], 0, 60), mb_substr((string)($q['product'] ?? ''), 0, 255),
+                      (string)($q['question'] ?? ''), shop_datetime((string)($q['askedAt'] ?? '')), !empty($q['answered']) ? 1 : 0,
+                      isset($q['answer']) && $q['answer'] !== '' ? (string)$q['answer'] : null, $now]);
+        if ($st->rowCount() === 1) { $new++; }
+    }
+    shop_state_set('last_inquiry_fetch', date('Y-m-d H:i') . " 새 {$new}" . (!empty($r['errors']) ? ' · 실패: ' . implode(', ', array_keys((array)$r['errors'])) : ''));
+    return [$new, (array)($r['errors'] ?? [])];
+}
+
+/** 판매채널에 답변 등록 — 성공하면 ERP 에도 답변 · 답변한 사람을 남깁니다 */
+function shop_inquiry_reply(int $id, string $content): array
+{
+    $st = db()->prepare('SELECT * FROM shop_inquiries WHERE id = ?');
+    $st->execute([$id]);
+    $q = $st->fetch();
+    if (!$q) { throw new RuntimeException('문의를 찾을 수 없습니다.'); }
+    $content = trim($content);
+    if ($content === '') { throw new RuntimeException('답변을 적으세요.'); }
+    if (mb_strlen($content) > 2000) { throw new RuntimeException('답변은 2000자까지 됩니다.'); }
+    shop_api_post('/inquiries/reply', ['channel' => $q['channel'], 'id' => $q['ext_id'], 'content' => $content]);
+    db()->prepare('UPDATE shop_inquiries SET answered = 1, answer = ?, answered_by = ?, answered_at = ? WHERE id = ?')
+        ->execute([$content, $_SESSION['admin_id'] ?? null, date('Y-m-d H:i:s'), $id]);
+    return $q;
+}
+
+/** 답변 안 한 문의 수 · 그중 하루 넘은 것 */
+function shop_inquiries_open(): array
+{
+    try {
+        $st = db()->prepare('SELECT COUNT(*) AS cnt, COALESCE(SUM(asked_at < ?), 0) AS old FROM shop_inquiries WHERE answered = 0');
+        $st->execute([date('Y-m-d H:i:s', strtotime('-1 day'))]);
+        $r = $st->fetch();
+        return ['cnt' => (int)$r['cnt'], 'old' => (int)$r['old']];
+    } catch (PDOException $e) {
+        return ['cnt' => 0, 'old' => 0];
+    }
 }

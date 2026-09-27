@@ -150,6 +150,17 @@ function shop_api_report(int $days): array
 
 function shop_api_get(string $path, int $days): array
 {
+    return shop_api_request('GET', $path, ['days' => max(1, min($days, 90))]);
+}
+
+/** commerce-hub 에 JSON 을 보냅니다 (문의 답변 등) */
+function shop_api_post(string $path, array $body): array
+{
+    return shop_api_request('POST', $path, [], $body);
+}
+
+function shop_api_request(string $method, string $path, array $query, ?array $body = null): array
+{
     $c = shop_api_cfg();
     if ($c['shop_api_url'] === '' || $c['shop_api_token'] === '') {
         throw new RuntimeException('환경설정 → 연동 에 쇼핑몰 통합관리 서버 주소와 토큰을 먼저 넣으세요.');
@@ -160,13 +171,16 @@ function shop_api_get(string $path, int $days): array
     if (!function_exists('curl_init')) {
         throw new RuntimeException('이 서버에 PHP curl 이 없어 쇼핑몰 서버를 부를 수 없습니다.');
     }
-    $url = rtrim($c['shop_api_url'], '/') . $path . '?' . http_build_query(['days' => max(1, min($days, 90))]);
+    $url = rtrim($c['shop_api_url'], '/') . $path . ($query ? '?' . http_build_query($query) : '');
     $ch = curl_init($url);
+    if ($body !== null) {
+        curl_setopt_array($ch, [CURLOPT_POST => true, CURLOPT_POSTFIELDS => json_encode($body, JSON_UNESCAPED_UNICODE)]);
+    }
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT        => 90,
         CURLOPT_CONNECTTIMEOUT => 10,
-        CURLOPT_HTTPHEADER     => ['Authorization: Bearer ' . $c['shop_api_token'], 'Accept: application/json'],
+        CURLOPT_HTTPHEADER     => ['Authorization: Bearer ' . $c['shop_api_token'], 'Accept: application/json', 'Content-Type: application/json'],
     ]);
     $body = curl_exec($ch);
     $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
