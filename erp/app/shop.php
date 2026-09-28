@@ -169,6 +169,30 @@ function shop_upsert(array $orders, string $source): array
     return [$new, $chg];
 }
 
+/**
+ * 한 판매처의 최근 주문을 서버에서 받은 목록에 맞춥니다: 그 기간에 이미 쌓였지만 이번 목록에 없는 주문을 지웁니다.
+ * (카페24 는 마켓통합으로 들어온 쿠팡 · 스마트스토어 주문을 서버가 빼므로, 예전에 쌓인 중복을 여기서 정리)
+ * 이번 목록에 그 판매처 주문이 한 줄도 없으면 (서버 쪽 실패일 수 있으니) 아무것도 지우지 않습니다.
+ * @return int 지운 줄 수
+ */
+function shop_sync_channel(array $orders, string $channel, int $days): int
+{
+    $ids = [];
+    foreach ($orders as $o) {
+        if (shop_channel_code((string)($o['channel'] ?? '')) === $channel) {
+            $ids[mb_substr(trim((string)$o['orderId']), 0, 60)] = true;
+        }
+    }
+    if (!$ids) { return 0; }
+    // 서버는 날짜 단위로 넉넉히 가져오므로, 지우는 범위는 그보다 좁게 (오늘 포함 최근 $days 일)
+    $since = date('Y-m-d 00:00:00', strtotime('-' . max(0, $days - 1) . ' days'));
+    $keep = array_keys($ids);
+    $in = implode(',', array_fill(0, count($keep), '?'));
+    $st = db()->prepare("DELETE FROM shop_orders WHERE channel = ? AND source = 'API' AND ordered_at >= ? AND order_id NOT IN ($in)");
+    $st->execute(array_merge([$channel, $since], $keep));
+    return $st->rowCount();
+}
+
 function shop_api_cfg(): array
 {
     $c = ['shop_api_url' => '', 'shop_api_token' => ''];

@@ -24,8 +24,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $days = max(1, min((int)post('days', '1'), 90));
             $rows = shop_api_fetch($days);
             [$new, $chg] = shop_upsert($rows, 'API');
-            log_action('쇼핑몰', 'INSERT', 'shop_orders', null, "서버에서 가져오기 최근 {$days}일", null, "새 {$new} · 바뀜 {$chg}");
-            flash("최근 {$days}일 주문 " . count($rows) . "줄을 가져왔습니다. 새 주문 {$new}줄 · 바뀐 주문 {$chg}줄.");
+            $gone = shop_sync_channel($rows, 'cafe24', $days);
+            log_action('쇼핑몰', 'INSERT', 'shop_orders', null, "서버에서 가져오기 최근 {$days}일", null, "새 {$new} · 바뀜 {$chg} · 카페24 정리 {$gone}");
+            flash("최근 {$days}일 주문 " . count($rows) . "줄을 가져왔습니다. 새 주문 {$new}줄 · 바뀐 주문 {$chg}줄."
+                . ($gone ? " 카페24에 같이 들어온 다른 마켓 주문 {$gone}줄은 정리했습니다." : ''));
         }
         redirect('?p=shop_orders');
     } catch (RuntimeException $e) {

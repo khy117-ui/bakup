@@ -357,7 +357,9 @@ function shop_auto_tick(): array
                 && time() - $last >= 3600) {
                 shop_state_set('last_fetch', (string)time());   // 실패해도 1시간 뒤 다시 (서버가 꺼져 있을 때 매번 기다리지 않게)
                 try {
-                    [$new, $chg] = shop_upsert(shop_api_fetch(2), 'API');
+                    $rows = shop_api_fetch(2);
+                    [$new, $chg] = shop_upsert($rows, 'API');
+                    shop_sync_channel($rows, 'cafe24', 2);
                     $qn = '';
                     try {
                         [$qNew] = shop_inquiries_sync(3);
