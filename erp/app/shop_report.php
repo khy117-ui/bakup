@@ -210,7 +210,7 @@ function shop_report_pdf(array $r): string
     }
     // 이익 구성
     $p->text($M + 4, $ty + 2, 7.5, '매출 ' . $won($r['sales']) . ' − 원가 ' . $won($r['cost']) . ' − 수수료 ' . $won($r['fee'])
-             . ' − 배송비 ' . $won($r['ship']) . ' − 광고비 ' . $won($r['ad']) . ' = 순이익 ' . $won($r['profit']), false, $sub);
+             . ' − 광고비 ' . $won($r['ad']) . ' = 순이익 ' . $won($r['profit']), false, $sub);
 
     $rx = $M + $lw + 16;
     $rw = $W - $lw - 16;

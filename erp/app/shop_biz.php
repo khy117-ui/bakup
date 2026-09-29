@@ -76,7 +76,7 @@ function shop_biz_ensure_schema(): void
 /** 발주 추천용 칸 · 설정 (v2) */
 function shop_biz_upgrade_reorder(): void
 {
-    if (!empty($_SESSION['schema_shop_biz_v3'])) { return; }
+    if (!empty($_SESSION['schema_shop_biz_v4'])) { return; }
     $pdo = db();
     try {
         $st = $pdo->query("SELECT COLUMN_NAME FROM information_schema.COLUMNS
@@ -87,6 +87,11 @@ function shop_biz_upgrade_reorder(): void
                           ADD COLUMN supplier   VARCHAR(100) NULL COMMENT '매입처 (발주할 곳)' AFTER ship_cost,
                           ADD COLUMN lead_days  SMALLINT     NULL COMMENT '발주 후 입고까지 걸리는 날 — 비우면 환경설정 기본값' AFTER supplier,
                           ADD COLUMN order_unit INT          NULL COMMENT '발주 단위 (박스 입수 등) — 비우면 1' AFTER lead_days");
+        }
+        if (!isset($cols['merged_into'])) {
+            $pdo->exec("ALTER TABLE shop_products
+                          ADD COLUMN merged_into BIGINT UNSIGNED NULL COMMENT '같은 상품으로 묶은 대표 상품 id — 주문 · 재고 · 순이익을 대표 상품에 합칩니다' AFTER hidden,
+                          ADD KEY ix_sp_merged (merged_into)");
         }
         $ins = $pdo->prepare("INSERT IGNORE INTO app_settings
                                 (setting_key, setting_val, group_ko, label_ko, help_ko, input_type, options_csv, sort_order)
@@ -117,7 +122,7 @@ function shop_biz_upgrade_reorder(): void
                       KEY ix_si_open (answered, asked_at)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                       COMMENT='쇼핑몰 상품 문의 (commerce-hub 에서 가져옴)'");
-        $_SESSION['schema_shop_biz_v3'] = 1;
+        $_SESSION['schema_shop_biz_v4'] = 1;
     } catch (PDOException $e) {
         error_log('쇼핑몰 상품 표 준비 실패: ' . $e->getMessage());
     }
@@ -159,6 +164,81 @@ function shop_products_sync(): void
 }
 
 /**
+ * 상품명(line_key) → 묶은 대표 상품의 line_key. 묶지 않은 상품은 자기 자신.
+ * @return array<string, string>
+ */
+function shop_product_main_keys(): array
+{
+    $out = [];
+    foreach (db()->query('SELECT c.line_key, COALESCE(m.line_key, c.line_key) AS main_key
+                            FROM shop_products c LEFT JOIN shop_products m ON m.id = c.merged_into')->fetchAll() as $r) {
+        $out[$r['line_key']] = $r['main_key'];
+    }
+    return $out;
+}
+
+/** 대표 상품 p 와 거기에 묶인 상품의 line_key 목록 (SQL 조건용) */
+const SHOP_PRODUCT_KEYS_SQL = '(SELECT c.line_key FROM shop_products c WHERE c.id = p.id OR c.merged_into = p.id)';
+
+/**
+ * 여러 상품을 하나로 묶습니다. 대표 상품에 원가 · 배송비 · 재고 등이 비어 있으면 묶이는 상품 값을 가져옵니다.
+ * @param int[] $ids 묶을 상품 (대표 포함)
+ */
+function shop_products_merge(int $mainId, array $ids): int
+{
+    $pdo = db();
+    $ids = array_values(array_unique(array_filter(array_map('intval', $ids), fn($i) => $i > 0 && $i !== $mainId)));
+    if (!$ids) { return 0; }
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    $st = $pdo->prepare("SELECT * FROM shop_products WHERE id IN ($in) ORDER BY id");
+    $st->execute($ids);
+    $kids = $st->fetchAll();
+    $st = $pdo->prepare('SELECT * FROM shop_products WHERE id = ?');
+    $st->execute([$mainId]);
+    $main = $st->fetch();
+    if (!$main || $main['merged_into'] !== null) { throw new RuntimeException('대표 상품을 찾을 수 없습니다.'); }
+    $pdo->beginTransaction();
+    try {
+        foreach (['unit_cost', 'ship_cost', 'supplier', 'lead_days', 'order_unit'] as $f) {
+            if ($main[$f] !== null) { continue; }
+            foreach ($kids as $k) {
+                if ($k[$f] !== null) {
+                    $pdo->prepare("UPDATE shop_products SET $f = ? WHERE id = ?")->execute([$k[$f], $mainId]);
+                    break;
+                }
+            }
+        }
+        if ($main['stock_base'] === null) {
+            foreach ($kids as $k) {
+                if ($k['stock_base'] !== null) {
+                    $pdo->prepare('UPDATE shop_products SET stock_base = ?, stock_base_at = ? WHERE id = ?')
+                        ->execute([$k['stock_base'], $k['stock_base_at'], $mainId]);
+                    break;
+                }
+            }
+        }
+        // 묶이는 상품에 이미 묶여 있던 상품도 새 대표로 옮깁니다
+        $pdo->prepare("UPDATE shop_products SET merged_into = ? WHERE merged_into IN ($in)")->execute(array_merge([$mainId], $ids));
+        $pdo->prepare("UPDATE shop_products SET merged_into = ?, hidden = 0 WHERE id IN ($in)")->execute(array_merge([$mainId], $ids));
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+    foreach ($kids as $k) {
+        log_action('쇼핑몰', 'UPDATE', 'shop_products', (int)$k['id'], $k['product'], null, '같은 상품으로 묶음 → ' . $main['product']);
+    }
+    return count($kids);
+}
+
+/** 묶음 풀기 — 이 상품만 다시 따로 봅니다 (원가 등은 원래 값 그대로) */
+function shop_product_unmerge(int $id): void
+{
+    db()->prepare('UPDATE shop_products SET merged_into = NULL WHERE id = ?')->execute([$id]);
+    log_action('쇼핑몰', 'UPDATE', 'shop_products', $id, '', null, '같은 상품 묶음 풀기');
+}
+
+/**
  * 상품별 재고 · 판매 속도.
  * @return array<int, array> 상품 줄 + sold_since · stock_now · daily · days_left
  */
@@ -168,13 +248,15 @@ function shop_stock_rows(bool $withHidden = false): array
     $cx = shop_cancel_sql('o');
     $st = db()->prepare("SELECT p.*,
                    (SELECT COALESCE(SUM(o.qty), 0) FROM shop_orders o
-                     WHERE o.line_key = p.line_key AND p.stock_base_at IS NOT NULL AND o.ordered_at >= p.stock_base_at AND NOT $cx) AS sold_since,
+                     WHERE o.line_key IN " . SHOP_PRODUCT_KEYS_SQL . " AND p.stock_base_at IS NOT NULL AND o.ordered_at >= p.stock_base_at AND NOT $cx) AS sold_since,
                    (SELECT COALESCE(SUM(o.qty), 0) FROM shop_orders o
-                     WHERE o.line_key = p.line_key AND o.ordered_at >= ? AND NOT $cx) AS sold14,
+                     WHERE o.line_key IN " . SHOP_PRODUCT_KEYS_SQL . " AND o.ordered_at >= ? AND NOT $cx) AS sold14,
                    (SELECT COALESCE(SUM(o.qty), 0) FROM shop_orders o
-                     WHERE o.line_key = p.line_key AND o.ordered_at >= ? AND NOT $cx) AS sold7,
-                   (SELECT MAX(o.ordered_at) FROM shop_orders o WHERE o.line_key = p.line_key) AS last_order
-              FROM shop_products p " . ($withHidden ? '' : 'WHERE p.hidden = 0') . '
+                     WHERE o.line_key IN " . SHOP_PRODUCT_KEYS_SQL . " AND o.ordered_at >= ? AND NOT $cx) AS sold7,
+                   (SELECT MAX(o.ordered_at) FROM shop_orders o WHERE o.line_key IN " . SHOP_PRODUCT_KEYS_SQL . ") AS last_order,
+                   (SELECT GROUP_CONCAT(c.product ORDER BY c.product SEPARATOR '\n') FROM shop_products c WHERE c.merged_into = p.id) AS merged_names,
+                   (SELECT GROUP_CONCAT(c.id ORDER BY c.product) FROM shop_products c WHERE c.merged_into = p.id) AS merged_ids
+              FROM shop_products p WHERE p.merged_into IS NULL" . ($withHidden ? '' : ' AND p.hidden = 0') . '
              ORDER BY sold14 DESC, p.product');
     // 주문 시각은 한국 시간으로 저장되어 있어 DB 의 NOW() 대신 PHP 시각을 씁니다
     $st->execute([date('Y-m-d H:i:s', strtotime('-14 days')), date('Y-m-d H:i:s', strtotime('-7 days'))]);
@@ -268,7 +350,8 @@ function shop_profit(string $from, string $to): array
     $st->execute([$from, $to]);
     $lines = $st->fetchAll();
     $prod = [];
-    foreach (db()->query('SELECT line_key, unit_cost, ship_cost FROM shop_products')->fetchAll() as $p) { $prod[$p['line_key']] = $p; }
+    foreach (db()->query('SELECT line_key, product, unit_cost, ship_cost FROM shop_products')->fetchAll() as $p) { $prod[$p['line_key']] = $p; }
+    $mainKey = shop_product_main_keys();
     $fee = ['coupang' => (float)shop_setting('shop_fee_coupang', '10.8'), 'naver' => (float)shop_setting('shop_fee_naver', '5.5'),
             'cafe24' => (float)shop_setting('shop_fee_cafe24', '3.3')];
     $ad = shop_ad_spend($from, $to);
@@ -278,17 +361,17 @@ function shop_profit(string $from, string $to): array
     $rows = [];
     $missing = [];
     foreach ($lines as $l) {
-        $k = $l['line_key'];
-        $p = $prod[$k] ?? ['unit_cost' => null, 'ship_cost' => null];
+        $k = $mainKey[$l['line_key']] ?? $l['line_key'];   // 같은 상품으로 묶었으면 대표 상품으로
+        $p = $prod[$k] ?? ['unit_cost' => null, 'ship_cost' => null, 'product' => $l['product']];
         if ($p['unit_cost'] === null) { $missing[$k] = 1; }
-        $r = $rows[$k] ?? ['line_key' => $k, 'product' => $l['product'], 'qty' => 0, 'sales' => 0.0, 'cost' => 0.0, 'fee' => 0.0,
+        $r = $rows[$k] ?? ['line_key' => $k, 'product' => $p['product'] ?? $l['product'], 'qty' => 0, 'sales' => 0.0, 'cost' => 0.0, 'fee' => 0.0,
                            'ship' => 0.0, 'ad' => 0.0, 'channels' => [], 'no_cost' => $p['unit_cost'] === null];
         $sales = (float)$l['sales'];
         $r['qty']   += (int)$l['qty'];
         $r['sales'] += $sales;
         $r['cost']  += (float)($p['unit_cost'] ?? 0) * (int)$l['qty'];
         $r['fee']   += $sales * ($fee[$l['channel']] ?? 0) / 100;
-        $r['ship']  += (float)($p['ship_cost'] ?? 0) * (int)$l['lines_cnt'];
+        // 택배비는 매출 금액(주문 상품 금액)에 들어 있지 않으므로 순이익에서도 빼지 않습니다 (ship 은 늘 0)
         $r['ad']    += isset($ad[$l['channel']]) && ($chSales[$l['channel']] ?? 0) > 0 ? $ad[$l['channel']] * $sales / $chSales[$l['channel']] : 0;
         $r['channels'][$l['channel']] = 1;
         $rows[$k] = $r;
@@ -565,11 +648,19 @@ function shop_price_rows(float $margin): array
     $st = $pdo->prepare("SELECT channel, line_key, SUM(amount) AS sales, SUM(qty) AS qty FROM shop_orders
                           WHERE ordered_at >= ? AND ordered_at < DATE_ADD(?, INTERVAL 1 DAY) AND NOT $cx GROUP BY channel, line_key");
     $st->execute([$from, $to]);
-    $cur = [];
+    $sum = [];
     $chSales = [];
+    shop_products_sync();
+    $mainKey = shop_product_main_keys();
     foreach ($st->fetchAll() as $r) {
-        if ((int)$r['qty'] > 0) { $cur[$r['line_key']][$r['channel']] = (float)$r['sales'] / (int)$r['qty']; }
+        $k = $mainKey[$r['line_key']] ?? $r['line_key'];
+        $sum[$k][$r['channel']][0] = ($sum[$k][$r['channel']][0] ?? 0) + (float)$r['sales'];
+        $sum[$k][$r['channel']][1] = ($sum[$k][$r['channel']][1] ?? 0) + (int)$r['qty'];
         $chSales[$r['channel']] = ($chSales[$r['channel']] ?? 0) + (float)$r['sales'];
+    }
+    $cur = [];
+    foreach ($sum as $k => $byCh) {
+        foreach ($byCh as $ch => [$sales, $qty]) { if ($qty > 0) { $cur[$k][$ch] = $sales / $qty; } }
     }
     $ad = shop_ad_spend($from, $to);
     $chs = [];
@@ -578,10 +669,10 @@ function shop_price_rows(float $margin): array
                     'ad' => ($chSales[$k] ?? 0) > 0 ? round(($ad[$k] ?? 0) / $chSales[$k] * 100, 1) : 0.0];
     }
     $rows = [];
-    shop_products_sync();
-    foreach ($pdo->query('SELECT id, line_key, product, unit_cost, ship_cost FROM shop_products WHERE hidden = 0 ORDER BY product')->fetchAll() as $p) {
+    foreach ($pdo->query('SELECT id, line_key, product, unit_cost, ship_cost FROM shop_products WHERE hidden = 0 AND merged_into IS NULL ORDER BY product')->fetchAll() as $p) {
+        // 택배비는 매출 · 이익 계산에서 뺍니다 (순이익과 같은 기준)
         $r = ['id' => (int)$p['id'], 'product' => $p['product'], 'cost' => $p['unit_cost'] === null ? null : (float)$p['unit_cost'],
-              'ship' => (float)($p['ship_cost'] ?? 0), 'ch' => []];
+              'ship' => 0.0, 'ch' => []];
         foreach ($chs as $k => $c) {
             $now = $cur[$p['line_key']][$k] ?? null;
             $rec = $r['cost'] === null ? null : shop_price_calc($r['cost'], $r['ship'], $margin, $c);
