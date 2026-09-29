@@ -68,6 +68,20 @@ foreach ($st->fetchAll() as $r) { $byCh[$r['channel']] = $r; }
 $tot = ['orders' => 0, 'qty' => 0, 'sales' => 0, 'cancelled' => 0];
 foreach ($byCh as $r) { foreach ($tot as $k => $_) { $tot[$k] += (float)$r[$k]; } }
 
+// 지금 발송할 주문 — 주문일과 상관없이 판매처 상태로 셉니다 (쿠팡 Wing · 스마트스토어 발송관리 화면과 같은 기준)
+//   발송 전: 결제완료 · 상품준비중 (카페24 배송준비 포함) / 송장 넣음 · 집하 전: 쿠팡 배송지시
+$toShip = [];
+$shipSt = SHOP_TO_SHIP_STATUS;
+$in = implode(',', array_fill(0, count($shipSt), '?'));
+$st = $pdo->prepare("SELECT channel, status, COUNT(DISTINCT order_id) AS n FROM shop_orders
+                      WHERE ordered_at >= ? AND status IN ($in) AND NOT $cancelSql
+                      GROUP BY channel, status");
+$st->execute(array_merge([date('Y-m-d 00:00:00', strtotime('-30 days'))], $shipSt));
+foreach ($st->fetchAll() as $r) {
+    $toShip[$r['channel']]['n'] = ($toShip[$r['channel']]['n'] ?? 0) + (int)$r['n'];
+    $toShip[$r['channel']]['by'][shop_status_label($r['channel'], $r['status'])] = (int)$r['n'];
+}
+
 $st = $pdo->prepare("SELECT DATE(ordered_at) AS d, channel, SUM(CASE WHEN $cancelSql THEN 0 ELSE amount END) AS sales
                        FROM shop_orders WHERE $where GROUP BY DATE(ordered_at), channel ORDER BY d DESC");
 $st->execute($pa);
@@ -162,6 +176,16 @@ layout_head('쇼핑몰 주문 · 매출', 'shop_orders');
     <div class="sub">주문 <?= money($r['orders'] ?? 0) ?>건 · 수량 <?= money($r['qty'] ?? 0) ?>
       <?= $tot['sales'] > 0 ? ' · ' . round(100 * (float)($r['sales'] ?? 0) / $tot['sales']) . '%' : '' ?></div></div>
   <?php endforeach; ?>
+</div>
+
+<div class="card">
+  <div class="ch">지금 발송할 주문 <span style="font-weight:400;color:var(--ink3);font-size:12px">주문일과 상관없이 판매처 상태 기준 (최근 30일 주문) · 마지막 가져오기 때의 상태</span></div>
+  <div class="cb" style="display:flex;gap:28px;flex-wrap:wrap;font-size:13px">
+    <?php foreach (SHOP_CHANNELS as $k => $lab): $x = $toShip[$k] ?? ['n' => 0, 'by' => []]; ?>
+    <div><b><?= h($lab) ?></b> <span class="tnum" style="font-size:18px;font-weight:700;margin-left:4px"><?= (int)$x['n'] ?></span>건
+      <?php if ($x['by']): ?><span style="color:var(--ink3)">(<?= h(implode(' · ', array_map(fn($l, $n) => "$l $n", array_keys($x['by']), $x['by']))) ?>)</span><?php endif; ?></div>
+    <?php endforeach; ?>
+  </div>
 </div>
 
 <div class="card">

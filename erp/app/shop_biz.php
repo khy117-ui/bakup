@@ -14,11 +14,14 @@ require_once APP_DIR . '/shop_ads.php';
  *            주문을 다시 가져와도 두 번 빠지지 않도록 저장된 값을 깎지 않고 그때그때 계산합니다.
  *   순이익 : 매출 − 원가×수량 − 판매 수수료(판매처별 %) − 배송비×주문 줄 − 광고비(판매처 광고비를 매출 비중으로 나눔).
  *            광고비는 [광고 · 키워드] 에 올린 보고서 중 기간이 겹치는 것을 날짜 비율로 가져옵니다 (추정치).
- *   자동   : 로그인한 ERP 화면이 부르는 자동 작업 신호(track_tick)에 얹어, 1시간에 한 번 최근 2일 주문을 가져오고
+ *   자동   : 로그인한 ERP 화면이 부르는 자동 작업 신호(track_tick)에 얹어, 1시간에 한 번 최근 7일 주문을 가져오고
  *            하루 한 번 매출 급감 · ROAS 미달 · 품절 임박을 담당자 메일 · 카톡으로 알립니다.
  */
 
 /** 취소 · 반품 줄 — 채널마다 상태 문구가 달라 글자로 봅니다 (카페24: C** 취소, R** 반품) */
+/** 아직 택배가 가져가지 않은 주문 상태 — 발송 전(결제완료 · 상품준비중 · 카페24 배송준비) + 쿠팡 배송지시(송장 넣음, 집하 전) */
+const SHOP_TO_SHIP_STATUS = ['ACCEPT', 'INSTRUCT', 'DEPARTURE', 'PAYED', 'N10', 'N20', 'N21', 'N22'];
+
 function shop_cancel_sql(string $a = ''): string
 {
     $p = $a !== '' ? $a . '.' : '';
@@ -61,7 +64,7 @@ function shop_biz_ensure_schema(): void
             ['shop_fee_coupang', '10.8', '쿠팡 판매 수수료 (%)', '카테고리 평균. 순이익 계산에 씁니다. 캠핑용품은 보통 10.8%', 'number', null, 1],
             ['shop_fee_naver', '5.5', '스마트스토어 수수료 (%)', '주문관리 수수료 + 매출연동 수수료 합계. 보통 5~6%', 'number', null, 2],
             ['shop_fee_cafe24', '3.3', '카페24 결제 수수료 (%)', 'PG 카드 수수료. 보통 3.3%', 'number', null, 3],
-            ['shop_auto_fetch', '예', '주문 자동 가져오기', '예 = ERP 화면이 열려 있을 때 1시간마다 쇼핑몰 서버에서 최근 2일 주문을 가져옴', 'select', '예,아니오', 10],
+            ['shop_auto_fetch', '예', '주문 자동 가져오기', '예 = ERP 화면이 열려 있을 때 1시간마다 쇼핑몰 서버에서 최근 7일 주문을 가져옴', 'select', '예,아니오', 10],
             ['shop_alert_on', '예', '쇼핑몰 알림 보내기', '예 = 하루 한 번 매출 급감 · ROAS 미달 · 품절 임박을 담당자 메일 · 카톡으로 (받는 곳은 알림 설정)', 'select', '예,아니오', 11],
             ['shop_alert_drop_pct', '40', '매출 급감 기준 (%)', '어제 매출이 지난 7일 평균보다 이만큼 이상 줄면 알림', 'number', null, 12],
             ['shop_stock_warn_days', '7', '품절 경고 (일)', '최근 14일 판매 속도로 이 날짜 안에 재고가 떨어질 상품을 경고', 'number', null, 13],
@@ -433,16 +436,16 @@ function shop_auto_tick(): array
         shop_biz_ensure_schema();
         if ((int)$pdo->query("SELECT GET_LOCK('gp_shop_tick', 0)")->fetchColumn() !== 1) { return ['shop' => 'busy']; }
         try {
-            // ① 1시간마다 최근 2일 주문
+            // ① 1시간마다 최근 7일 주문 (쿠팡은 주문일로 조회하므로, 며칠 전 주문의 배송 상태도 바뀐 대로 받으려면 넉넉히)
             $cfg = shop_api_cfg();
             $last = (int)(shop_state_get('last_fetch') ?? 0);
             if (shop_setting('shop_auto_fetch', '예') === '예' && $cfg['shop_api_url'] !== '' && $cfg['shop_api_token'] !== ''
                 && time() - $last >= 3600) {
                 shop_state_set('last_fetch', (string)time());   // 실패해도 1시간 뒤 다시 (서버가 꺼져 있을 때 매번 기다리지 않게)
                 try {
-                    $rows = shop_api_fetch(2);
+                    $rows = shop_api_fetch(7);
                     [$new, $chg] = shop_upsert($rows, 'API');
-                    shop_sync_channel($rows, 'cafe24', 2);
+                    shop_sync_channel($rows, 'cafe24', 7);
                     $qn = '';
                     try {
                         [$qNew] = shop_inquiries_sync(3);
