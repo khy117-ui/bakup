@@ -129,8 +129,11 @@ function shop_claim_approve(int $id, bool $restock): array
     if (!$restock) {
         // 재고를 입력해 둔 상품만: 반품 완료로 다시 늘어날 수량을 미리 빼 둠
         foreach (array_map('trim', explode(',', (string)$c['product'])) as $name) {
-            $pdo->prepare('UPDATE shop_products SET stock_base = stock_base - ? WHERE line_key = ? AND stock_base IS NOT NULL')
-                ->execute([(int)$c['qty'], sha1($name)]);
+            // 같은 상품으로 묶었으면 대표 상품의 재고에서
+            $pdo->prepare('UPDATE shop_products p LEFT JOIN shop_products c ON c.merged_into = p.id
+                              SET p.stock_base = p.stock_base - ?
+                            WHERE (p.line_key = ? AND p.merged_into IS NULL OR c.line_key = ?) AND p.stock_base IS NOT NULL')
+                ->execute([(int)$c['qty'], sha1($name), sha1($name)]);
         }
     }
     return $c;

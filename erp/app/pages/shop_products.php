@@ -37,7 +37,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save_order') {
     }
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save') {
+// 같은 상품 묶기 — 체크한 상품 중 대표(골라 둔 것, 없으면 최근 많이 팔린 것)에 나머지를 합칩니다
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save' && post('do') === 'merge') {
+    csrf_check();
+    $pick = array_map('intval', array_keys(array_filter(is_array($_POST['merge'] ?? null) ? $_POST['merge'] : [])));
+    $main = (int)post('merge_main');
+    try {
+        if (count($pick) < 2) { throw new RuntimeException('묶을 상품을 두 개 이상 체크하세요.'); }
+        if (!in_array($main, $pick, true)) { $main = $pick[0]; }   // 화면 순서(최근 많이 팔린 순) 첫 상품
+        $n = shop_products_merge($main, $pick);
+        $st = $pdo->prepare('SELECT product FROM shop_products WHERE id = ?');
+        $st->execute([$main]);
+        flash("상품 {$n}개를 '" . $st->fetchColumn() . "' 에 묶었습니다. 주문 · 재고 · 순이익이 합쳐서 보입니다.");
+        redirect('?p=shop_products');
+    } catch (RuntimeException $e) {
+        $err = $e->getMessage();
+    }
+}
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'unmerge') {
+    csrf_check();
+    shop_product_unmerge((int)post('id'));
+    flash('묶음을 풀었습니다.');
+    redirect('?p=shop_products');
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save' && post('do') !== 'merge') {
     csrf_check();
     $cost = $_POST['cost'] ?? [];
     $ship = $_POST['ship'] ?? [];
@@ -57,7 +81,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'save') {
         foreach ($old as $id => $p) {
             if (!array_key_exists($id, $cost)) { continue; }   // 화면에 없던 상품은 그대로
             $c = trim((string)$cost[$id]);
-            $s = trim((string)($ship[$id] ?? ''));
+            // 배송비 칸은 화면에서 뺐습니다 (택배비는 매출 · 이익 계산에 넣지 않음). 보내지 않으면 원래 값 그대로
+            $s = array_key_exists($id, $ship) ? trim((string)$ship[$id]) : ($p['ship_cost'] === null ? '' : (string)round((float)$p['ship_cost']));
             $cv = $c === '' ? null : (string)round(num($c));
             $sv = $s === '' ? null : (string)round(num($s));
             $hv = isset($hide[$id]) ? 1 : 0;
@@ -103,7 +128,7 @@ if ($tab === 'order') {
     $ro = array_values(array_filter(shop_reorder_rows(), fn($r) => !(int)$r['hidden']));
     $soon = array_values(array_filter($ro, fn($r) => $r['qty'] > 0 && $r['order_in'] <= 7));
     $list = $all ? $ro : $soon;
-    $noStock = (int)$pdo->query('SELECT COUNT(*) FROM shop_products WHERE hidden = 0 AND stock_base IS NULL')->fetchColumn();
+    $noStock = (int)$pdo->query('SELECT COUNT(*) FROM shop_products WHERE hidden = 0 AND merged_into IS NULL AND stock_base IS NULL')->fetchColumn();
     if (query('download') === '1') {
         require_once APP_DIR . '/xlsx.php';
         $x = [['발주일 ' . date('Y-m-d'), '', '', '', '', '', ''], ['매입처', '상품명', '발주 수량', '원가', '금액', '남은 재고', '발주 시점']];
@@ -169,21 +194,28 @@ layout_head('상품 · 재고 · 순이익', 'shop_products');
     <?= csrf_field() ?><input type="hidden" name="act" value="save">
     <div style="overflow-x:auto">
     <table>
-      <thead><tr><th>상품명</th><th class="r" style="width:110px">원가 (1개)</th><th class="r" style="width:110px">배송비 (1주문)</th>
+      <thead><tr><th>상품명</th><th class="r" style="width:110px">원가 (1개)</th>
         <th class="r" style="width:80px">입력 재고</th><th class="r" style="width:70px">이후 판매</th><th class="r" style="width:80px">남은 재고</th>
         <th class="r" style="width:80px">하루 판매</th><th class="r" style="width:90px">품절까지</th>
-        <th style="width:100px">재고 새로 입력</th><th style="width:90px">입고 (+)</th><th class="c" style="width:50px">숨김</th></tr></thead>
+        <th style="width:100px">재고 새로 입력</th><th style="width:90px">입고 (+)</th><th class="c" style="width:50px">숨김</th>
+        <?php if ($canEdit): ?><th class="c" style="width:50px" title="같은 상품을 체크하고 [체크한 상품 묶기]">묶기</th><?php endif; ?></tr></thead>
       <tbody>
       <?php foreach ($rows as $r): $id = (int)$r['id'];
         $bad = $r['stock_now'] !== null && ($r['stock_now'] <= 0 || ($r['days_left'] !== null && $r['days_left'] <= $warnDays)); ?>
         <tr<?= $bad ? ' style="background:#FFF1F0"' : ((int)$r['hidden'] ? ' style="opacity:.55"' : '') ?>>
           <td style="font-size:12.5px;font-weight:600"><?= h($r['product']) ?>
             <div style="font-weight:400;color:var(--ink3);font-size:11px">마지막 주문 <?= h(substr((string)$r['last_order'], 0, 10) ?: '-') ?>
-              <?= $r['stock_base_at'] ? ' · 재고 입력 ' . h(substr((string)$r['stock_base_at'], 0, 16)) : '' ?></div></td>
+              <?= $r['stock_base_at'] ? ' · 재고 입력 ' . h(substr((string)$r['stock_base_at'], 0, 16)) : '' ?></div>
+            <?php if ($r['merged_names'] !== null): $mIds = explode(',', (string)$r['merged_ids']); ?>
+              <div style="font-weight:400;color:var(--ink2);font-size:11px;margin-top:2px">함께 묶은 이름:
+                <?php foreach (explode("\n", (string)$r['merged_names']) as $i => $nm): ?>
+                  <span style="white-space:nowrap">· <?= h($nm) ?><?php if ($canEdit): ?>
+                    <button type="submit" form="shopUnmerge" name="id" value="<?= (int)($mIds[$i] ?? 0) ?>" class="btn sm" style="padding:0 5px;font-size:10.5px;margin-left:2px"
+                      onclick="return confirm('이 이름을 다시 따로 볼까요?')">풀기</button><?php endif; ?></span>
+                <?php endforeach; ?></div>
+            <?php endif; ?></td>
           <td class="r"><input type="text" name="cost[<?= $id ?>]" value="<?= $r['unit_cost'] === null ? '' : h(money($r['unit_cost'])) ?>"
             <?= $canEdit ? '' : 'readonly' ?> style="text-align:right;<?= $r['unit_cost'] === null ? 'border-color:#E0A800' : '' ?>" placeholder="원가"></td>
-          <td class="r"><input type="text" name="ship[<?= $id ?>]" value="<?= $r['ship_cost'] === null ? '' : h(money($r['ship_cost'])) ?>"
-            <?= $canEdit ? '' : 'readonly' ?> style="text-align:right" placeholder="0"></td>
           <td class="r tnum"><?= $r['stock_base'] === null ? '-' : money($r['stock_base']) ?></td>
           <td class="r tnum"><?= $r['stock_base'] === null ? '-' : money($r['sold_since']) ?></td>
           <td class="r tnum" style="font-weight:700;<?= $bad ? 'color:#C62828' : '' ?>"><?= $r['stock_now'] === null ? '-' : money($r['stock_now']) ?></td>
@@ -193,6 +225,7 @@ layout_head('상품 · 재고 · 순이익', 'shop_products');
           <td><input type="text" name="stock[<?= $id ?>]" value="" <?= $canEdit ? '' : 'readonly' ?> placeholder="실제 수량" style="text-align:right"></td>
           <td><input type="text" name="add[<?= $id ?>]" value="" <?= $canEdit ? '' : 'readonly' ?> placeholder="들어온 수량" style="text-align:right"></td>
           <td class="c"><input type="checkbox" name="hide[<?= $id ?>]" value="1"<?= (int)$r['hidden'] ? ' checked' : '' ?><?= $canEdit ? '' : ' disabled' ?> style="width:auto" title="판매 종료 — 목록 · 알림에서 숨김"></td>
+          <?php if ($canEdit): ?><td class="c"><input type="checkbox" name="merge[<?= $id ?>]" value="1" class="mergePick" data-name="<?= h($r['product']) ?>" style="width:auto"></td><?php endif; ?>
         </tr>
       <?php endforeach; ?>
       </tbody>
@@ -200,13 +233,28 @@ layout_head('상품 · 재고 · 순이익', 'shop_products');
     </div>
     <?php if ($canEdit): ?><div class="cb" style="position:sticky;bottom:0;left:0;background:var(--card,#fff);border-top:1px solid var(--line,#e5e7eb);display:flex;align-items:center;gap:10px">
       <button class="btn pri">저장</button>
+      <span id="mergeBox" style="display:none;font-size:12.5px">대표 이름
+        <select name="merge_main" id="mergeMain" style="max-width:320px"></select>
+        <button type="submit" name="do" value="merge" class="btn sm" onclick="return confirm('체크한 상품을 한 상품으로 묶을까요? 주문 · 재고 · 순이익이 대표 상품에 합쳐집니다. (나중에 풀 수 있어요. 아직 저장 안 한 원가 · 재고 입력은 반영되지 않아요)')">체크한 상품 묶기</button></span>
       <span id="shopProdDirty" style="display:none;color:#C62828;font-size:12.5px">저장하지 않은 변경이 있습니다.</span></div><?php endif; ?>
   </form>
+  <?php if ($canEdit): ?><form method="post" id="shopUnmerge"><?= csrf_field() ?><input type="hidden" name="act" value="unmerge"></form><?php endif; ?>
   <script>
   (function () {
     var f = document.getElementById('shopProdForm'), dirty = false;
     if (!f) return;
-    f.addEventListener('input', function () { dirty = true; var m = document.getElementById('shopProdDirty'); if (m) m.style.display = ''; });
+    // 묶기 체크 — 두 개 이상 고르면 대표 이름을 고르는 칸이 나옵니다 (묶기 체크만으로는 '저장 안 함' 경고를 띄우지 않음)
+    var picks = f.querySelectorAll('.mergePick'), box = document.getElementById('mergeBox'), sel = document.getElementById('mergeMain');
+    function syncMerge() {
+      if (!box) return;
+      var on = [].filter.call(picks, function (c) { return c.checked; });
+      box.style.display = on.length >= 2 ? '' : 'none';
+      var keep = sel.value; sel.innerHTML = '';
+      on.forEach(function (c) { var o = document.createElement('option'); o.value = c.name.replace(/\D/g, ''); o.textContent = c.dataset.name; sel.appendChild(o); });
+      if (keep) sel.value = keep;
+    }
+    [].forEach.call(picks, function (c) { c.addEventListener('change', function (e) { e.stopPropagation(); syncMerge(); }); });
+    f.addEventListener('input', function (e) { if (e.target.classList && e.target.classList.contains('mergePick')) return; dirty = true; var m = document.getElementById('shopProdDirty'); if (m) m.style.display = ''; });
     f.addEventListener('change', function () { dirty = true; var m = document.getElementById('shopProdDirty'); if (m) m.style.display = ''; });
     f.addEventListener('submit', function () { dirty = false; });
     window.addEventListener('beforeunload', function (e) { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
@@ -273,7 +321,7 @@ layout_head('상품 · 재고 · 순이익', 'shop_products');
       <input type="hidden" name="p" value="shop_products"><input type="hidden" name="tab" value="price">
       <label style="font-size:12px">목표 이익률 (%)<br><input type="number" name="margin" step="0.5" min="0" max="80" value="<?= h((string)$margin) ?>" style="width:90px"></label>
       <label style="font-size:12px">새 상품 원가 (선택)<br><input type="text" name="qcost" value="<?= $qc['cost'] ? h((string)$qc['cost']) : '' ?>" placeholder="예) 15000" style="width:110px"></label>
-      <label style="font-size:12px">배송비<br><input type="text" name="qship" value="<?= $qc['ship'] ? h((string)$qc['ship']) : '' ?>" placeholder="예) 3000" style="width:90px"></label>
+      <label style="font-size:12px">배송비 (선택)<br><input type="text" name="qship" value="<?= $qc['ship'] ? h((string)$qc['ship']) : '' ?>" placeholder="예) 3000" style="width:90px"></label>
       <button class="btn pri">계산</button>
       <span style="font-size:12px;color:var(--ink2)">
         <?php foreach ($pr['channels'] as $c): ?><?= h($c['label']) ?> 수수료 <?= h((string)$c['fee']) ?>% · 광고비율 <?= h((string)$c['ad']) ?>%&nbsp;&nbsp; <?php endforeach; ?>
@@ -293,13 +341,13 @@ layout_head('상품 · 재고 · 순이익', 'shop_products');
   <div class="ch">상품별 추천 판매가 <span style="font-weight:400;color:var(--ink3);font-size:12px">지금 가격은 최근 30일 평균 판매가. 지금 이익률이 목표보다 낮으면 빨간색 — 낮은 상품부터 보입니다</span></div>
   <?php if (!$pr['rows']): ?><div class="empty">상품이 없습니다. 주문을 먼저 가져오세요.</div><?php else: ?>
   <table>
-    <thead><tr><th rowspan="2">상품명</th><th class="r" rowspan="2">원가</th><th class="r" rowspan="2">배송비</th>
+    <thead><tr><th rowspan="2">상품명</th><th class="r" rowspan="2">원가</th>
       <?php foreach ($pr['channels'] as $c): ?><th colspan="3" style="text-align:center;border-left:1px solid var(--line2)"><?= h($c['label']) ?></th><?php endforeach; ?></tr>
       <tr><?php foreach ($pr['channels'] as $c): ?><th class="r" style="border-left:1px solid var(--line2)">추천가</th><th class="r">지금 가격</th><th class="r">지금 이익률</th><?php endforeach; ?></tr></thead>
     <tbody>
     <?php foreach ($pr['rows'] as $r): ?>
       <tr><td style="font-size:12.5px;font-weight:600"><?= h($r['product']) ?><?= $r['cost'] === null ? ' <span class="badge b-warn">원가 없음</span>' : '' ?></td>
-        <td class="r tnum"><?= $r['cost'] === null ? '-' : money($r['cost']) ?></td><td class="r tnum"><?= money($r['ship']) ?></td>
+        <td class="r tnum"><?= $r['cost'] === null ? '-' : money($r['cost']) ?></td>
         <?php foreach ($r['ch'] as $k => $c): $low = $c['margin'] !== null && $c['margin'] < $margin; ?>
           <td class="r tnum" style="border-left:1px solid var(--line2);font-weight:700"><?= $c['rec'] === null ? '-' : money($c['rec']) ?></td>
           <td class="r tnum"><?= $c['now'] === null ? '<span style="color:var(--ink3)">판매 없음</span>' : money(round($c['now'])) ?></td>
@@ -327,19 +375,19 @@ layout_head('상품 · 재고 · 순이익', 'shop_products');
 <?php endif; ?>
 <div class="kpis">
   <div class="kpi"><div class="lab">매출 (취소 · 반품 제외)</div><div class="val tnum"><?= money($t['sales']) ?></div><div class="sub">수량 <?= money($t['qty']) ?></div></div>
-  <div class="kpi"><div class="lab">원가 + 수수료 + 배송비</div><div class="val tnum"><?= money($t['cost'] + $t['fee'] + $t['ship']) ?></div>
-    <div class="sub">원가 <?= money($t['cost']) ?> · 수수료 <?= money($t['fee']) ?> · 배송 <?= money($t['ship']) ?></div></div>
+  <div class="kpi"><div class="lab">원가 + 수수료</div><div class="val tnum"><?= money($t['cost'] + $t['fee']) ?></div>
+    <div class="sub">원가 <?= money($t['cost']) ?> · 수수료 <?= money($t['fee']) ?> · 택배비는 빼지 않음</div></div>
   <div class="kpi"><div class="lab">광고비 (추정)</div><div class="val tnum"><?= money($t['ad']) ?></div>
     <div class="sub"><?= $pf['ad'] ? h(implode(' · ', array_map(fn($k, $v) => ($k === 'coupang' ? '쿠팡' : ($k === 'naver' ? '네이버' : $k)) . ' ' . money($v), array_keys($pf['ad']), $pf['ad']))) : '기간이 겹치는 광고 보고서 없음' ?></div></div>
   <div class="kpi"><div class="lab">순이익</div><div class="val tnum" style="color:<?= $t['profit'] < 0 ? '#C62828' : '#1B7F5A' ?>"><?= money($t['profit']) ?></div>
     <div class="sub">이익률 <?= h($t['margin']) ?>% · 광고비 빼기 전 <?= money($t['before_ad']) ?></div></div>
 </div>
 <div class="card">
-  <div class="ch">상품별 순이익 <span style="font-weight:400;color:var(--ink3);font-size:12px">광고비는 판매처 광고비를 그 판매처 매출 비중으로 나눈 추정치입니다. 광고 · 키워드 에 보고서를 올릴 때 기간을 넣어야 잡힙니다.</span></div>
+  <div class="ch">상품별 순이익 <span style="font-weight:400;color:var(--ink3);font-size:12px">순이익 = 매출 − 원가 − 수수료 − 광고비. 매출에 고객이 낸 택배비가 들어 있지 않아 택배비도 빼지 않습니다. 광고비는 판매처 광고비를 그 판매처 매출 비중으로 나눈 추정치입니다. 광고 · 키워드 에 보고서를 올릴 때 기간을 넣어야 잡힙니다.</span></div>
   <?php if (!$pf['rows']): ?><div class="empty">이 기간에 주문이 없습니다.</div><?php else: ?>
   <table>
     <thead><tr><th>상품명</th><th>판매처</th><th class="r">수량</th><th class="r">매출</th><th class="r">원가</th><th class="r">수수료</th>
-      <th class="r">배송비</th><th class="r">광고비</th><th class="r">순이익</th><th class="r">이익률</th><th class="r">ROAS</th></tr></thead>
+      <th class="r">광고비</th><th class="r">순이익</th><th class="r">이익률</th><th class="r">ROAS</th></tr></thead>
     <tbody>
     <?php foreach ($pf['rows'] as $r): $loss = $r['profit'] < 0; ?>
       <tr<?= $loss ? ' style="background:#FFF1F0"' : '' ?>>
@@ -348,7 +396,7 @@ layout_head('상품 · 재고 · 순이익', 'shop_products');
         <td style="font-size:12px"><?= h(implode(', ', array_map('shop_channel_label', array_keys($r['channels'])))) ?></td>
         <td class="r tnum"><?= money($r['qty']) ?></td><td class="r tnum"><?= money($r['sales']) ?></td>
         <td class="r tnum"><?= money($r['cost']) ?></td><td class="r tnum"><?= money($r['fee']) ?></td>
-        <td class="r tnum"><?= money($r['ship']) ?></td><td class="r tnum"><?= money($r['ad']) ?></td>
+        <td class="r tnum"><?= money($r['ad']) ?></td>
         <td class="r tnum" style="font-weight:700;color:<?= $loss ? '#C62828' : '#1B7F5A' ?>"><?= money($r['profit']) ?></td>
         <td class="r tnum"><?= h($r['margin']) ?>%</td><td class="r tnum"><?= $r['roas'] === null ? '-' : $r['roas'] . '%' ?></td></tr>
     <?php endforeach; ?>
