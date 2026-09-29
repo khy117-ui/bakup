@@ -24,8 +24,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $days = max(1, min((int)post('days', '1'), 90));
             $rows = shop_api_fetch($days);
             [$new, $chg] = shop_upsert($rows, 'API');
-            log_action('쇼핑몰', 'INSERT', 'shop_orders', null, "서버에서 가져오기 최근 {$days}일", null, "새 {$new} · 바뀜 {$chg}");
-            flash("최근 {$days}일 주문 " . count($rows) . "줄을 가져왔습니다. 새 주문 {$new}줄 · 바뀐 주문 {$chg}줄.");
+            $gone = shop_sync_channel($rows, 'cafe24', $days);
+            log_action('쇼핑몰', 'INSERT', 'shop_orders', null, "서버에서 가져오기 최근 {$days}일", null, "새 {$new} · 바뀜 {$chg} · 카페24 정리 {$gone}");
+            flash("최근 {$days}일 주문 " . count($rows) . "줄을 가져왔습니다. 새 주문 {$new}줄 · 바뀐 주문 {$chg}줄."
+                . ($gone ? " 카페24에 같이 들어온 다른 마켓 주문 {$gone}줄은 정리했습니다." : ''));
         }
         redirect('?p=shop_orders');
     } catch (RuntimeException $e) {
@@ -90,7 +92,7 @@ if (query('download') === '1') {
     fputcsv($out, ['판매처', '주문번호', '주문일시', '상품명', '수량', '금액', '상태'], ',', '"', '');
     while ($r = $st->fetch()) {
         fputcsv($out, [shop_channel_label($r['channel']), $r['order_id'], $r['ordered_at'], $r['product'],
-                       $r['qty'], $r['amount'], $r['status']], ',', '"', '');
+                       $r['qty'], $r['amount'], shop_status_label((string)$r['channel'], $r['status'])], ',', '"', '');
     }
     fclose($out);
     exit;
@@ -280,7 +282,7 @@ layout_head('쇼핑몰 주문 · 매출', 'shop_orders');
         <td style="font-size:12.5px"><?= h($r['product']) ?></td>
         <td class="r tnum"><?= money($r['qty']) ?></td>
         <td class="r tnum"><?= money($r['amount']) ?></td>
-        <td style="font-size:12px"><?= h($r['status'] ?? '') ?></td></tr>
+        <td style="font-size:12px"><?= h(shop_status_label((string)$r['channel'], $r['status'] ?? '')) ?></td></tr>
     <?php endforeach; ?>
     </tbody>
   </table>

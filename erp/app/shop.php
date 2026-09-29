@@ -25,6 +25,27 @@ function shop_channel_label(string $code): string
     return SHOP_CHANNELS[$code] ?? $code;
 }
 
+/** 판매처가 주는 주문 상태 코드를 한글로 (모르는 코드는 그대로) */
+const SHOP_STATUS = [
+    'naver' => ['PAYMENT_WAITING' => '입금대기', 'PAYED' => '결제완료', 'DELIVERING' => '배송중', 'DELIVERED' => '배송완료',
+                'PURCHASE_DECIDED' => '구매확정', 'EXCHANGED' => '교환', 'CANCELED' => '취소', 'RETURNED' => '반품',
+                'CANCELED_BY_NOPAYMENT' => '미입금취소'],
+    'coupang' => ['ACCEPT' => '결제완료', 'INSTRUCT' => '상품준비중', 'DEPARTURE' => '배송지시', 'DELIVERING' => '배송중',
+                  'FINAL_DELIVERY' => '배송완료', 'NONE_TRACKING' => '업체직접배송'],
+    'cafe24' => ['N00' => '입금전', 'N10' => '상품준비중', 'N20' => '배송준비중', 'N21' => '배송대기', 'N22' => '배송보류',
+                 'N30' => '배송중', 'N40' => '배송완료', 'N50' => '구매확정', 'C00' => '취소신청', 'C10' => '취소접수',
+                 'C34' => '취소처리중', 'C36' => '취소처리중', 'C40' => '취소완료', 'C41' => '취소완료', 'C47' => '입금전취소',
+                 'C48' => '입금전취소', 'C49' => '입금전취소', 'R00' => '반품신청', 'R10' => '반품접수', 'R12' => '반품보류',
+                 'R30' => '반품처리중', 'R34' => '반품처리중', 'R36' => '반품처리중', 'R40' => '반품완료', 'E00' => '교환신청',
+                 'E10' => '교환접수', 'E12' => '교환보류', 'E20' => '교환준비', 'E30' => '교환처리중', 'E32' => '교환처리중',
+                 'E34' => '교환처리중', 'E36' => '교환처리중', 'E40' => '교환완료'],
+];
+function shop_status_label(string $channel, ?string $status): string
+{
+    $s = trim((string)$status);
+    return SHOP_STATUS[$channel][$s] ?? $s;
+}
+
 /** 표 · 설정 자리 · 권한 (세션당 한 번) */
 function shop_ensure_schema(): void
 {
@@ -138,17 +159,23 @@ function shop_upsert(array $orders, string $source): array
                          ON DUPLICATE KEY UPDATE qty = VALUES(qty), amount = VALUES(amount), status = VALUES(status),
                                                  line_id = COALESCE(VALUES(line_id), line_id), ship_id = COALESCE(VALUES(ship_id), ship_id),
                                                  ordered_at = COALESCE(VALUES(ordered_at), ordered_at)");
+    // 같은 주문 줄(line_id)이 상품명만 바뀌어 다시 오면 (예: 스마트스토어 추가상품에 본상품 이름을 붙인 뒤) 예전 이름의 줄을 지웁니다
+    $old = $pdo->prepare("DELETE FROM shop_orders WHERE channel = ? AND order_id = ? AND line_id = ? AND line_key <> ? AND source = 'API'");
     $new = 0;
     $chg = 0;
     $pdo->beginTransaction();
     try {
         foreach ($orders as $o) {
             $product = mb_substr(trim((string)($o['product'] ?? '')), 0, 255);
+            $channel = shop_channel_code((string)$o['channel']);
+            $orderId = mb_substr(trim((string)$o['orderId']), 0, 60);
+            $lineId = mb_substr(trim((string)($o['lineId'] ?? '')), 0, 80) ?: null;
+            if ($lineId !== null && $source === 'API') { $old->execute([$channel, $orderId, $lineId, sha1($product)]); }
             $st->execute([
-                shop_channel_code((string)$o['channel']),
-                mb_substr(trim((string)$o['orderId']), 0, 60),
+                $channel,
+                $orderId,
                 sha1($product),
-                mb_substr(trim((string)($o['lineId'] ?? '')), 0, 80) ?: null,
+                $lineId,
                 mb_substr(trim((string)($o['shipId'] ?? '')), 0, 40) ?: null,
                 shop_datetime((string)($o['orderedAt'] ?? '')),
                 $product,
@@ -167,6 +194,30 @@ function shop_upsert(array $orders, string $source): array
         throw $e;
     }
     return [$new, $chg];
+}
+
+/**
+ * 한 판매처의 최근 주문을 서버에서 받은 목록에 맞춥니다: 그 기간에 이미 쌓였지만 이번 목록에 없는 주문을 지웁니다.
+ * (카페24 는 마켓통합으로 들어온 쿠팡 · 스마트스토어 주문을 서버가 빼므로, 예전에 쌓인 중복을 여기서 정리)
+ * 이번 목록에 그 판매처 주문이 한 줄도 없으면 (서버 쪽 실패일 수 있으니) 아무것도 지우지 않습니다.
+ * @return int 지운 줄 수
+ */
+function shop_sync_channel(array $orders, string $channel, int $days): int
+{
+    $ids = [];
+    foreach ($orders as $o) {
+        if (shop_channel_code((string)($o['channel'] ?? '')) === $channel) {
+            $ids[mb_substr(trim((string)$o['orderId']), 0, 60)] = true;
+        }
+    }
+    if (!$ids) { return 0; }
+    // 서버는 날짜 단위로 넉넉히 가져오므로, 지우는 범위는 그보다 좁게 (오늘 포함 최근 $days 일)
+    $since = date('Y-m-d 00:00:00', strtotime('-' . max(0, $days - 1) . ' days'));
+    $keep = array_keys($ids);
+    $in = implode(',', array_fill(0, count($keep), '?'));
+    $st = db()->prepare("DELETE FROM shop_orders WHERE channel = ? AND source = 'API' AND ordered_at >= ? AND order_id NOT IN ($in)");
+    $st->execute(array_merge([$channel, $since], $keep));
+    return $st->rowCount();
 }
 
 function shop_api_cfg(): array
