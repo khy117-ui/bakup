@@ -158,13 +158,16 @@ layout_head('상품 · 재고 · 순이익', 'shop_products');
 <?php endif; ?>
 <div class="card">
   <div class="ch">상품 <?= count($rows) ?>개
+    <?php if ($rows && $canEdit): ?><button class="btn pri sm" form="shopProdForm">저장</button><?php endif; ?>
     <span style="font-weight:400;color:var(--ink3);font-size:12px">재고 칸에 지금 실제 수량을 넣고 저장하면, 그 뒤 팔린 수량(취소 · 반품 제외)만큼 자동으로 줄어듭니다. 물건이 들어오면 입고 칸에 들어온 수량만 넣으세요. 비워 두면 그대로.</span>
-    <a class="btn sm" style="margin-left:auto" href="?p=shop_products<?= $showHidden ? '' : '&amp;hidden=1' ?>"><?= $showHidden ? '숨긴 상품 빼고 보기' : '숨긴 상품도 보기' ?></a></div>
+    <a class="btn sm" style="margin-left:auto" href="?p=shop_products<?= $showHidden ? '' : '&amp;hidden=1' ?>"><?= $showHidden ? '숨긴 상품 빼고 보기' : '숨긴 상품도 보기' ?></a>
+</div>
   <?php if (!$rows): ?>
     <div class="empty">상품이 없습니다. <a href="?p=shop_orders">주문 · 매출</a> 에서 주문을 가져오면 상품이 자동으로 채워집니다.</div>
   <?php else: ?>
-  <form method="post">
+  <form method="post" id="shopProdForm">
     <?= csrf_field() ?><input type="hidden" name="act" value="save">
+    <div style="overflow-x:auto">
     <table>
       <thead><tr><th>상품명</th><th class="r" style="width:110px">원가 (1개)</th><th class="r" style="width:110px">배송비 (1주문)</th>
         <th class="r" style="width:80px">입력 재고</th><th class="r" style="width:70px">이후 판매</th><th class="r" style="width:80px">남은 재고</th>
@@ -194,8 +197,21 @@ layout_head('상품 · 재고 · 순이익', 'shop_products');
       <?php endforeach; ?>
       </tbody>
     </table>
-    <?php if ($canEdit): ?><div class="cb" style="text-align:right"><button class="btn pri">저장</button></div><?php endif; ?>
+    </div>
+    <?php if ($canEdit): ?><div class="cb" style="position:sticky;bottom:0;left:0;background:var(--card,#fff);border-top:1px solid var(--line,#e5e7eb);display:flex;align-items:center;gap:10px">
+      <button class="btn pri">저장</button>
+      <span id="shopProdDirty" style="display:none;color:#C62828;font-size:12.5px">저장하지 않은 변경이 있습니다.</span></div><?php endif; ?>
   </form>
+  <script>
+  (function () {
+    var f = document.getElementById('shopProdForm'), dirty = false;
+    if (!f) return;
+    f.addEventListener('input', function () { dirty = true; var m = document.getElementById('shopProdDirty'); if (m) m.style.display = ''; });
+    f.addEventListener('change', function () { dirty = true; var m = document.getElementById('shopProdDirty'); if (m) m.style.display = ''; });
+    f.addEventListener('submit', function () { dirty = false; });
+    window.addEventListener('beforeunload', function (e) { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+  })();
+  </script>
   <?php endif; ?>
 </div>
 
