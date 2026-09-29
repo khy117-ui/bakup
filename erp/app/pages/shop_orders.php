@@ -92,7 +92,7 @@ if (query('download') === '1') {
     fputcsv($out, ['판매처', '주문번호', '주문일시', '상품명', '수량', '금액', '상태'], ',', '"', '');
     while ($r = $st->fetch()) {
         fputcsv($out, [shop_channel_label($r['channel']), $r['order_id'], $r['ordered_at'], $r['product'],
-                       $r['qty'], $r['amount'], $r['status']], ',', '"', '');
+                       $r['qty'], $r['amount'], shop_status_label((string)$r['channel'], $r['status'])], ',', '"', '');
     }
     fclose($out);
     exit;
@@ -282,7 +282,7 @@ layout_head('쇼핑몰 주문 · 매출', 'shop_orders');
         <td style="font-size:12.5px"><?= h($r['product']) ?></td>
         <td class="r tnum"><?= money($r['qty']) ?></td>
         <td class="r tnum"><?= money($r['amount']) ?></td>
-        <td style="font-size:12px"><?= h($r['status'] ?? '') ?></td></tr>
+        <td style="font-size:12px"><?= h(shop_status_label((string)$r['channel'], $r['status'] ?? '')) ?></td></tr>
     <?php endforeach; ?>
     </tbody>
   </table>
