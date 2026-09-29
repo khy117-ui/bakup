@@ -407,11 +407,11 @@ function shop_ad_latest(): array
     $out = [];
     foreach (db()->query('SELECT b.id, b.channel, b.uploaded_at FROM ad_keyword_batches b
                            JOIN (SELECT channel, MAX(id) AS id FROM ad_keyword_batches GROUP BY channel) l ON l.id = b.id')->fetchAll() as $b) {
-        $st = db()->prepare('SELECT clicks, cost, revenue FROM ad_keyword_stats WHERE batch_id = ?');
+        $st = db()->prepare('SELECT keyword, clicks, cost, revenue FROM ad_keyword_stats WHERE batch_id = ?');
         $st->execute([(int)$b['id']]);
         $ex = 0; $cost = 0.0; $rev = 0.0;
         foreach ($st->fetchAll() as $s) {
-            if (shop_ads_action(['clicks' => (int)$s['clicks'], 'cost' => (float)$s['cost'], 'revenue' => (float)$s['revenue']], $target)[0] === '제외키워드 등록') { $ex++; }
+            if (shop_ads_action(['keyword' => (string)$s['keyword'], 'clicks' => (int)$s['clicks'], 'cost' => (float)$s['cost'], 'revenue' => (float)$s['revenue']], $target)[0] === '제외키워드 등록') { $ex++; }
             $cost += (float)$s['cost'];
             $rev += (float)$s['revenue'];
         }

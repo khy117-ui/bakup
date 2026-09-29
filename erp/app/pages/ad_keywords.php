@@ -23,16 +23,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'upload') {
         if (!isset(AD_CHANNELS[$chn])) { throw new RuntimeException('판매처를 고르세요.'); }
         $f = $_FILES['csv'] ?? null;
         if (!$f || ($f['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_uploaded_file($f['tmp_name'])) {
-            throw new RuntimeException('키워드 보고서 CSV 파일을 고르세요.');
+            throw new RuntimeException('키워드 보고서 파일(엑셀 또는 CSV)을 고르세요.');
         }
         if ($f['size'] > 30 * 1024 * 1024) { throw new RuntimeException('파일이 너무 큽니다 (30MB 까지).'); }
-        if (preg_match('/\.xlsx?$/i', (string)$f['name'])) {
-            throw new RuntimeException('엑셀(.xlsx) 파일은 읽지 못합니다. 엑셀에서 [다른 이름으로 저장 → CSV UTF-8] 로 저장해 올리세요.');
-        }
-        $rows = shop_ads_parse_csv((string)file_get_contents($f['tmp_name']));
+        $rows = shop_ads_parse_file((string)$f['name'], (string)file_get_contents($f['tmp_name']));
         if (!$rows) { throw new RuntimeException('보고서에 키워드 줄이 없습니다.'); }
         $pf = preg_match('/^\d{4}-\d{2}-\d{2}$/', post('period_from')) ? post('period_from') : null;
         $pt = preg_match('/^\d{4}-\d{2}-\d{2}$/', post('period_to')) ? post('period_to') : null;
+        if ($pf === null && $pt === null) { [$pf, $pt] = shop_ads_period_from_name((string)$f['name']) ?? [null, null]; }   // 쿠팡 파일 이름의 기간
         $pdo->beginTransaction();
         $pdo->prepare('INSERT INTO ad_keyword_batches (channel, file_name, period_from, period_to, rows_cnt, uploaded_by)
                        VALUES (?, ?, ?, ?, ?, ?)')
@@ -83,7 +81,7 @@ if ($batch) {
         $r['roas'] = (float)$r['cost'] > 0 ? round((float)$r['revenue'] / (float)$r['cost'] * 100) : 0;
         $r['ctr'] = (int)$r['impressions'] > 0 ? round((int)$r['clicks'] / (int)$r['impressions'] * 100, 2) : 0;
         $r['cpc'] = (int)$r['clicks'] > 0 ? round((float)$r['cost'] / (int)$r['clicks']) : 0;
-        [$r['action'], $r['cls']] = shop_ads_action(['clicks' => (int)$r['clicks'], 'cost' => (float)$r['cost'], 'revenue' => (float)$r['revenue']], $target);
+        [$r['action'], $r['cls']] = shop_ads_action(['keyword' => (string)$r['keyword'], 'clicks' => (int)$r['clicks'], 'cost' => (float)$r['cost'], 'revenue' => (float)$r['revenue']], $target);
         $rows[] = $r;
     }
 }
@@ -176,13 +174,13 @@ layout_head('광고 · 키워드', 'ad_keywords');
     <div class="fw w2"><label for="uc">광고</label>
       <select id="uc" name="channel"><?php foreach (AD_CHANNELS as $k => $lab): ?>
         <option value="<?= $k ?>"<?= $ch === $k ? ' selected' : '' ?>><?= h($lab) ?></option><?php endforeach; ?></select></div>
-    <div class="fw w3"><label for="uf">키워드 보고서 CSV</label><input type="file" id="uf" name="csv" accept=".csv,.txt,text/csv" required></div>
+    <div class="fw w3"><label for="uf">키워드 보고서 (엑셀 · CSV)</label><input type="file" id="uf" name="csv" accept=".xlsx,.csv,.txt,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required></div>
     <div class="fw w1"><label for="pf">보고서 기간 (선택)</label><input type="date" id="pf" name="period_from"></div>
     <div class="fw w1"><label for="pt">&nbsp;</label><input type="date" id="pt" name="period_to"></div>
     <button class="btn pri">분석하기</button>
   </form>
   <div class="cb" style="border-top:1px solid var(--line2);font-size:12px;color:var(--ink2);line-height:1.8">
-    <b>쿠팡</b> 광고센터 → 보고서 → 키워드 보고서 → 기간 선택 후 다운로드 (엑셀이면 CSV 로 다시 저장) ·
+    <b>쿠팡</b> 광고센터 → 보고서 → 기간 선택 후 다운로드한 엑셀(.xlsx) 그대로 올리면 됩니다. 기간은 파일 이름에서 읽고, 검색어 없이 나간 광고비는 '(비검색 영역)' 한 줄로 모읍니다 ·
     <b>네이버</b> 검색광고 → 보고서 → 다차원 보고서(키워드) → CSV 다운로드.
     필요한 열: 키워드 · 노출수 · 클릭수 · 광고비(총비용) · 전환매출액. 광고그룹별로 나뉜 줄은 키워드로 합칩니다.
   </div>
@@ -214,7 +212,7 @@ layout_head('광고 · 키워드', 'ad_keywords');
     <?php endif; ?>
   </div>
   <?php if (!$batch): ?>
-    <div class="empty"><?= h(AD_CHANNELS[$ch]) ?> 키워드 보고서를 아직 올리지 않았습니다. 위에서 CSV 를 올리면 키워드마다 할 일을 알려 드립니다.</div>
+    <div class="empty"><?= h(AD_CHANNELS[$ch]) ?> 키워드 보고서를 아직 올리지 않았습니다. 위에서 보고서를 올리면 키워드마다 할 일을 알려 드립니다.</div>
   <?php else: $roasAll = $sum['cost'] > 0 ? round($sum['revenue'] / $sum['cost'] * 100) : 0; ?>
   <div class="cb kpis" style="padding-top:12px">
     <?php $pRoasAll = $prevSum && $prevSum['cost'] > 0 ? round($prevSum['revenue'] / $prevSum['cost'] * 100) : null; $sc = $cmp['scale'] ?? 1; ?>
