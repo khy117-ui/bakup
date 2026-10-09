@@ -274,17 +274,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
             $vals = [
                 mb_substr(post('label'), 0, 40), $title, mb_substr(post('body'), 0, 600), mb_substr(post('date_text'), 0, 40),
                 $img, array_key_exists(post('theme'), CTV_THEMES) ? post('theme') : 'morning',
+                array_key_exists(post('box_pos'), CTV_SLIDE_BOX) && post('box_pos') !== '' ? post('box_pos') : null,
                 $sec >= 4 ? min(3600, $sec) : null, post('sound') === '1' ? 1 : 0, post('is_active') === '1' ? 1 : 0, $sd, $ed, $yt,
                 ctv_post_group($pdo), ctv_post_date(),
             ];
             if ($id > 0) {
                 $vals[] = $id;
-                $pdo->prepare('UPDATE church_tv_slides SET label=?, title=?, body=?, date_text=?, image_file=?, theme=?,
+                $pdo->prepare('UPDATE church_tv_slides SET label=?, title=?, body=?, date_text=?, image_file=?, theme=?, box_pos=?,
                                seconds=?, sound=?, is_active=?, start_date=?, end_date=?, youtube=?, group_id=?, post_date=?, updated_at=NOW() WHERE id = ?')->execute($vals);
             } else {
                 $vals[] = (int)$pdo->query('SELECT COALESCE(MAX(sort_no),0)+1 FROM church_tv_slides')->fetchColumn();
-                $pdo->prepare('INSERT INTO church_tv_slides (label, title, body, date_text, image_file, theme, seconds, sound,
-                               is_active, start_date, end_date, youtube, group_id, post_date, sort_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')->execute($vals);
+                $pdo->prepare('INSERT INTO church_tv_slides (label, title, body, date_text, image_file, theme, box_pos, seconds, sound,
+                               is_active, start_date, end_date, youtube, group_id, post_date, sort_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')->execute($vals);
                 $id = (int)$pdo->lastInsertId();
             }
             $pdo->prepare('DELETE FROM church_tv_slide_screens WHERE slide_id = ?')->execute([$id]);
@@ -478,7 +479,7 @@ $liveIds = $tabScreen ? array_map(fn($s) => (int)$s['id'], ctv_slides_for((int)$
 $editSlide = null;
 if (query('slide') === 'new') {
     $editSlide = ['id' => 0, 'label' => '', 'title' => '', 'body' => '', 'date_text' => '', 'image_file' => null,
-                  'theme' => 'morning', 'seconds' => null, 'sound' => 0, 'youtube' => null, 'group_id' => null,
+                  'theme' => 'morning', 'box_pos' => null, 'seconds' => null, 'sound' => 0, 'youtube' => null, 'group_id' => null,
                   'post_date' => date('Y-m-d'), 'is_active' => 1, 'start_date' => null, 'end_date' => null];
 } elseif ((int)query('slide') > 0) {
     foreach ($allSlides as $s) { if ((int)$s['id'] === (int)query('slide')) { $editSlide = $s; } }
@@ -662,6 +663,9 @@ layout_head('교회 TV 화면', 'church_tv');
         <input type="file" name="image" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,.mp4,.m4v,.webm,.mov"></div>
       <div class="fw w2"><label>사진 없을 때 색</label><select name="theme">
         <?php foreach (CTV_THEMES as $k => $v): ?><option value="<?= $k ?>"<?= $editSlide['theme'] === $k ? ' selected' : '' ?>><?= h($v) ?></option><?php endforeach; ?>
+      </select></div>
+      <div class="fw w2"><label>글 상자 자리</label><select name="box_pos">
+        <?php foreach (CTV_SLIDE_BOX as $k => $v): ?><option value="<?= $k ?>"<?= (string)($editSlide['box_pos'] ?? '') === (string)$k ? ' selected' : '' ?>><?= h($v) ?></option><?php endforeach; ?>
       </select></div>
       <div class="fw w4"><label>또는 유튜브 링크 (넣으면 이 장은 유튜브로 나옵니다)</label>
         <input type="text" name="youtube" maxlength="200" placeholder="https://youtu.be/..."
