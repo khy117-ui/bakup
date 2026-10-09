@@ -10,6 +10,7 @@ require_once APP_DIR . '/imgshrink.php';
  * 교회 TV 화면 (시스템 > 교회 TV 화면)
  *   · 위: TV 목록 — 주소 · 미리보기 · 켜기/끄기 · 지금 새로고침 · 설정
  *   · 사진 · 영상 여러 개 한꺼번에 올리기 — 한 개가 한 장이 되고, 사진은 보여 줄 시간을 고릅니다
+ *   · 유튜브 링크 넣기 — 링크 한 줄이 한 장 (TV 에서 소리 없이 자동 재생, 끝나면 다음 장)
  *   · 아래: 슬라이드 — TV 마다 넣고 빼기, 순서, 기간, 시간, 사진 · 영상
  * TV 는 1분마다 tv.php 에서 내용을 받아 가므로 여기서 저장하면 저절로 바뀝니다.
  * 이 화면에 권한 표(ROUTE_PERMS) 항목이 없으므로 최고관리자만 엽니다.
@@ -182,11 +183,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
             }
             redirect($back);
         }
+        if ($act === 'yt_add') {
+            // 유튜브 링크 여러 줄 → 한 줄당 슬라이드 한 장
+            $sec = (int)post('seconds');
+            $sec = $sec >= 4 ? min(3600, $sec) : null;
+            $screenIds = array_map('intval', (array)($_POST['screens'] ?? []));
+            $sd = preg_match('/^\d{4}-\d{2}-\d{2}$/', post('start_date')) ? post('start_date') : null;
+            $ed = preg_match('/^\d{4}-\d{2}-\d{2}$/', post('end_date')) ? post('end_date') : null;
+            $sort = (int)$pdo->query('SELECT COALESCE(MAX(sort_no),0) FROM church_tv_slides')->fetchColumn();
+            $ins = $pdo->prepare('INSERT INTO church_tv_slides (label, title, youtube, seconds, sound, is_active, start_date, end_date, sort_no)
+                                  VALUES (\'\', \'\', ?, ?, ?, 1, ?, ?, ?)');
+            $link = $pdo->prepare('INSERT IGNORE INTO church_tv_slide_screens (slide_id, screen_id) VALUES (?,?)');
+            $ok = 0; $bad = [];
+            foreach (preg_split('/\s+/', post('links')) as $line) {
+                if ($line === '') { continue; }
+                $yid = ctv_youtube_id($line);
+                if ($yid === null) { $bad[] = mb_strimwidth($line, 0, 40, '…'); continue; }
+                $ins->execute([$yid, $sec, post('sound') === '1' ? 1 : 0, $sd, $ed, ++$sort]);
+                $sid = (int)$pdo->lastInsertId();
+                foreach ($screenIds as $scId) { $link->execute([$sid, $scId]); }
+                $ok++;
+            }
+            if ($ok > 0) { log_action('교회TV', 'CREATE', 'church_tv_slides', 0, '유튜브 ' . $ok . '개 넣음'); }
+            $msg = $ok > 0 ? '유튜브 ' . $ok . '개를 넣었습니다. 1분 안에 TV 에 반영됩니다.' : '넣은 유튜브 링크가 없습니다.';
+            if ($bad) { $msg .= ' 유튜브 주소가 아닌 것: ' . implode(' / ', $bad); }
+            flash($msg);
+            redirect($back);
+        }
         if ($act === 'slide_seconds') {
             // 목록에서 바로 시간 고르기
             $sec = (int)post('seconds');
             $pdo->prepare('UPDATE church_tv_slides SET seconds = ?, updated_at = NOW() WHERE id = ?')
-                ->execute([$sec >= 4 ? min(120, $sec) : null, (int)post('id')]);
+                ->execute([$sec >= 4 ? min(3600, $sec) : null, (int)post('id')]);
             redirect($back);
         }
         if ($act === 'slide_save') {
@@ -207,23 +235,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
                 ctv_remove_file($img);
                 $img = null;
             }
-            if ($title === '' && !$img) { throw new RuntimeException('제목을 넣거나 사진 · 영상을 올려 주세요.'); }
+            $yt = null;
+            if (trim(post('youtube')) !== '') {
+                $yt = ctv_youtube_id(post('youtube'));
+                if ($yt === null) { throw new RuntimeException('유튜브 주소를 알아보지 못했습니다. 유튜브에서 [공유] > [복사] 한 주소를 넣어 주세요.'); }
+            }
+            if ($title === '' && !$img && !$yt) { throw new RuntimeException('제목을 넣거나 사진 · 영상 · 유튜브 링크를 넣어 주세요.'); }
             $sd = preg_match('/^\d{4}-\d{2}-\d{2}$/', post('start_date')) ? post('start_date') : null;
             $ed = preg_match('/^\d{4}-\d{2}-\d{2}$/', post('end_date')) ? post('end_date') : null;
             $sec = (int)post('seconds');
             $vals = [
                 mb_substr(post('label'), 0, 40), $title, mb_substr(post('body'), 0, 600), mb_substr(post('date_text'), 0, 40),
                 $img, array_key_exists(post('theme'), CTV_THEMES) ? post('theme') : 'morning',
-                $sec >= 4 ? min(120, $sec) : null, post('sound') === '1' ? 1 : 0, post('is_active') === '1' ? 1 : 0, $sd, $ed,
+                $sec >= 4 ? min(3600, $sec) : null, post('sound') === '1' ? 1 : 0, post('is_active') === '1' ? 1 : 0, $sd, $ed, $yt,
             ];
             if ($id > 0) {
                 $vals[] = $id;
                 $pdo->prepare('UPDATE church_tv_slides SET label=?, title=?, body=?, date_text=?, image_file=?, theme=?,
-                               seconds=?, sound=?, is_active=?, start_date=?, end_date=?, updated_at=NOW() WHERE id = ?')->execute($vals);
+                               seconds=?, sound=?, is_active=?, start_date=?, end_date=?, youtube=?, updated_at=NOW() WHERE id = ?')->execute($vals);
             } else {
                 $vals[] = (int)$pdo->query('SELECT COALESCE(MAX(sort_no),0)+1 FROM church_tv_slides')->fetchColumn();
                 $pdo->prepare('INSERT INTO church_tv_slides (label, title, body, date_text, image_file, theme, seconds, sound,
-                               is_active, start_date, end_date, sort_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')->execute($vals);
+                               is_active, start_date, end_date, youtube, sort_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')->execute($vals);
                 $id = (int)$pdo->lastInsertId();
             }
             $pdo->prepare('DELETE FROM church_tv_slide_screens WHERE slide_id = ?')->execute([$id]);
@@ -231,7 +264,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
             foreach ((array)($_POST['screens'] ?? []) as $sid) {
                 $link->execute([$id, (int)$sid]);
             }
-            log_action('교회TV', $old ? 'UPDATE' : 'CREATE', 'church_tv_slides', $id, $title !== '' ? $title : '(사진 · 영상만)');
+            log_action('교회TV', $old ? 'UPDATE' : 'CREATE', 'church_tv_slides', $id, $title !== '' ? $title : '(사진 · 영상 · 유튜브만)');
             flash(($title !== '' ? '"' . $title . '" 슬라이드를' : '슬라이드를') . ' 저장했습니다. 1분 안에 TV 에 반영됩니다.');
             redirect($back);
         }
@@ -302,7 +335,7 @@ $liveIds = $tabScreen ? array_map(fn($s) => (int)$s['id'], ctv_slides_for((int)$
 $editSlide = null;
 if (query('slide') === 'new') {
     $editSlide = ['id' => 0, 'label' => '', 'title' => '', 'body' => '', 'date_text' => '', 'image_file' => null,
-                  'theme' => 'morning', 'seconds' => null, 'sound' => 0, 'is_active' => 1, 'start_date' => null, 'end_date' => null];
+                  'theme' => 'morning', 'seconds' => null, 'sound' => 0, 'youtube' => null, 'is_active' => 1, 'start_date' => null, 'end_date' => null];
 } elseif ((int)query('slide') > 0) {
     foreach ($allSlides as $s) { if ((int)$s['id'] === (int)query('slide')) { $editSlide = $s; } }
 }
@@ -326,8 +359,20 @@ function ctv_seconds_options(?int $cur, bool $video): string
     return $html;
 }
 
+/** 끝까지 재생하는 것 (영상 · 유튜브) 인지 */
+function ctv_is_motion(array $s): bool
+{
+    return !empty($s['youtube']) || ctv_is_video($s['image_file'] ?? null);
+}
+
 function ctv_thumb(array $s): string
 {
+    if (!empty($s['youtube'])) {
+        return '<div style="position:relative;width:96px;height:54px"><img src="https://i.ytimg.com/vi/' . h((string)$s['youtube'])
+             . '/mqdefault.jpg" alt="" style="width:96px;height:54px;object-fit:cover;border-radius:4px;display:block">'
+             . '<span style="position:absolute;left:4px;bottom:4px;background:#C00;color:#fff;font-size:10px;font-weight:700;'
+             . 'padding:1px 5px;border-radius:3px">YouTube</span></div>';
+    }
     if ($s['image_file'] && ctv_is_video((string)$s['image_file'])) {
         return '<div style="width:96px;height:54px;border-radius:4px;background:#111;color:#fff;display:flex;'
              . 'align-items:center;justify-content:center;font-size:12px;font-weight:700">▶ 영상</div>';
@@ -351,6 +396,7 @@ layout_head('교회 TV 화면', 'church_tv');
     <a class="btn" href="?p=church_tv&amp;screen=new">TV 추가</a>
     <a class="btn" href="?p=church_tv&amp;tab=<?= h($tab) ?>&amp;slide=new">글 슬라이드 추가</a>
     <a class="btn pri" href="#ctv-bulk">사진 · 영상 올리기</a>
+    <a class="btn" href="#ctv-yt">유튜브 넣기</a>
   </div>
 </div>
 
@@ -459,12 +505,15 @@ layout_head('교회 TV 화면', 'church_tv');
       <div class="fw w2"><label>사진 없을 때 색</label><select name="theme">
         <?php foreach (CTV_THEMES as $k => $v): ?><option value="<?= $k ?>"<?= $editSlide['theme'] === $k ? ' selected' : '' ?>><?= h($v) ?></option><?php endforeach; ?>
       </select></div>
-      <?php $isV = ctv_is_video($editSlide['image_file'] ?? null); ?>
+      <div class="fw w4"><label>또는 유튜브 링크 (넣으면 이 장은 유튜브로 나옵니다)</label>
+        <input type="text" name="youtube" maxlength="200" placeholder="https://youtu.be/..."
+               value="<?= !empty($editSlide['youtube']) ? 'https://youtu.be/' . h((string)$editSlide['youtube']) : '' ?>"></div>
+      <?php $isV = ctv_is_motion($editSlide); ?>
       <div class="fw w1"><label>보여 줄 시간</label>
         <select name="seconds"><?= ctv_seconds_options($editSlide['seconds'] !== null ? (int)$editSlide['seconds'] : null, $isV) ?></select></div>
       <?php if ($isV): ?>
       <label style="display:flex;gap:6px;align-items:center;font-weight:400;font-size:12.5px;height:34px">
-        <input type="checkbox" name="sound" value="1"<?= (int)($editSlide['sound'] ?? 0) ? ' checked' : '' ?>> 영상 소리 켜기</label>
+        <input type="checkbox" name="sound" value="1"<?= (int)($editSlide['sound'] ?? 0) ? ' checked' : '' ?>> 소리 켜기</label>
       <?php endif; ?>
       <div class="fw w2"><label>보여 줄 시작일</label>
         <input type="date" name="start_date" value="<?= h($editSlide['start_date'] ?? '') ?>"></div>
@@ -526,6 +575,36 @@ layout_head('교회 TV 화면', 'church_tv');
   </div>
 </div>
 
+<div class="card" id="ctv-yt">
+  <div class="ch">유튜브 링크 넣기 <span style="font-weight:400;color:var(--ink3)">링크 한 줄이 한 장이 됩니다. TV 에서 자동 재생하고 끝나면 다음 장으로 넘어갑니다.</span></div>
+  <div class="cb">
+    <form method="post" class="f" style="align-items:flex-end;flex-wrap:wrap" action="?p=church_tv&amp;tab=<?= h($tab) ?>">
+      <?= csrf_field() ?>
+      <input type="hidden" name="act" value="yt_add">
+      <div class="fw w6" style="flex-basis:100%"><label>유튜브 주소 (여러 개면 한 줄에 하나씩)</label>
+        <textarea name="links" rows="3" required style="width:100%" placeholder="https://youtu.be/...&#10;https://www.youtube.com/watch?v=..."></textarea></div>
+      <div class="fw w2"><label>보여 줄 시간</label>
+        <select name="seconds"><?= ctv_seconds_options(null, true) ?>
+          <?php foreach ([120, 180, 300, 600] as $n): ?><option value="<?= $n ?>"><?= $n / 60 ?>분까지</option><?php endforeach; ?></select></div>
+      <div class="fw w2"><label>보여 줄 시작일</label><input type="date" name="start_date"></div>
+      <div class="fw w2"><label>마지막 날</label><input type="date" name="end_date"></div>
+      <label style="display:flex;gap:6px;align-items:center;font-weight:400;font-size:12.5px;height:34px">
+        <input type="checkbox" name="sound" value="1"> 소리 켜기</label>
+      <div class="fw" style="flex-basis:100%"><label>보여 줄 TV</label>
+        <div style="display:flex;gap:14px;flex-wrap:wrap">
+        <?php foreach ($screens as $s): ?>
+          <label style="display:flex;gap:6px;align-items:center;font-weight:400">
+            <input type="checkbox" name="screens[]" value="<?= (int)$s['id'] ?>"<?= $tabScreen && (int)$tabScreen['id'] === (int)$s['id'] ? ' checked' : '' ?>> <?= h($s['name']) ?></label>
+        <?php endforeach; ?>
+        </div></div>
+      <button class="btn pri">넣기</button>
+    </form>
+    <div style="font-size:11.5px;color:var(--ink3);margin-top:8px">
+      유튜브에서 [공유] &gt; [복사] 한 주소를 붙여 넣으면 됩니다. 실시간 방송처럼 끝이 없는 영상은 '보여 줄 시간'을 꼭 정해 주세요.
+      올린 사람이 다른 곳에서 틀지 못하게 막아 둔 영상은 TV 에서 건너뜁니다. 유튜브 광고가 나올 수 있습니다.</div>
+  </div>
+</div>
+
 <div class="card">
   <div class="ch" style="gap:6px;flex-wrap:wrap;height:auto;min-height:44px">
     <?php foreach ($screens as $s): ?>
@@ -557,7 +636,7 @@ layout_head('교회 TV 화면', 'church_tv');
         <td><?= ctv_thumb($s) ?></td>
         <td><?php if ($s['label']): ?><div style="font-size:11.5px;color:#A86F00;font-weight:700"><?= h($s['label']) ?></div><?php endif; ?>
           <div style="font-weight:700"><?= $s['title'] !== '' ? h($s['title'])
-            : '<span style="color:var(--ink3);font-weight:400">' . (ctv_is_video($s['image_file']) ? '영상' : '사진') . '만 (글 없음)</span>' ?></div>
+            : '<span style="color:var(--ink3);font-weight:400">' . (!empty($s['youtube']) ? '유튜브' : (ctv_is_video($s['image_file']) ? '영상' : '사진')) . '만 (글 없음)</span>' ?></div>
           <div style="font-size:12px;color:var(--ink3)"><?= h(mb_strimwidth((string)$s['body'], 0, 90, '…')) ?></div>
           <?php if ($s['start_date'] || $s['end_date']): ?><div style="font-size:11.5px;color:var(--ink3)">기간 <?= h($s['start_date'] ?? '') ?> ~ <?= h($s['end_date'] ?? '') ?></div><?php endif; ?></td>
         <td style="white-space:nowrap">
@@ -571,8 +650,8 @@ layout_head('교회 TV 화면', 'church_tv');
           <form method="post" style="display:inline"><?= csrf_field() ?>
             <input type="hidden" name="act" value="slide_seconds"><input type="hidden" name="id" value="<?= $sid ?>">
             <select name="seconds" onchange="this.form.submit()" style="height:28px;font-size:12px;min-width:112px">
-              <?= ctv_seconds_options($s['seconds'] !== null ? (int)$s['seconds'] : null, ctv_is_video($s['image_file'])) ?></select></form>
-          <?php if (ctv_is_video($s['image_file']) && (int)($s['sound'] ?? 0)): ?><div style="font-size:11px;color:var(--ink3)">소리 켬</div><?php endif; ?></td>
+              <?= ctv_seconds_options($s['seconds'] !== null ? (int)$s['seconds'] : null, ctv_is_motion($s)) ?></select></form>
+          <?php if (ctv_is_motion($s) && (int)($s['sound'] ?? 0)): ?><div style="font-size:11px;color:var(--ink3)">소리 켬</div><?php endif; ?></td>
         <td class="c">
           <form method="post" style="display:inline"><?= csrf_field() ?>
             <input type="hidden" name="act" value="slide_active"><input type="hidden" name="id" value="<?= $sid ?>">
