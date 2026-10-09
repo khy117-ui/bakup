@@ -188,6 +188,9 @@ $first = ctv_feed($scr);
   video.full { object-fit: contain; background: #000; }
   .yt { position: absolute; left: 0; top: 0; width: 100%; height: 100%; background: #000; }
   .yt iframe { width: 100%; height: 100%; border: 0; }
+  .cap { position: absolute; left: 50%; bottom: 2.6vh; -webkit-transform: translateX(-50%); transform: translateX(-50%);
+         background: rgba(0,0,0,.55); color: #fff; font-size: 1.5vw; font-weight: 600; padding: .5vw 1.4vw;
+         border-radius: 2vw; white-space: nowrap; z-index: 3; pointer-events: none; }
   .black { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background: #000; z-index: 9; display: none; }
   .empty { position: fixed; left: 0; top: 0; right: 0; bottom: 0; display: flex; align-items: center;
            justify-content: center; color: #555; font-size: 2vw; }
@@ -229,17 +232,22 @@ $first = ctv_feed($scr);
     return POS[posN];
   }
 
+  // 묶음 이름 · 날짜 (예: 인도네시아 선교 · 2026년 10월 9일)
+  function capHtml(sl) {
+    return sl.cap ? '<div class="cap">' + esc(sl.cap) + '</div>' : '';
+  }
+
   function build(sl, n) {
     var el = document.createElement('div');
     el.className = 'slide' + (n % 2 ? ' kb2' : '');
     if (sl.yt) {
-      el.innerHTML = '<div class="yt"><div id="yt' + (++ytN) + '"></div></div>';
+      el.innerHTML = '<div class="yt"><div id="yt' + (++ytN) + '"></div></div>' + capHtml(sl);
       return el;
     }
     if (sl.video) {
       // 영상은 화면 가득. 소리는 관리자가 켠 영상만 (TV 브라우저가 막으면 소리 없이 재생)
       el.innerHTML = '<video class="full" playsinline preload="auto"' + (sl.sound ? '' : ' muted')
-        + ' src="' + esc(sl.video) + '"></video>';
+        + ' src="' + esc(sl.video) + '"></video>' + capHtml(sl);
       return el;
     }
     var photoOnly = sl.img && !sl.title;
@@ -251,7 +259,7 @@ $first = ctv_feed($scr);
           : '<div class="bg photo" style="background-image:url(\'' + esc(sl.img) + '\')"></div><div class="shade"></div>')
       : '<div class="bg th-' + esc(sl.theme || 'morning') + '"></div>';
     if (photoOnly || !sl.title) {
-      el.innerHTML = bg;
+      el.innerHTML = bg + capHtml(sl);
       return el;
     }
     el.innerHTML = bg
