@@ -4,7 +4,7 @@
  *
  *   GET /erp/tv.php?s=1f          TV 스틱 브라우저에 넣는 주소 (전체 화면 슬라이드)
  *   GET /erp/tv.php?s=1f&feed=1   TV 가 1분마다 받아 가는 내용 (JSON)
- *   GET /erp/tv.php?img=12        슬라이드 사진
+ *   GET /erp/tv.php?img=12        슬라이드 사진 · 영상 (영상은 끊어 받기(Range) 지원)
  *   GET /erp/tv.php?a=logo.png    기본 사진 · 로고
  *
  * 내용은 ERP > 시스템 > 교회 TV 화면 에서 정합니다. TV 에서는 아무것도 누르지 않습니다.
@@ -61,11 +61,44 @@ if (isset($_GET['img'])) {
         exit;
     }
     $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
-    $types = ['jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png', 'webp' => 'image/webp'];
+    $types = ['jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png', 'webp' => 'image/webp',
+              'mp4' => 'video/mp4', 'm4v' => 'video/mp4', 'webm' => 'video/webm', 'mov' => 'video/quicktime'];
+    $size = (int)filesize($path);
+    $from = 0;
+    $to = $size - 1;
     header('Content-Type: ' . ($types[$ext] ?? 'application/octet-stream'));
-    header('Content-Length: ' . filesize($path));
     header('Cache-Control: public, max-age=604800');
-    readfile($path);
+    header('Accept-Ranges: bytes');
+    // 영상은 TV 브라우저가 조각씩 달라고 합니다 (bytes=시작-끝)
+    if (preg_match('/^bytes=(\d*)-(\d*)$/', (string)($_SERVER['HTTP_RANGE'] ?? ''), $m) && ($m[1] !== '' || $m[2] !== '')) {
+        if ($m[1] === '') {
+            $from = max(0, $size - (int)$m[2]);
+        } else {
+            $from = (int)$m[1];
+            if ($m[2] !== '') { $to = min($to, (int)$m[2]); }
+        }
+        if ($from > $to || $from >= $size) {
+            http_response_code(416);
+            header('Content-Range: bytes */' . $size);
+            exit;
+        }
+        http_response_code(206);
+        header('Content-Range: bytes ' . $from . '-' . $to . '/' . $size);
+    }
+    header('Content-Length: ' . ($to - $from + 1));
+    if ($_SERVER['REQUEST_METHOD'] === 'HEAD') { exit; }
+    while (ob_get_level() > 0) { ob_end_clean(); }
+    $fh = fopen($path, 'rb');
+    fseek($fh, $from);
+    $left = $to - $from + 1;
+    while ($left > 0 && !feof($fh) && !connection_aborted()) {
+        $chunk = fread($fh, (int)min(262144, $left));
+        if ($chunk === false || $chunk === '') { break; }
+        echo $chunk;
+        flush();
+        $left -= strlen($chunk);
+    }
+    fclose($fh);
     exit;
 }
 
@@ -148,6 +181,10 @@ $first = ctv_feed($scr);
   .corner img { height: 2.4vw; background: rgba(255,255,255,.85); padding: .3vw .6vw; border-radius: .4vw; }
   .c0 { top: 2.4vh; right: 2.4vw; } .c1 { top: 2.4vh; left: 2.4vw; }
   .c2 { bottom: 2.4vh; right: 2.4vw; } .c3 { bottom: 2.4vh; left: 2.4vw; }
+  .full { position: absolute; left: 0; top: 0; width: 100%; height: 100%; background-size: contain;
+          background-repeat: no-repeat; background-position: center; }
+  .blur { -webkit-filter: blur(40px) brightness(.55); filter: blur(40px) brightness(.55); }
+  video.full { object-fit: contain; background: #000; }
   .black { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background: #000; z-index: 9; display: none; }
   .empty { position: fixed; left: 0; top: 0; right: 0; bottom: 0; display: flex; align-items: center;
            justify-content: center; color: #555; font-size: 2vw; }
@@ -191,9 +228,24 @@ $first = ctv_feed($scr);
   function build(sl, n) {
     var el = document.createElement('div');
     el.className = 'slide' + (n % 2 ? ' kb2' : '');
+    if (sl.video) {
+      // 영상은 화면 가득. 소리는 관리자가 켠 영상만 (TV 브라우저가 막으면 소리 없이 재생)
+      el.innerHTML = '<video class="full" playsinline preload="auto"' + (sl.sound ? '' : ' muted')
+        + ' src="' + esc(sl.video) + '"></video>';
+      return el;
+    }
+    var photoOnly = sl.img && !sl.title;
     var bg = sl.img
-      ? '<div class="bg photo" style="background-image:url(\'' + esc(sl.img) + '\')"></div><div class="shade"></div>'
+      ? (photoOnly
+          // 글 없는 사진: 잘리지 않게 사진 전체를 보이고, 남는 곳은 같은 사진을 흐리게 깝니다
+          ? '<div class="bg blur" style="background-image:url(\'' + esc(sl.img) + '\')"></div>'
+            + '<div class="full" style="background-image:url(\'' + esc(sl.img) + '\')"></div>'
+          : '<div class="bg photo" style="background-image:url(\'' + esc(sl.img) + '\')"></div><div class="shade"></div>')
       : '<div class="bg th-' + esc(sl.theme || 'morning') + '"></div>';
+    if (photoOnly || !sl.title) {
+      el.innerHTML = bg;
+      return el;
+    }
     el.innerHTML = bg
       + '<div class="box ' + boxPos() + '">'
       + (sl.label ? '<div class="lbl">' + esc(sl.label) + '</div>' : '')
@@ -202,6 +254,28 @@ $first = ctv_feed($scr);
       + (sl.date ? '<div class="dt">' + esc(sl.date) + '</div>' : '')
       + '</div>';
     return el;
+  }
+
+  function playVideo(el, sl) {
+    var v = el.getElementsByTagName('video')[0];
+    if (!v) { return; }
+    var done = false;
+    function end(wait) {
+      if (done || el !== cur) { return; }             // 이미 다음 장으로 넘어간 영상은 무시
+      done = true;
+      clearTimeout(timer);
+      timer = setTimeout(next, wait);
+    }
+    v.onended = function () { end(300); };
+    v.onerror = function () { end(3000); };          // 못 여는 영상이면 건너뜁니다
+    var p = v.play();
+    if (p && p.then) {
+      p.then(null, function () {
+        v.muted = true;                                // 소리 있는 자동재생을 막는 브라우저
+        var p2 = v.play();
+        if (p2 && p2.then) { p2.then(null, function () { end(3000); }); }
+      });
+    }
   }
 
   function next() {
@@ -223,10 +297,18 @@ $first = ctv_feed($scr);
     setTimeout(function () {
       el.className += ' on';
       if (old) {
+        var ov = old.getElementsByTagName('video');
+        for (var i = 0; i < ov.length; i++) { try { ov[i].pause(); } catch (e) {} }
         old.className = old.className.replace(' on', '') + ' out';
         setTimeout(function () { if (old.parentNode) { old.parentNode.removeChild(old); } }, 1600);
       }
     }, 60);
+    if (sl.video) {
+      playVideo(el, sl);
+      // 시간을 정했으면 그만큼만, 아니면 영상이 끝날 때까지 (멈춰도 20분 뒤에는 넘어갑니다)
+      timer = setTimeout(next, (sl.seconds ? sl.seconds : 1200) * 1000);
+      return;
+    }
     var sec = sl.seconds || data.screen.seconds || 10;
     timer = setTimeout(next, sec * 1000);
   }
