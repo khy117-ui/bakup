@@ -23,6 +23,9 @@ const CTV_IMG_EXT     = ['jpg', 'jpeg', 'png', 'webp'];
 const CTV_VIDEO_EXT   = ['mp4', 'm4v', 'webm', 'mov'];
 const CTV_SECONDS     = [5, 7, 10, 15, 20, 30, 45, 60];   // 사진 한 장 보여 줄 시간 고르기
 const CTV_PER_SCREEN  = [1, 2, 3, 4];                       // 묶음마다 한 화면에 사진 몇 장
+// 슬라이드마다 글 상자 자리 (비우면 TV 설정을 따름). 위쪽 두 자리는 사진을 덜 가리게 좁게 놓습니다
+const CTV_SLIDE_BOX   = ['' => 'TV 설정대로', 'l' => '왼쪽 아래', 'r' => '오른쪽 아래', 'c' => '가운데 아래',
+                         'lu' => '왼쪽 위 (좁게)', 'ru' => '오른쪽 위 (좁게)'];
 
 /** 선교지 묶음의 처음 값 — 선교 편지에서 누구나 봐도 되는 기도제목만 (가정 · 자녀 이야기는 넣지 않습니다) */
 const CTV_MISSION_SEED = [
@@ -111,6 +114,11 @@ function ctv_ensure_tables(): void
         $pdo->exec('ALTER TABLE church_tv_groups ADD COLUMN prayer TEXT NULL AFTER missionary');
         $who = $pdo->prepare('UPDATE church_tv_groups SET missionary = ?, prayer = ? WHERE name = ?');
         foreach (CTV_MISSION_SEED as $name => [$m, $p]) { $who->execute([$m, $p, $name]); }
+    }
+    // 2026-10-09 슬라이드마다 글 상자 자리 — 예시 '처음 오신 분' 장은 교회 로고를 가리지 않게 왼쪽 위 하늘에
+    if (!in_array('box_pos', $cols, true)) {
+        $pdo->exec('ALTER TABLE church_tv_slides ADD COLUMN box_pos VARCHAR(4) NULL AFTER theme');
+        $pdo->exec("UPDATE church_tv_slides SET box_pos = 'lu' WHERE image_file = 'asset:church.jpg' AND title = '처음 오신 분을 환영합니다'");
     }
     if (!in_array('group_id', $cols, true)) {
         $pdo->exec('ALTER TABLE church_tv_slides ADD COLUMN group_id INT NULL AFTER id');
@@ -289,6 +297,7 @@ function ctv_feed(array $scr): array
             'cap'     => !$hasMission && ($s['group_name'] ?? null) !== null && (int)($s['show_caption'] ?? 0) === 1
                 ? $s['group_name'] . ($s['post_date'] ? ' · ' . ctv_date_ko((string)$s['post_date']) : '') : null,
             'theme'   => (string)$s['theme'],
+            'box'     => ($s['box_pos'] ?? '') !== '' ? (string)$s['box_pos'] : null,
             'seconds' => $s['seconds'] !== null ? (int)$s['seconds'] : null,
         ];
         // 같은 묶음 · 같은 날짜의 글 없는 사진끼리만 한 화면에 모읍니다
