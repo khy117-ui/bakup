@@ -824,20 +824,27 @@ layout_head('교회 TV 화면', 'church_tv');
     $dates = $bunches[$gid] ?? [];
     $cnt = 0; $gIds = [];
     foreach ($dates as $list) { foreach ($list as $x) { $cnt++; $gIds[] = (int)$x['id']; } } ?>
+  <?php $open = ($gid && $editGroup === $gid) || ($editSlide && (int)($editSlide['group_id'] ?? 0) === $gid && $editSlide['id']); ?>
   <div id="g<?= $gid ?>" style="margin-top:6px">
-    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:10px 14px;background:#FFF8DC;border-top:2px solid #F2C200">
+    <div class="ctv-gh" onclick="ctvGroup(<?= $gid ?>)" title="눌러서 펼치기 · 접기">
+      <span class="ctv-ar" id="ga<?= $gid ?>"><?= $open ? '▾' : '▸' ?></span>
+      <b style="font-size:15px"><?= h($g['name']) ?></b>
+      <?php if (!empty($g['missionary'])): ?><span style="font-size:13px;color:#A86F00;font-weight:700"><?= h($g['missionary']) ?></span><?php endif; ?>
+      <span style="color:var(--ink3);font-size:12px"><?= $cnt ?>개</span>
+    </div>
+    <div class="ctv-gb" id="gb<?= $gid ?>" data-open="<?= $open ? 1 : 0 ?>"<?= $open ? '' : ' style="display:none"' ?>>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px 14px;background:#FFFDF2;border-bottom:1px solid var(--line);font-size:12px">
       <?php if ($gid): foreach (['up' => '▲', 'down' => '▼'] as $d => $sym): ?>
         <form method="post" style="display:inline"><?= csrf_field() ?>
           <input type="hidden" name="act" value="group_move"><input type="hidden" name="id" value="<?= $gid ?>">
           <input type="hidden" name="dir" value="<?= $d ?>"><button class="btn sm" style="padding:0 6px" title="묶음 순서"><?= $sym ?></button></form>
       <?php endforeach; endif; ?>
-      <b style="font-size:15px"><?= h($g['name']) ?></b>
-      <?php if (!empty($g['missionary'])): ?><span style="font-size:13px;color:#A86F00;font-weight:700"><?= h($g['missionary']) ?></span><?php endif; ?>
-      <span style="color:var(--ink3);font-size:12px"><?= $cnt ?>개<?= (int)($g['per_screen'] ?? 1) > 1 ? ' · 사진은 한 화면에 ' . (int)$g['per_screen'] . '장씩' : '' ?><?php
+      <span style="color:var(--ink3)"><?php
         $pc = count(array_filter(preg_split('/\R/u', (string)($g['prayer'] ?? '')), fn($x) => trim($x) !== ''));
-        echo $pc ? ' · 기도제목 ' . $pc . '개가 TV 아래에 흐름' : ''; ?></span>
+        echo implode(' · ', array_filter([(int)($g['per_screen'] ?? 1) > 1 ? '사진은 한 화면에 ' . (int)$g['per_screen'] . '장씩' : '',
+                                          $pc ? '기도제목 ' . $pc . '개가 TV 아래에 흐름' : ''])); ?></span>
       <?php if ($cnt): ?>
-        <span style="margin-left:8px;font-size:12px;color:var(--ink3)">묶음 전체</span>
+        <span style="margin-left:8px;color:var(--ink3)">묶음 전체</span>
         <?php foreach ($screens as $sc):
           $all = true; foreach ($gIds as $x) { if (!isset($links[$x][(int)$sc['id']])) { $all = false; } } ?>
         <form method="post" style="display:inline"><?= csrf_field() ?>
@@ -945,6 +952,7 @@ layout_head('교회 TV 화면', 'church_tv');
     </tbody>
   </table>
     <?php endforeach; ?>
+    </div>
   </div>
   <?php endforeach; ?>
   <form method="post" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:12px 14px;border-top:1px solid var(--line);font-size:12.5px"><?= csrf_field() ?>
@@ -959,6 +967,9 @@ layout_head('교회 TV 화면', 'church_tv');
   .ctv-d summary::-webkit-details-marker { display: none; }
   .ctv-d summary::before { content: '▸'; color: var(--ink3); margin-right: 6px; font-size: 11px; }
   .ctv-d[open] summary::before { content: '▾'; }
+  .ctv-gh { display: flex; gap: 8px; align-items: center; padding: 12px 14px; background: #FFF8DC; border-top: 2px solid #F2C200; cursor: pointer; user-select: none; }
+  .ctv-gh:hover { background: #FFF1C2; }
+  .ctv-ar { width: 16px; color: #A86F00; font-size: 16px; }
 </style>
 <script>
 // 한꺼번에 올리기 — 고른 개수 · 크기를 보여 주고, 올라가는 정도를 막대로 보여 줍니다
@@ -993,6 +1004,28 @@ layout_head('교회 TV 화면', 'church_tv');
     x.onerror = function () { alert('인터넷이 끊겨 올리지 못했습니다.'); btn.disabled = false; btn.textContent = '올리기'; };
     x.send(new FormData(form));
   });
+})();
+// 묶음은 제목만 보이고, 누르면 펼칩니다. 펼친 묶음은 이 브라우저가 기억합니다
+function ctvGroup(id) {
+  var b = document.getElementById('gb' + id), a = document.getElementById('ga' + id);
+  var show = b.style.display === 'none';
+  b.style.display = show ? '' : 'none';
+  a.textContent = show ? '▾' : '▸';
+  try {
+    var o = JSON.parse(localStorage.getItem('ctvOpen') || '{}');
+    if (show) { o[id] = 1; } else { delete o[id]; }
+    localStorage.setItem('ctvOpen', JSON.stringify(o));
+  } catch (e) {}
+}
+(function () {
+  var o = {};
+  try { o = JSON.parse(localStorage.getItem('ctvOpen') || '{}'); } catch (e) {}
+  var m = /^#g(\d+)$/.exec(location.hash);
+  if (m) { o[m[1]] = 1; }
+  for (var id in o) {
+    var b = document.getElementById('gb' + id);
+    if (b && b.style.display === 'none') { b.style.display = ''; document.getElementById('ga' + id).textContent = '▾'; }
+  }
 })();
 function ctvPicked(what) {
   if (document.querySelectorAll('input[form=ctv-move]:checked').length) { return true; }
