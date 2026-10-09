@@ -22,6 +22,7 @@ const CTV_THEMES      = ['morning' => '아침빛 (노랑)', 'navy' => '남색', 
 const CTV_IMG_EXT     = ['jpg', 'jpeg', 'png', 'webp'];
 const CTV_VIDEO_EXT   = ['mp4', 'm4v', 'webm', 'mov'];
 const CTV_SECONDS     = [5, 7, 10, 15, 20, 30, 45, 60];   // 사진 한 장 보여 줄 시간 고르기
+const CTV_PER_SCREEN  = [1, 2, 3, 4];                       // 묶음마다 한 화면에 사진 몇 장
 
 /** 표가 없으면 만들고, 처음 한 번 1층 · 3층 화면과 예시 슬라이드를 넣습니다 */
 function ctv_ensure_tables(): void
@@ -84,6 +85,12 @@ function ctv_ensure_tables(): void
         sort_no INT NOT NULL DEFAULT 0,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    // 2026-10-09 한 화면에 사진 몇 장 (묶음마다. 글 없는 사진을 N장씩 나란히)
+    $gcols = $pdo->query('SHOW COLUMNS FROM church_tv_groups')->fetchAll(PDO::FETCH_COLUMN);
+    if (!in_array('per_screen', $gcols, true)) {
+        $pdo->exec('ALTER TABLE church_tv_groups ADD COLUMN per_screen TINYINT NOT NULL DEFAULT 1 AFTER show_caption');
+        $pdo->exec("UPDATE church_tv_groups SET per_screen = 3 WHERE name = '인도네시아 선교'");
+    }
     if (!in_array('group_id', $cols, true)) {
         $pdo->exec('ALTER TABLE church_tv_slides ADD COLUMN group_id INT NULL AFTER id');
     }
@@ -97,7 +104,9 @@ function ctv_ensure_tables(): void
         $mv = $pdo->prepare("UPDATE church_tv_slides SET group_id = ? WHERE group_id IS NULL AND label LIKE ?");
         foreach (['인도네시아', '몽골', '태국'] as $i => $place) {
             $g->execute([$place . ' 선교', $i + 1]);
-            $mv->execute([(int)$pdo->lastInsertId(), '%' . $place . '%']);
+            $gid = (int)$pdo->lastInsertId();
+            $mv->execute([$gid, '%' . $place . '%']);
+            if ($place === '인도네시아') { $pdo->exec('UPDATE church_tv_groups SET per_screen = 3 WHERE id = ' . $gid); }
         }
     }
 
@@ -208,7 +217,7 @@ const CTV_ORDER = 's.group_id IS NOT NULL, g.sort_no, g.id, s.post_date DESC, s.
 /** 이 화면에 지금 나갈 슬라이드 (켜짐 · 기간 안 · 순서대로) */
 function ctv_slides_for(int $screenId): array
 {
-    $st = db()->prepare("SELECT s.*, g.name AS group_name, g.show_caption FROM church_tv_slides s
+    $st = db()->prepare("SELECT s.*, g.name AS group_name, g.show_caption, g.per_screen FROM church_tv_slides s
                            JOIN church_tv_slide_screens l ON l.slide_id = s.id AND l.screen_id = ?
                            LEFT JOIN church_tv_groups g ON g.id = s.group_id
                           WHERE s.is_active = 1
@@ -223,6 +232,7 @@ function ctv_slides_for(int $screenId): array
 function ctv_feed(array $scr): array
 {
     $slides = [];
+    $packKey = [];
     foreach (ctv_slides_for((int)$scr['id']) as $s) {
         $img = null;
         $video = null;
@@ -248,6 +258,10 @@ function ctv_feed(array $scr): array
             'theme'   => (string)$s['theme'],
             'seconds' => $s['seconds'] !== null ? (int)$s['seconds'] : null,
         ];
+        // 같은 묶음 · 같은 날짜의 글 없는 사진끼리만 한 화면에 모읍니다
+        $n = max(1, min(4, (int)($s['per_screen'] ?? 1)));
+        $packKey[] = ($n > 1 && $img !== null && $s['title'] === '' && empty($s['youtube']))
+            ? $s['group_id'] . '|' . $s['post_date'] . '|' . $n : null;
     }
     return [
         'ok'      => true,
@@ -261,8 +275,33 @@ function ctv_feed(array $scr): array
             'box'        => (string)$scr['box_pos'],
             'clock'      => (int)$scr['show_clock'] === 1,
         ],
-        'slides'  => $slides,
+        'slides'  => ctv_pack_photos($slides, $packKey),
     ];
+}
+
+/** 한 화면에 N장: 이어지는 사진 슬라이드를 N장씩 묶어 imgs 로 내보냅니다 (시간은 그중 가장 긴 것) */
+function ctv_pack_photos(array $slides, array $keys): array
+{
+    $out = [];
+    $i = 0;
+    $cnt = count($slides);
+    while ($i < $cnt) {
+        $k = $keys[$i];
+        if ($k === null) { $out[] = $slides[$i++]; continue; }
+        $n = (int)substr($k, strrpos($k, '|') + 1);
+        $pack = $slides[$i];
+        $pack['imgs'] = [$pack['img']];
+        $sec = $pack['seconds'];
+        $i++;
+        while ($i < $cnt && $keys[$i] === $k && count($pack['imgs']) < $n) {
+            $pack['imgs'][] = $slides[$i]['img'];
+            if ($slides[$i]['seconds'] !== null && ($sec === null || $slides[$i]['seconds'] > $sec)) { $sec = $slides[$i]['seconds']; }
+            $i++;
+        }
+        $pack['seconds'] = $sec;
+        $out[] = $pack;
+    }
+    return $out;
 }
 
 /** 화면 설정이 바뀌면 TV 가 새로고침하도록 번호를 올립니다 */
