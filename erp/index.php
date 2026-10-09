@@ -79,6 +79,7 @@ $routes = [
     'shop_claims'      => 'shop_claims.php',
     'shop_dispatch'    => 'shop_dispatch.php',
     'shop_report'      => 'shop_report.php',
+    'church_tv'        => 'church_tv.php',   // 교회 TV 화면 (시온의빛교회 모니터 테스트, 최고관리자만)
 ];
 
 if ($page === 'logout') {
