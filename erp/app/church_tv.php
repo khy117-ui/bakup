@@ -12,6 +12,7 @@ if (!defined('APP_DIR')) { http_response_code(403); exit('Forbidden'); }
  * 사진 · 영상은 영속 폴더(/app/user_data/church_tv) 에 두고 tv.php?img= 로만 내줍니다.
  * 제목을 비운 슬라이드는 글 상자 없이 사진 · 영상만 화면 가득 보여 줍니다.
  * 유튜브 링크는 영상 번호(youtube 칸)만 저장하고 TV 에서 유튜브 플레이어로 틉니다.
+ * 묶음(church_tv_groups, 예: 인도네시아 선교) 안의 슬라이드는 날짜(post_date)별로 모아 최근 날짜부터 나옵니다.
  */
 
 const CTV_TRANSITIONS = ['fade' => '겹쳐 바뀌기', 'slide' => '옆으로 밀기', 'zoom' => '살짝 커지며'];
@@ -75,6 +76,30 @@ function ctv_ensure_tables(): void
     if (!in_array('youtube', $cols, true)) {
         $pdo->exec('ALTER TABLE church_tv_slides ADD COLUMN youtube VARCHAR(20) NULL AFTER image_file');
     }
+    // 2026-10-09 묶음 · 날짜 (예: 인도네시아 선교 > 2026-10-09 에 올린 것)
+    $pdo->exec("CREATE TABLE IF NOT EXISTS church_tv_groups (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(60) NOT NULL,
+        show_caption TINYINT(1) NOT NULL DEFAULT 1,
+        sort_no INT NOT NULL DEFAULT 0,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    if (!in_array('group_id', $cols, true)) {
+        $pdo->exec('ALTER TABLE church_tv_slides ADD COLUMN group_id INT NULL AFTER id');
+    }
+    if (!in_array('post_date', $cols, true)) {
+        $pdo->exec('ALTER TABLE church_tv_slides ADD COLUMN post_date DATE NULL AFTER group_id');
+        $pdo->exec('UPDATE church_tv_slides SET post_date = DATE(created_at) WHERE post_date IS NULL');
+    }
+    // 처음 한 번 선교지 묶음 3개를 만들고, 라벨에 선교지 이름이 있는 슬라이드를 넣어 둡니다
+    if ((int)$pdo->query('SELECT COUNT(*) FROM church_tv_groups')->fetchColumn() === 0) {
+        $g = $pdo->prepare('INSERT INTO church_tv_groups (name, sort_no) VALUES (?, ?)');
+        $mv = $pdo->prepare("UPDATE church_tv_slides SET group_id = ? WHERE group_id IS NULL AND label LIKE ?");
+        foreach (['인도네시아', '몽골', '태국'] as $i => $place) {
+            $g->execute([$place . ' 선교', $i + 1]);
+            $mv->execute([(int)$pdo->lastInsertId(), '%' . $place . '%']);
+        }
+    }
 
     if ((int)$pdo->query('SELECT COUNT(*) FROM church_tv_screens')->fetchColumn() === 0) {
         $ins = $pdo->prepare('INSERT INTO church_tv_screens (slug, name, sort_no, font_size) VALUES (?,?,?,?)');
@@ -99,8 +124,8 @@ function ctv_seed(PDO $pdo): void
         ['교회 안내', '처음 오신 분을 환영합니다',
          '예배 후 안내 데스크에서 새가족 등록을 도와드립니다', '', 'asset:church.jpg', 'green', ['1f']],
     ];
-    $ins = $pdo->prepare('INSERT INTO church_tv_slides (label, title, body, date_text, image_file, theme, sort_no)
-                          VALUES (?,?,?,?,?,?,?)');
+    $ins = $pdo->prepare('INSERT INTO church_tv_slides (label, title, body, date_text, image_file, theme, sort_no, post_date)
+                          VALUES (?,?,?,?,?,?,?, CURDATE())');
     $link = $pdo->prepare('INSERT IGNORE INTO church_tv_slide_screens (slide_id, screen_id) VALUES (?,?)');
     foreach ($rows as $i => $r) {
         $ins->execute([$r[0], $r[1], $r[2], $r[3], $r[4], $r[5], $i + 1]);
@@ -145,6 +170,13 @@ function ctv_youtube_id(string $url): ?string
     return null;
 }
 
+/** '2026-10-09' → '2026년 10월 9일' */
+function ctv_date_ko(?string $d): string
+{
+    if (!$d || !preg_match('/^(\d{4})-(\d{2})-(\d{2})/', $d, $m)) { return ''; }
+    return $m[1] . '년 ' . (int)$m[2] . '월 ' . (int)$m[3] . '일';
+}
+
 /** 'HH:MM' 형식만 받습니다. 24:00 은 하루 끝 */
 function ctv_clean_time(string $t, string $def): string
 {
@@ -170,15 +202,19 @@ function ctv_screen_by_slug(string $slug): ?array
     return $st->fetch() ?: null;
 }
 
+/** 슬라이드 순서: 묶음 없는 것 먼저 → 묶음 순서 → 묶음 안에서는 최근 날짜부터 → 같은 날은 정한 순서 */
+const CTV_ORDER = 's.group_id IS NOT NULL, g.sort_no, g.id, s.post_date DESC, s.sort_no, s.id';
+
 /** 이 화면에 지금 나갈 슬라이드 (켜짐 · 기간 안 · 순서대로) */
 function ctv_slides_for(int $screenId): array
 {
-    $st = db()->prepare("SELECT s.* FROM church_tv_slides s
+    $st = db()->prepare("SELECT s.*, g.name AS group_name, g.show_caption FROM church_tv_slides s
                            JOIN church_tv_slide_screens l ON l.slide_id = s.id AND l.screen_id = ?
+                           LEFT JOIN church_tv_groups g ON g.id = s.group_id
                           WHERE s.is_active = 1
                             AND (s.start_date IS NULL OR s.start_date <= CURDATE())
                             AND (s.end_date IS NULL OR s.end_date >= CURDATE())
-                          ORDER BY s.sort_no, s.id");
+                          ORDER BY " . CTV_ORDER);
     $st->execute([$screenId]);
     return $st->fetchAll();
 }
@@ -206,6 +242,9 @@ function ctv_feed(array $scr): array
             'video'   => $video,
             'yt'      => ($s['youtube'] ?? null) ?: null,
             'sound'   => (int)($s['sound'] ?? 0) === 1,
+            // 묶음 슬라이드는 TV 구석에 '인도네시아 선교 · 2026년 10월 9일' 을 작게 붙입니다
+            'cap'     => ($s['group_name'] ?? null) !== null && (int)($s['show_caption'] ?? 0) === 1
+                ? $s['group_name'] . ($s['post_date'] ? ' · ' . ctv_date_ko((string)$s['post_date']) : '') : null,
             'theme'   => (string)$s['theme'],
             'seconds' => $s['seconds'] !== null ? (int)$s['seconds'] : null,
         ];
