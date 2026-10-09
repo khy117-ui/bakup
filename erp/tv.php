@@ -194,6 +194,29 @@ $first = ctv_feed($scr);
   .multi { position: absolute; left: 2vw; top: 6vh; right: 2vw; bottom: 9vh; display: -webkit-box; display: -webkit-flex; display: flex; }
   .multi .cell { position: relative; -webkit-box-flex: 1; -webkit-flex: 1; flex: 1; margin: 0 .8vw;
                  background-size: contain; background-repeat: no-repeat; background-position: center; }
+  /* 선교지 묶음: 위 가운데 '태국 선교 · 이국찬 선교사', 아래에는 기도제목이 오른쪽에서 왼쪽으로 흐릅니다 */
+  .mhead { position: fixed; left: 50%; top: 2.4vh; -webkit-transform: translateX(-50%); transform: translateX(-50%);
+           background: rgba(0,0,0,.62); color: #fff; padding: .7vw 2.4vw .8vw; border-radius: 3vw; z-index: 6;
+           text-align: center; white-space: nowrap; display: none; box-shadow: 0 .4vw 1.6vw rgba(0,0,0,.3); }
+  .mhead b { font-size: 2.5vw; font-weight: 800; letter-spacing: -.01em; }
+  .mhead .who { font-size: 2.2vw; font-weight: 700; color: #FFD23F; margin-left: 1.2vw; }
+  .mhead .day { display: block; font-size: 1.25vw; font-weight: 500; color: rgba(255,255,255,.75); margin-top: .2vw; }
+  .ticker { position: fixed; left: 0; right: 0; bottom: 0; height: 7.4vh; z-index: 6; display: none;
+            background: rgba(12,12,12,.80); border-top: .35vh solid #F2B632; }
+  .tk-lbl { position: absolute; left: 0; top: 0; bottom: 0; width: 11vw; background: #F2B632; color: #111;
+            font-size: 2.1vw; font-weight: 800; line-height: 7.05vh; text-align: center; z-index: 1; }
+  .tk-win { position: absolute; left: 11vw; right: 0; top: 0; bottom: 0; overflow: hidden; }
+  .tk-run { position: absolute; left: 0; top: 0; white-space: nowrap; color: #fff; font-size: 2.4vw; font-weight: 600;
+            line-height: 7.05vh; -webkit-animation: tk 60s linear infinite; animation: tk 60s linear infinite; }
+  .tk-run i { font-style: normal; color: #F2B632; margin: 0 2.2vw; }
+  @-webkit-keyframes tk { from { -webkit-transform: translate3d(0, 0, 0); } to { -webkit-transform: translate3d(-50%, 0, 0); } }
+  @keyframes tk { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(-50%, 0, 0); } }
+  .has-tk .corner.c2, .has-tk .corner.c3 { bottom: 10vh; }
+  .has-tk .box { bottom: 13%; } .has-tk .box.p-up { bottom: auto; }
+  .has-tk .multi { bottom: 10vh; }
+  .has-mh .multi { top: 12vh; } .has-mh .box.p-up { top: 18%; }
+  /* 글 없는 사진 한 장은 위 · 아래 띠에 가리지 않게 그 사이에 놓습니다 (영상 · 유튜브는 화면 가득 그대로) */
+  .has-mh .has-tk div.full, .has-mh.has-tk div.full { top: 12vh; bottom: 8.5vh; height: auto; }
   .black { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background: #000; z-index: 9; display: none; }
   .empty { position: fixed; left: 0; top: 0; right: 0; bottom: 0; display: flex; align-items: center;
            justify-content: center; color: #555; font-size: 2vw; }
@@ -202,6 +225,8 @@ $first = ctv_feed($scr);
 <body>
 <div class="stage" id="stage"></div>
 <div class="corner c0" id="corner"><img src="tv.php?a=logo.png" alt=""><span id="clock"></span></div>
+<div class="mhead" id="mhead"></div>
+<div class="ticker" id="ticker"><div class="tk-lbl">기도제목</div><div class="tk-win"><div class="tk-run" id="tk-run"></div></div></div>
 <div class="black" id="black"></div>
 <script>
 (function () {
@@ -211,6 +236,10 @@ $first = ctv_feed($scr);
   var black = document.getElementById('black');
   var corner = document.getElementById('corner');
   var clock = document.getElementById('clock');
+  var mhead = document.getElementById('mhead');
+  var ticker = document.getElementById('ticker');
+  var tkRun = document.getElementById('tk-run');
+  var tkKey = null;
   var idx = -1, timer = null, cur = null, posN = 0, loadedAt = new Date().getTime();
   var ytN = 0, ytReady = false, ytWait = [];
   var POS = ['p-left', 'p-right p-up', 'p-center', 'p-right', 'p-left p-up'];
@@ -238,6 +267,49 @@ $first = ctv_feed($scr);
   // 묶음 이름 · 날짜 (예: 인도네시아 선교 · 2026년 10월 9일)
   function capHtml(sl) {
     return sl.cap ? '<div class="cap">' + esc(sl.cap) + '</div>' : '';
+  }
+
+  // 선교지 묶음이면 위에 선교지 · 선교사, 아래에 기도제목을 띄웁니다.
+  // 같은 묶음이 이어지는 동안에는 흐르는 글을 처음부터 다시 돌리지 않습니다.
+  function mission(sl) {
+    var g = (sl && sl.g != null && data.groups) ? data.groups[sl.g] : null;
+    var cls = document.body.className.replace(/\s*has-(mh|tk)/g, '');
+    if (!g) {
+      mhead.style.display = 'none';
+      ticker.style.display = 'none';
+      tkKey = null;
+      document.body.className = cls;
+      return;
+    }
+    mhead.innerHTML = '<b>' + esc(g.name) + '</b>' + (g.who ? '<span class="who">' + esc(g.who) + '</span>' : '')
+      + (sl.day ? '<span class="day">' + esc(sl.day) + '</span>' : '');
+    mhead.style.display = 'block';
+    cls += ' has-mh';
+    var lines = g.prayer || [];
+    if (lines.length) {
+      var key = sl.g + '|' + lines.join('\n');
+      if (key !== tkKey) {
+        tkKey = key;
+        var one = '';
+        for (var i = 0; i < lines.length; i++) { one += '<i>✦</i>' + esc(lines[i]); }
+        tkRun.innerHTML = one + one;                     // 두 번 이어 붙여 끊김 없이 돕니다
+        ticker.style.display = 'block';
+        // 글 길이에 맞춰 속도를 같게 (화면 너비의 8% 를 1초에)
+        var half = tkRun.offsetWidth / 2;
+        var sec = Math.max(15, Math.round(half / (window.innerWidth * 0.08)));
+        tkRun.style.webkitAnimationDuration = sec + 's';
+        tkRun.style.animationDuration = sec + 's';
+        tkRun.style.webkitAnimationName = 'none'; tkRun.style.animationName = 'none';
+        void tkRun.offsetWidth;
+        tkRun.style.webkitAnimationName = ''; tkRun.style.animationName = '';
+      }
+      ticker.style.display = 'block';
+      cls += ' has-tk';
+    } else {
+      ticker.style.display = 'none';
+      tkKey = null;
+    }
+    document.body.className = cls;
   }
 
   function build(sl, n) {
@@ -364,6 +436,7 @@ $first = ctv_feed($scr);
     if (!list.length) {
       stage.innerHTML = '<div class="empty">ERP &gt; 교회 TV 화면에서 이 화면에 보여 줄 슬라이드를 넣어 주세요.</div>';
       cur = null;
+      mission(null);
       timer = setTimeout(next, 15000);
       return;
     }
@@ -371,6 +444,7 @@ $first = ctv_feed($scr);
     var sl = list[idx];
     var el = build(sl, idx);
     stage.appendChild(el);
+    mission(sl);
     var old = cur;
     cur = el;
     // 다음 그림에서 클래스를 바꿔야 전환 효과가 보입니다
@@ -420,7 +494,8 @@ $first = ctv_feed($scr);
       try { d = JSON.parse(x.responseText); } catch (e) { return; }
       if (!d || !d.ok) { return; }
       if (d.version !== data.version) { location.reload(); return; }   // 관리자가 '지금 새로고침' 을 누름
-      var changed = JSON.stringify(d.slides) !== JSON.stringify(data.slides);
+      var changed = JSON.stringify(d.slides) !== JSON.stringify(data.slides)
+        || JSON.stringify(d.groups) !== JSON.stringify(data.groups);
       data = d;
       applyScreen();
       if (changed) { idx = -1; next(); }
