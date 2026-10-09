@@ -378,8 +378,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
             if ($name === '') { throw new RuntimeException('묶음 이름을 넣어 주세요.'); }
             if ($id > 0) {
                 $per = in_array((int)post('per_screen'), CTV_PER_SCREEN, true) ? (int)post('per_screen') : 1;
-                $pdo->prepare('UPDATE church_tv_groups SET name = ?, show_caption = ?, per_screen = ? WHERE id = ?')
-                    ->execute([$name, post('show_caption') === '1' ? 1 : 0, $per, $id]);
+                // 기도제목은 한 줄에 하나. 빈 줄은 뺍니다
+                $prayer = implode("\n", array_filter(array_map('trim', preg_split('/\R/u', mb_substr(post('prayer'), 0, 2000))), 'strlen'));
+                $pdo->prepare('UPDATE church_tv_groups SET name = ?, missionary = ?, prayer = ?, show_caption = ?, per_screen = ? WHERE id = ?')
+                    ->execute([$name, trim(mb_substr(post('missionary'), 0, 60)) ?: null, $prayer !== '' ? $prayer : null,
+                               post('show_caption') === '1' ? 1 : 0, $per, $id]);
                 flash('"' . $name . '" 묶음을 저장했습니다.');
             } else {
                 $next = (int)$pdo->query('SELECT COALESCE(MAX(sort_no),0)+1 FROM church_tv_groups')->fetchColumn();
@@ -672,7 +675,14 @@ layout_head('교회 TV 화면', 'church_tv');
       <?php endif; ?>
       <button class="btn pri">저장</button>
       <a class="btn" href="?p=church_tv&amp;tab=<?= h($tab) ?>">닫기</a>
+      <?php if ($editSlide['id']): ?>
+      <button class="btn" form="ctv-slide-del" style="margin-left:auto;color:#8A1C1C">이 슬라이드 삭제</button>
+      <?php endif; ?>
     </form>
+    <?php if ($editSlide['id']): ?>
+    <form method="post" id="ctv-slide-del" onsubmit="return confirm('이 슬라이드를 지울까요?<?= $editSlide['image_file'] ? ' 사진 · 영상 파일도 함께 지워집니다.' : '' ?>');">
+      <?= csrf_field() ?><input type="hidden" name="act" value="slide_del"><input type="hidden" name="id" value="<?= (int)$editSlide['id'] ?>"></form>
+    <?php endif; ?>
     <div style="font-size:11.5px;color:var(--ink3);margin-top:8px">
       교인만 볼 내용(가족 기도제목 · 경조사 · 연락처)은 넣지 마세요. 이 화면은 로그인 없이 누구나 볼 수 있습니다.
       사진은 가로 사진이 좋고, 큰 사진은 저장할 때 TV 에 맞게 줄입니다.</div>
@@ -794,7 +804,10 @@ layout_head('교회 TV 화면', 'church_tv');
           <input type="hidden" name="dir" value="<?= $d ?>"><button class="btn sm" style="padding:0 6px" title="묶음 순서"><?= $sym ?></button></form>
       <?php endforeach; endif; ?>
       <b style="font-size:15px"><?= h($g['name']) ?></b>
-      <span style="color:var(--ink3);font-size:12px"><?= $cnt ?>개<?= (int)($g['per_screen'] ?? 1) > 1 ? ' · 사진은 한 화면에 ' . (int)$g['per_screen'] . '장씩' : '' ?></span>
+      <?php if (!empty($g['missionary'])): ?><span style="font-size:13px;color:#A86F00;font-weight:700"><?= h($g['missionary']) ?></span><?php endif; ?>
+      <span style="color:var(--ink3);font-size:12px"><?= $cnt ?>개<?= (int)($g['per_screen'] ?? 1) > 1 ? ' · 사진은 한 화면에 ' . (int)$g['per_screen'] . '장씩' : '' ?><?php
+        $pc = count(array_filter(preg_split('/\R/u', (string)($g['prayer'] ?? '')), fn($x) => trim($x) !== ''));
+        echo $pc ? ' · 기도제목 ' . $pc . '개가 TV 아래에 흐름' : ''; ?></span>
       <?php if ($cnt): ?>
         <span style="margin-left:8px;font-size:12px;color:var(--ink3)">묶음 전체</span>
         <?php foreach ($screens as $sc):
@@ -817,12 +830,17 @@ layout_head('교회 TV 화면', 'church_tv');
       <form method="post" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><?= csrf_field() ?>
         <input type="hidden" name="act" value="group_save"><input type="hidden" name="id" value="<?= $gid ?>">
         <input type="text" name="name" value="<?= h($g['name']) ?>" maxlength="60" required style="height:30px;width:220px">
+        <input type="text" name="missionary" value="<?= h((string)($g['missionary'] ?? '')) ?>" maxlength="60" placeholder="선교사 이름 (예: 이국찬 선교사)" style="height:30px;width:200px">
         <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" name="show_caption" value="1" style="width:auto"<?= (int)$g['show_caption'] ? ' checked' : '' ?>>
-          TV 아래에 "<?= h($g['name']) ?> · 날짜" 작게 보이기</label>
+          (선교사 · 기도제목이 없을 때) TV 아래에 "<?= h($g['name']) ?> · 날짜" 작게 보이기</label>
         <label style="display:flex;gap:4px;align-items:center">글 없는 사진을 한 화면에
           <select name="per_screen" style="height:30px;width:auto">
             <?php foreach (CTV_PER_SCREEN as $n): ?><option value="<?= $n ?>"<?= (int)($g['per_screen'] ?? 1) === $n ? ' selected' : '' ?>><?= $n ?>장</option><?php endforeach; ?>
           </select> 씩</label>
+        <div style="flex-basis:100%">
+          <label style="display:block;margin-bottom:4px">기도제목 — 한 줄에 하나씩. TV 아래에 계속 흐르고, 위 가운데에는 "<?= h($g['name']) ?> · 선교사 이름" 이 나옵니다.
+            <span style="color:#8A1C1C">이 화면은 누구나 보므로 가족 · 자녀 이야기는 넣지 마세요.</span></label>
+          <textarea name="prayer" rows="5" maxlength="2000" style="width:100%"><?= h((string)($g['prayer'] ?? '')) ?></textarea></div>
         <button class="btn sm pri">저장</button></form>
       <form method="post" style="display:inline" onsubmit="return confirm('묶음을 지울까요? 안의 슬라이드는 지워지지 않고 묶음 없음으로 갑니다.');"><?= csrf_field() ?>
         <input type="hidden" name="act" value="group_del"><input type="hidden" name="id" value="<?= $gid ?>">
