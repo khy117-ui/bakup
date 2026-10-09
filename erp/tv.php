@@ -176,6 +176,9 @@ $first = ctv_feed($scr);
   .f-large .lbl { font-size: 2vw; } .f-large .ttl { font-size: 5.2vw; }
   .f-large .bdy { font-size: 2.7vw; -webkit-line-clamp: 2; } .f-large .dt { font-size: 1.9vw; }
   .f-large .box { max-width: 76%; }
+  .box.p-narrow { max-width: 28%; padding: 2.4vw 2.6vw 2.2vw; } .f-large .box.p-narrow { max-width: 34%; }
+  .box.p-narrow.p-left { left: 3%; } .box.p-narrow.p-right { right: 3%; }
+  .box.p-narrow .ttl { font-size: 3.4vw; } .f-large .box.p-narrow .ttl { font-size: 4vw; }
   .corner { position: fixed; display: flex; align-items: center; gap: 1vw; opacity: .55; color: #fff;
             font-size: 1.7vw; font-weight: 600; text-shadow: 0 1px 4px rgba(0,0,0,.6); z-index: 5;
             -webkit-transition: opacity 1s; transition: opacity 1s; }
@@ -257,7 +260,10 @@ $first = ctv_feed($scr);
     black.style.display = data.on ? 'none' : 'block';
   }
 
-  function boxPos() {
+  // 슬라이드에 정한 자리가 있으면 그 자리 (예: 로고를 가리지 않게 왼쪽 위)
+  var SLIDE_POS = { l: 'p-left', r: 'p-right', c: 'p-center', lu: 'p-left p-up p-narrow', ru: 'p-right p-up p-narrow' };
+  function boxPos(sl) {
+    if (sl && sl.box && SLIDE_POS[sl.box]) { return SLIDE_POS[sl.box]; }
     var b = data.screen.box;
     if (b === 'left' || b === 'right' || b === 'center') { return 'p-' + b; }
     posN = (posN + 1) % POS.length;
@@ -348,7 +354,7 @@ $first = ctv_feed($scr);
       return el;
     }
     el.innerHTML = bg
-      + '<div class="box ' + boxPos() + '">'
+      + '<div class="box ' + boxPos(sl) + '">'
       + (sl.label ? '<div class="lbl">' + esc(sl.label) + '</div>' : '')
       + '<div class="ttl">' + esc(sl.title) + '</div>'
       + (sl.body ? '<div class="bdy">' + esc(sl.body) + '</div>' : '')
