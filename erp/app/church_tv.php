@@ -9,7 +9,8 @@ if (!defined('APP_DIR')) { http_response_code(403); exit('Forbidden'); }
  *   · 송출: /erp/tv.php?s=1f  (로그인 없음. TV 스틱 브라우저 시작 주소로 넣습니다)
  *
  * ERP 업무 표와 섞이지 않게 표 이름을 모두 church_tv_ 로 시작합니다.
- * 사진은 영속 폴더(/app/user_data/church_tv) 에 두고 tv.php?img= 로만 내줍니다.
+ * 사진 · 영상은 영속 폴더(/app/user_data/church_tv) 에 두고 tv.php?img= 로만 내줍니다.
+ * 제목을 비운 슬라이드는 글 상자 없이 사진 · 영상만 화면 가득 보여 줍니다.
  */
 
 const CTV_TRANSITIONS = ['fade' => '겹쳐 바뀌기', 'slide' => '옆으로 밀기', 'zoom' => '살짝 커지며'];
@@ -17,6 +18,8 @@ const CTV_FONT_SIZES  = ['normal' => '보통', 'large' => '크게'];
 const CTV_BOX_POS     = ['auto' => '장마다 바뀜 (잔상 방지)', 'left' => '왼쪽', 'center' => '가운데', 'right' => '오른쪽'];
 const CTV_THEMES      = ['morning' => '아침빛 (노랑)', 'navy' => '남색', 'green' => '초록', 'plum' => '보라'];
 const CTV_IMG_EXT     = ['jpg', 'jpeg', 'png', 'webp'];
+const CTV_VIDEO_EXT   = ['mp4', 'm4v', 'webm', 'mov'];
+const CTV_SECONDS     = [5, 7, 10, 15, 20, 30, 45, 60];   // 사진 한 장 보여 줄 시간 고르기
 
 /** 표가 없으면 만들고, 처음 한 번 1층 · 3층 화면과 예시 슬라이드를 넣습니다 */
 function ctv_ensure_tables(): void
@@ -61,6 +64,12 @@ function ctv_ensure_tables(): void
         screen_id INT NOT NULL,
         PRIMARY KEY (slide_id, screen_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    // 2026-10-09 영상 소리 칸 추가 (먼저 만든 표에도 붙입니다)
+    $cols = $pdo->query('SHOW COLUMNS FROM church_tv_slides')->fetchAll(PDO::FETCH_COLUMN);
+    if (!in_array('sound', $cols, true)) {
+        $pdo->exec('ALTER TABLE church_tv_slides ADD COLUMN sound TINYINT(1) NOT NULL DEFAULT 0 AFTER seconds');
+    }
 
     if ((int)$pdo->query('SELECT COUNT(*) FROM church_tv_screens')->fetchColumn() === 0) {
         $ins = $pdo->prepare('INSERT INTO church_tv_screens (slug, name, sort_no, font_size) VALUES (?,?,?,?)');
@@ -113,6 +122,13 @@ function ctv_image_dir(): string
     return $dir;
 }
 
+/** 영상 파일인지 (확장자로 봅니다) */
+function ctv_is_video(?string $file): bool
+{
+    return $file !== null && $file !== ''
+        && in_array(strtolower(pathinfo($file, PATHINFO_EXTENSION)), CTV_VIDEO_EXT, true);
+}
+
 /** 'HH:MM' 형식만 받습니다. 24:00 은 하루 끝 */
 function ctv_clean_time(string $t, string $def): string
 {
@@ -157,10 +173,12 @@ function ctv_feed(array $scr): array
     $slides = [];
     foreach (ctv_slides_for((int)$scr['id']) as $s) {
         $img = null;
+        $video = null;
         if ($s['image_file']) {
-            $img = str_starts_with((string)$s['image_file'], 'asset:')
+            $url = str_starts_with((string)$s['image_file'], 'asset:')
                 ? 'tv.php?a=' . rawurlencode(substr((string)$s['image_file'], 6))
                 : 'tv.php?img=' . (int)$s['id'] . '&v=' . rawurlencode((string)($s['updated_at'] ?? $s['created_at']));
+            if (ctv_is_video((string)$s['image_file'])) { $video = $url; } else { $img = $url; }
         }
         $slides[] = [
             'id'      => (int)$s['id'],
@@ -169,6 +187,8 @@ function ctv_feed(array $scr): array
             'body'    => (string)$s['body'],
             'date'    => (string)$s['date_text'],
             'img'     => $img,
+            'video'   => $video,
+            'sound'   => (int)($s['sound'] ?? 0) === 1,
             'theme'   => (string)$s['theme'],
             'seconds' => $s['seconds'] !== null ? (int)$s['seconds'] : null,
         ];
