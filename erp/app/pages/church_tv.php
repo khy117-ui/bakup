@@ -345,6 +345,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
             }
             redirect($back);
         }
+        if ($act === 'move_group' && post('do') === 'del') {
+            // 체크한 슬라이드를 한꺼번에 지우기 (사진 · 영상 파일도 지웁니다)
+            $ids = array_values(array_filter(array_map('intval', (array)($_POST['ids'] ?? []))));
+            if (!$ids) { throw new RuntimeException('지울 슬라이드를 체크해 주세요.'); }
+            $in = implode(',', $ids);
+            foreach ($pdo->query("SELECT image_file FROM church_tv_slides WHERE id IN ($in)")->fetchAll(PDO::FETCH_COLUMN) as $f) {
+                ctv_remove_file($f);
+            }
+            $pdo->exec("DELETE FROM church_tv_slide_screens WHERE slide_id IN ($in)");
+            $pdo->exec("DELETE FROM church_tv_slides WHERE id IN ($in)");
+            log_action('교회TV', 'DELETE', 'church_tv_slides', 0, count($ids) . '개 한꺼번에 삭제');
+            flash(count($ids) . '개를 지웠습니다.');
+            redirect($back);
+        }
         if ($act === 'move_group') {
             // 체크한 슬라이드를 다른 묶음으로 (묶음 없음도 됩니다)
             $ids = array_values(array_filter(array_map('intval', (array)($_POST['ids'] ?? []))));
@@ -757,8 +771,12 @@ layout_head('교회 TV 화면', 'church_tv');
       <?php foreach ($groups as $g): ?><option value="<?= (int)$g['id'] ?>"><?= h($g['name']) ?></option><?php endforeach; ?></select>
     <span>으로</span>
     <input type="date" name="post_date" title="날짜도 바꾸려면 고르세요 (비우면 그대로)" style="height:30px;width:auto">
-    <button class="btn sm pri">옮기기</button>
+    <button class="btn sm pri" name="do" value="move">옮기기</button>
     <span style="color:var(--ink3)">날짜를 비워 두면 올린 날짜 그대로 옮깁니다.</span>
+    <button class="btn sm" name="do" value="del" style="margin-left:auto;color:#8A1C1C"
+            onclick="var n = document.querySelectorAll('input[form=ctv-move]:checked').length;
+                     if (!n) { alert('지울 슬라이드를 체크해 주세요.'); return false; }
+                     return confirm('체크한 ' + n + '개를 지울까요? 사진 · 영상 파일도 함께 지워집니다.');">체크한 것 삭제</button>
   </form>
   <?php if (!$slides): ?>
     <div class="empty">슬라이드가 없습니다. [전체 슬라이드] 에서 이 TV 칸을 누르거나 [슬라이드 추가] 를 누르세요.</div>
