@@ -24,6 +24,20 @@ const CTV_VIDEO_EXT   = ['mp4', 'm4v', 'webm', 'mov'];
 const CTV_SECONDS     = [5, 7, 10, 15, 20, 30, 45, 60];   // 사진 한 장 보여 줄 시간 고르기
 const CTV_PER_SCREEN  = [1, 2, 3, 4];                       // 묶음마다 한 화면에 사진 몇 장
 
+/** 선교지 묶음의 처음 값 — 선교 편지에서 누구나 봐도 되는 기도제목만 (가정 · 자녀 이야기는 넣지 않습니다) */
+const CTV_MISSION_SEED = [
+    '인도네시아 선교' => ['김영찬 선교사', "한국 방문을 마치고 인도네시아에서의 삶을 잘 준비하며 영적 · 육적으로 새 힘을 얻도록
+장정진 선교사의 찬양 작곡 · 번역으로 인도네시아 땅에 예배와 찬양이 가득하도록
+IT 사역의 섬김이 설교가 되어 한 영혼 한 영혼이 주께 돌아오도록
+시나붕 화산 등 자연재해 가운데 지켜 주시고 슬픔 당한 이들을 위로하시도록"],
+    '몽골 선교' => ['김경철 선교사', "매 순간 \"예수로 충분합니다\" 고백하는 몽골 사역이 되도록
+새 학기를 맞은 몽골 청년들이 꿈을 바르게 이루어 가고, 전도할 학생들을 만나도록
+몽골 구석구석에 복음이 편만하게 전파되도록
+자가 · 을지 · 로야 · 바트 에르덴 목사님이 섬기는 교회에 은혜가 임하고 전도가 일어나도록"],
+    '태국 선교' => ['이국찬 선교사', "태국인 목회자 35명과 함께한 세미나의 은혜가 태국 교회에 계속 이어지도록
+이국찬 선교사님의 건강과 태국 목회자들을 세우는 사역을 지켜 주시도록"],
+];
+
 /** 표가 없으면 만들고, 처음 한 번 1층 · 3층 화면과 예시 슬라이드를 넣습니다 */
 function ctv_ensure_tables(): void
 {
@@ -91,6 +105,13 @@ function ctv_ensure_tables(): void
         $pdo->exec('ALTER TABLE church_tv_groups ADD COLUMN per_screen TINYINT NOT NULL DEFAULT 1 AFTER show_caption');
         $pdo->exec("UPDATE church_tv_groups SET per_screen = 3 WHERE name = '인도네시아 선교'");
     }
+    // 2026-10-09 선교사 이름 (TV 위 가운데) · 기도제목 (TV 아래에 흐르는 글, 한 줄에 하나)
+    if (!in_array('missionary', $gcols, true)) {
+        $pdo->exec('ALTER TABLE church_tv_groups ADD COLUMN missionary VARCHAR(60) NULL AFTER name');
+        $pdo->exec('ALTER TABLE church_tv_groups ADD COLUMN prayer TEXT NULL AFTER missionary');
+        $who = $pdo->prepare('UPDATE church_tv_groups SET missionary = ?, prayer = ? WHERE name = ?');
+        foreach (CTV_MISSION_SEED as $name => [$m, $p]) { $who->execute([$m, $p, $name]); }
+    }
     if (!in_array('group_id', $cols, true)) {
         $pdo->exec('ALTER TABLE church_tv_slides ADD COLUMN group_id INT NULL AFTER id');
     }
@@ -107,6 +128,8 @@ function ctv_ensure_tables(): void
             $gid = (int)$pdo->lastInsertId();
             $mv->execute([$gid, '%' . $place . '%']);
             if ($place === '인도네시아') { $pdo->exec('UPDATE church_tv_groups SET per_screen = 3 WHERE id = ' . $gid); }
+            [$m, $p] = CTV_MISSION_SEED[$place . ' 선교'];
+            $pdo->prepare('UPDATE church_tv_groups SET missionary = ?, prayer = ? WHERE id = ?')->execute([$m, $p, $gid]);
         }
     }
 
@@ -217,7 +240,7 @@ const CTV_ORDER = 's.group_id IS NOT NULL, g.sort_no, g.id, s.post_date DESC, s.
 /** 이 화면에 지금 나갈 슬라이드 (켜짐 · 기간 안 · 순서대로) */
 function ctv_slides_for(int $screenId): array
 {
-    $st = db()->prepare("SELECT s.*, g.name AS group_name, g.show_caption, g.per_screen FROM church_tv_slides s
+    $st = db()->prepare("SELECT s.*, g.name AS group_name, g.show_caption, g.per_screen, g.missionary, g.prayer FROM church_tv_slides s
                            JOIN church_tv_slide_screens l ON l.slide_id = s.id AND l.screen_id = ?
                            LEFT JOIN church_tv_groups g ON g.id = s.group_id
                           WHERE s.is_active = 1
@@ -233,7 +256,15 @@ function ctv_feed(array $scr): array
 {
     $slides = [];
     $packKey = [];
+    $groups = [];
     foreach (ctv_slides_for((int)$scr['id']) as $s) {
+        // 선교사 이름이나 기도제목이 있는 묶음은 TV 위에 '태국 선교 · 이국찬 선교사', 아래에 기도제목이 흐릅니다
+        $gid = $s['group_id'] !== null ? (int)$s['group_id'] : 0;
+        $lines = $gid ? array_values(array_filter(array_map('trim', preg_split('/\R/u', (string)($s['prayer'] ?? ''))), 'strlen')) : [];
+        $hasMission = $gid && (trim((string)($s['missionary'] ?? '')) !== '' || $lines);
+        if ($hasMission && !isset($groups[$gid])) {
+            $groups[$gid] = ['name' => (string)$s['group_name'], 'who' => trim((string)$s['missionary']), 'prayer' => $lines];
+        }
         $img = null;
         $video = null;
         if ($s['image_file']) {
@@ -252,8 +283,10 @@ function ctv_feed(array $scr): array
             'video'   => $video,
             'yt'      => ($s['youtube'] ?? null) ?: null,
             'sound'   => (int)($s['sound'] ?? 0) === 1,
-            // 묶음 슬라이드는 TV 구석에 '인도네시아 선교 · 2026년 10월 9일' 을 작게 붙입니다
-            'cap'     => ($s['group_name'] ?? null) !== null && (int)($s['show_caption'] ?? 0) === 1
+            'g'       => $hasMission ? $gid : null,
+            'day'     => $hasMission && $s['post_date'] ? ctv_date_ko((string)$s['post_date']) : null,
+            // 선교사 · 기도제목이 없는 묶음은 TV 아래에 '인도네시아 선교 · 2026년 10월 9일' 을 작게 붙입니다
+            'cap'     => !$hasMission && ($s['group_name'] ?? null) !== null && (int)($s['show_caption'] ?? 0) === 1
                 ? $s['group_name'] . ($s['post_date'] ? ' · ' . ctv_date_ko((string)$s['post_date']) : '') : null,
             'theme'   => (string)$s['theme'],
             'seconds' => $s['seconds'] !== null ? (int)$s['seconds'] : null,
@@ -275,6 +308,7 @@ function ctv_feed(array $scr): array
             'box'        => (string)$scr['box_pos'],
             'clock'      => (int)$scr['show_clock'] === 1,
         ],
+        'groups'  => (object)$groups,
         'slides'  => ctv_pack_photos($slides, $packKey),
     ];
 }
