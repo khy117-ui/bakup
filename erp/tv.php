@@ -191,6 +191,9 @@ $first = ctv_feed($scr);
   .cap { position: absolute; left: 50%; bottom: 2.6vh; -webkit-transform: translateX(-50%); transform: translateX(-50%);
          background: rgba(0,0,0,.55); color: #fff; font-size: 1.5vw; font-weight: 600; padding: .5vw 1.4vw;
          border-radius: 2vw; white-space: nowrap; z-index: 3; pointer-events: none; }
+  .multi { position: absolute; left: 2vw; top: 6vh; right: 2vw; bottom: 9vh; display: -webkit-box; display: -webkit-flex; display: flex; }
+  .multi .cell { position: relative; -webkit-box-flex: 1; -webkit-flex: 1; flex: 1; margin: 0 .8vw;
+                 background-size: contain; background-repeat: no-repeat; background-position: center; }
   .black { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background: #000; z-index: 9; display: none; }
   .empty { position: fixed; left: 0; top: 0; right: 0; bottom: 0; display: flex; align-items: center;
            justify-content: center; color: #555; font-size: 2vw; }
@@ -248,6 +251,16 @@ $first = ctv_feed($scr);
       // 영상은 화면 가득. 소리는 관리자가 켠 영상만 (TV 브라우저가 막으면 소리 없이 재생)
       el.innerHTML = '<video class="full" playsinline preload="auto"' + (sl.sound ? '' : ' muted')
         + ' src="' + esc(sl.video) + '"></video>' + capHtml(sl);
+      return el;
+    }
+    if (sl.imgs && sl.imgs.length > 1) {
+      // 한 화면에 사진 여러 장 — 나란히 놓고, 뒤에는 첫 사진을 흐리게 깝니다
+      var cells = '';
+      for (var i = 0; i < sl.imgs.length; i++) {
+        cells += '<div class="cell" style="background-image:url(\'' + esc(sl.imgs[i]) + '\')"></div>';
+      }
+      el.innerHTML = '<div class="bg blur" style="background-image:url(\'' + esc(sl.imgs[0]) + '\')"></div>'
+        + '<div class="multi">' + cells + '</div>' + capHtml(sl);
       return el;
     }
     var photoOnly = sl.img && !sl.title;
