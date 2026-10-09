@@ -11,6 +11,7 @@ if (!defined('APP_DIR')) { http_response_code(403); exit('Forbidden'); }
  * ERP 업무 표와 섞이지 않게 표 이름을 모두 church_tv_ 로 시작합니다.
  * 사진 · 영상은 영속 폴더(/app/user_data/church_tv) 에 두고 tv.php?img= 로만 내줍니다.
  * 제목을 비운 슬라이드는 글 상자 없이 사진 · 영상만 화면 가득 보여 줍니다.
+ * 유튜브 링크는 영상 번호(youtube 칸)만 저장하고 TV 에서 유튜브 플레이어로 틉니다.
  */
 
 const CTV_TRANSITIONS = ['fade' => '겹쳐 바뀌기', 'slide' => '옆으로 밀기', 'zoom' => '살짝 커지며'];
@@ -70,6 +71,10 @@ function ctv_ensure_tables(): void
     if (!in_array('sound', $cols, true)) {
         $pdo->exec('ALTER TABLE church_tv_slides ADD COLUMN sound TINYINT(1) NOT NULL DEFAULT 0 AFTER seconds');
     }
+    // 2026-10-09 유튜브 영상 번호 칸 추가
+    if (!in_array('youtube', $cols, true)) {
+        $pdo->exec('ALTER TABLE church_tv_slides ADD COLUMN youtube VARCHAR(20) NULL AFTER image_file');
+    }
 
     if ((int)$pdo->query('SELECT COUNT(*) FROM church_tv_screens')->fetchColumn() === 0) {
         $ins = $pdo->prepare('INSERT INTO church_tv_screens (slug, name, sort_no, font_size) VALUES (?,?,?,?)');
@@ -127,6 +132,17 @@ function ctv_is_video(?string $file): bool
 {
     return $file !== null && $file !== ''
         && in_array(strtolower(pathinfo($file, PATHINFO_EXTENSION)), CTV_VIDEO_EXT, true);
+}
+
+/** 유튜브 주소에서 영상 번호(11자)를 뽑습니다. 아니면 null */
+function ctv_youtube_id(string $url): ?string
+{
+    $url = trim($url);
+    if (preg_match('/^[A-Za-z0-9_-]{11}$/', $url)) { return $url; }
+    if (preg_match('~(?:youtube\.com/(?:watch\?(?:.*&)?v=|embed/|shorts/|live/|v/)|youtu\.be/)([A-Za-z0-9_-]{11})~', $url, $m)) {
+        return $m[1];
+    }
+    return null;
 }
 
 /** 'HH:MM' 형식만 받습니다. 24:00 은 하루 끝 */
@@ -188,6 +204,7 @@ function ctv_feed(array $scr): array
             'date'    => (string)$s['date_text'],
             'img'     => $img,
             'video'   => $video,
+            'yt'      => ($s['youtube'] ?? null) ?: null,
             'sound'   => (int)($s['sound'] ?? 0) === 1,
             'theme'   => (string)$s['theme'],
             'seconds' => $s['seconds'] !== null ? (int)$s['seconds'] : null,
