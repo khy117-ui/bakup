@@ -62,6 +62,7 @@ function layout_head(string $title, string $active): void
             ['permissions', '관리자 / 권한', true],
             ['delete_requests', '삭제 요청 · 승인', true],
             ['boards', '홈페이지 게시판', true],
+            ['church_tv', '교회 TV 화면', true],
             ['activity_log', '작업로그', true],
             ['error_log', '오류 기록', true],
             ['settings', '환경설정', true],
