@@ -120,6 +120,11 @@ function ctv_ensure_tables(): void
         $pdo->exec('ALTER TABLE church_tv_slides ADD COLUMN box_pos VARCHAR(4) NULL AFTER theme');
         $pdo->exec("UPDATE church_tv_slides SET box_pos = 'lu' WHERE image_file = 'asset:church.jpg' AND title = '처음 오신 분을 환영합니다'");
     }
+    // 2026-10-09 송출 기간 — 이 날짜 · 시각부터 이 날짜 · 시각까지만 켭니다 (비우면 늘)
+    $scols = $pdo->query('SHOW COLUMNS FROM church_tv_screens')->fetchAll(PDO::FETCH_COLUMN);
+    if (!in_array('on_start', $scols, true)) {
+        $pdo->exec('ALTER TABLE church_tv_screens ADD COLUMN on_start DATETIME NULL AFTER on_to, ADD COLUMN on_end DATETIME NULL AFTER on_start');
+    }
     if (!in_array('group_id', $cols, true)) {
         $pdo->exec('ALTER TABLE church_tv_slides ADD COLUMN group_id INT NULL AFTER id');
     }
@@ -223,11 +228,14 @@ function ctv_clean_time(string $t, string $def): string
     return preg_match('/^([01]\d|2[0-3]):[0-5]\d$|^24:00$/', $t) ? $t : $def;
 }
 
-/** 지금 이 화면을 켜 둘 시간인지 (22:00~07:00 처럼 자정을 넘는 것도 됩니다) */
+/** 지금 이 화면을 켜 둘 시간인지 — 송출 기간(날짜 · 시각) 안이고, 매일 켜는 시각 안일 때 (22:00~07:00 처럼 자정을 넘는 것도 됩니다) */
 function ctv_is_on(array $scr, ?DateTimeImmutable $now = null): bool
 {
     if (!(int)$scr['is_active']) { return false; }
     $now = $now ?? new DateTimeImmutable('now', new DateTimeZone('Asia/Seoul'));
+    $stamp = $now->format('Y-m-d H:i:s');
+    if (!empty($scr['on_start']) && $stamp < (string)$scr['on_start']) { return false; }
+    if (!empty($scr['on_end']) && $stamp >= (string)$scr['on_end']) { return false; }
     $cur = $now->format('H:i');
     $from = (string)$scr['on_from'];
     $to = (string)$scr['on_to'];
