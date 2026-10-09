@@ -6,6 +6,7 @@
  *   GET /erp/tv.php?s=1f&feed=1   TV 가 1분마다 받아 가는 내용 (JSON)
  *   GET /erp/tv.php?img=12        슬라이드 사진 · 영상 (영상은 끊어 받기(Range) 지원)
  *   GET /erp/tv.php?a=logo.png    기본 사진 · 로고
+ * 유튜브 슬라이드는 유튜브 플레이어(iframe_api)로 틀고, 끝나면 다음 장으로 넘어갑니다.
  *
  * 내용은 ERP > 시스템 > 교회 TV 화면 에서 정합니다. TV 에서는 아무것도 누르지 않습니다.
  * 낡은 안드로이드 TV 브라우저에서도 돌도록 스크립트는 옛 문법(ES5)만 씁니다.
@@ -185,6 +186,8 @@ $first = ctv_feed($scr);
           background-repeat: no-repeat; background-position: center; }
   .blur { -webkit-filter: blur(40px) brightness(.55); filter: blur(40px) brightness(.55); }
   video.full { object-fit: contain; background: #000; }
+  .yt { position: absolute; left: 0; top: 0; width: 100%; height: 100%; background: #000; }
+  .yt iframe { width: 100%; height: 100%; border: 0; }
   .black { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background: #000; z-index: 9; display: none; }
   .empty { position: fixed; left: 0; top: 0; right: 0; bottom: 0; display: flex; align-items: center;
            justify-content: center; color: #555; font-size: 2vw; }
@@ -203,6 +206,7 @@ $first = ctv_feed($scr);
   var corner = document.getElementById('corner');
   var clock = document.getElementById('clock');
   var idx = -1, timer = null, cur = null, posN = 0, loadedAt = new Date().getTime();
+  var ytN = 0, ytReady = false, ytWait = [];
   var POS = ['p-left', 'p-right p-up', 'p-center', 'p-right', 'p-left p-up'];
 
   function esc(s) {
@@ -228,6 +232,10 @@ $first = ctv_feed($scr);
   function build(sl, n) {
     var el = document.createElement('div');
     el.className = 'slide' + (n % 2 ? ' kb2' : '');
+    if (sl.yt) {
+      el.innerHTML = '<div class="yt"><div id="yt' + (++ytN) + '"></div></div>';
+      return el;
+    }
     if (sl.video) {
       // 영상은 화면 가득. 소리는 관리자가 켠 영상만 (TV 브라우저가 막으면 소리 없이 재생)
       el.innerHTML = '<video class="full" playsinline preload="auto"' + (sl.sound ? '' : ' muted')
@@ -278,6 +286,57 @@ $first = ctv_feed($scr);
     }
   }
 
+  // 유튜브 플레이어는 처음 쓸 때 한 번만 불러옵니다
+  function withYT(fn) {
+    if (ytReady) { fn(); return; }
+    ytWait.push(fn);
+    if (ytWait.length > 1) { return; }
+    window.onYouTubeIframeAPIReady = function () {
+      ytReady = true;
+      var w = ytWait; ytWait = [];
+      for (var i = 0; i < w.length; i++) { w[i](); }
+    };
+    var sc = document.createElement('script');
+    sc.src = 'https://www.youtube.com/iframe_api';
+    document.getElementsByTagName('head')[0].appendChild(sc);
+  }
+
+  function playYouTube(el, sl) {
+    var done = false;
+    function end(wait) {
+      if (done || el !== cur) { return; }
+      done = true;
+      clearTimeout(timer);
+      timer = setTimeout(next, wait);
+    }
+    var box = el.getElementsByTagName('div')[1];
+    // 인터넷이 막혀 플레이어를 못 부르면 20초 뒤 건너뜁니다
+    var guard = setTimeout(function () { end(0); }, 20000);
+    withYT(function () {
+      if (done || el !== cur || !box) { return; }
+      el.ytPlayer = new YT.Player(box.id, {
+        width: '100%', height: '100%', videoId: sl.yt,
+        playerVars: { autoplay: 1, mute: sl.sound ? 0 : 1, controls: 0, rel: 0, modestbranding: 1,
+                      playsinline: 1, iv_load_policy: 3, disablekb: 1, fs: 0 },
+        events: {
+          onReady: function (e) {
+            clearTimeout(guard);
+            if (!sl.sound) { e.target.mute(); }
+            e.target.playVideo();
+          },
+          onStateChange: function (e) { if (e.data === 0) { end(300); } },     // 0 = 끝남
+          onError: function () { clearTimeout(guard); end(3000); }              // 퍼가기 막힌 영상 · 지워진 영상
+        }
+      });
+    });
+  }
+
+  function stopMedia(old) {
+    var ov = old.getElementsByTagName('video');
+    for (var i = 0; i < ov.length; i++) { try { ov[i].pause(); } catch (e) {} }
+    if (old.ytPlayer) { try { old.ytPlayer.destroy(); } catch (e) {} old.ytPlayer = null; }
+  }
+
   function next() {
     clearTimeout(timer);
     var list = data.slides || [];
@@ -297,12 +356,16 @@ $first = ctv_feed($scr);
     setTimeout(function () {
       el.className += ' on';
       if (old) {
-        var ov = old.getElementsByTagName('video');
-        for (var i = 0; i < ov.length; i++) { try { ov[i].pause(); } catch (e) {} }
+        stopMedia(old);
         old.className = old.className.replace(' on', '') + ' out';
         setTimeout(function () { if (old.parentNode) { old.parentNode.removeChild(old); } }, 1600);
       }
     }, 60);
+    if (sl.yt) {
+      playYouTube(el, sl);
+      timer = setTimeout(next, (sl.seconds ? sl.seconds : 1200) * 1000);
+      return;
+    }
     if (sl.video) {
       playVideo(el, sl);
       // 시간을 정했으면 그만큼만, 아니면 영상이 끝날 때까지 (멈춰도 20분 뒤에는 넘어갑니다)
