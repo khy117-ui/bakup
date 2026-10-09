@@ -345,6 +345,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
             }
             redirect($back);
         }
+        if ($act === 'move_group' && (post('do') === 'on' || post('do') === 'off')) {
+            // 체크한 슬라이드 켜기 · 끄기
+            $ids = array_values(array_filter(array_map('intval', (array)($_POST['ids'] ?? []))));
+            if (!$ids) { throw new RuntimeException('켜거나 끌 슬라이드를 체크해 주세요.'); }
+            $on = post('do') === 'on' ? 1 : 0;
+            $pdo->exec('UPDATE church_tv_slides SET is_active = ' . $on . ' WHERE id IN (' . implode(',', $ids) . ')');
+            flash(count($ids) . '개를 ' . ($on ? '켰습니다' : '껐습니다') . '. 1분 안에 TV 에 반영됩니다.');
+            redirect($back);
+        }
+        if ($act === 'all_on') {
+            // 전체 슬라이드 켜기 (TV 탭에서는 그 TV 에 넣은 것만)
+            $sid = (int)post('screen_id');
+            $n = $sid > 0
+                ? $pdo->exec('UPDATE church_tv_slides SET is_active = 1 WHERE is_active = 0 AND id IN (SELECT slide_id FROM church_tv_slide_screens WHERE screen_id = ' . $sid . ')')
+                : $pdo->exec('UPDATE church_tv_slides SET is_active = 1 WHERE is_active = 0');
+            flash($n ? $n . '개를 켰습니다. 1분 안에 TV 에 반영됩니다.' : '꺼진 슬라이드가 없습니다.');
+            redirect($back);
+        }
         if ($act === 'move_group' && post('do') === 'del') {
             // 체크한 슬라이드를 한꺼번에 지우기 (사진 · 영상 파일도 지웁니다)
             $ids = array_values(array_filter(array_map('intval', (array)($_POST['ids'] ?? []))));
@@ -783,11 +801,17 @@ layout_head('교회 TV 화면', 'church_tv');
     <input type="date" name="post_date" title="날짜도 바꾸려면 고르세요 (비우면 그대로)" style="height:30px;width:auto">
     <button class="btn sm pri" name="do" value="move">옮기기</button>
     <span style="color:var(--ink3)">날짜를 비워 두면 올린 날짜 그대로 옮깁니다.</span>
-    <button class="btn sm" name="do" value="del" style="margin-left:auto;color:#8A1C1C"
+    <span style="margin-left:auto"></span>
+    <button class="btn sm" name="do" value="on" onclick="return ctvPicked('켤')">체크한 것 켜기</button>
+    <button class="btn sm" name="do" value="off" onclick="return ctvPicked('끌')">체크한 것 끄기</button>
+    <button class="btn sm" name="do" value="del" style="color:#8A1C1C"
             onclick="var n = document.querySelectorAll('input[form=ctv-move]:checked').length;
                      if (!n) { alert('지울 슬라이드를 체크해 주세요.'); return false; }
                      return confirm('체크한 ' + n + '개를 지울까요? 사진 · 영상 파일도 함께 지워집니다.');">체크한 것 삭제</button>
+    <button class="btn sm pri" form="ctv-all-on" title="꺼 둔 슬라이드를 모두 켭니다<?= $tabScreen ? ' (' . h($tabScreen['name']) . '에 넣은 것)' : '' ?>">전체 슬라이드 켜기</button>
   </form>
+  <form id="ctv-all-on" method="post" onsubmit="return confirm('꺼 둔 슬라이드를 모두 켤까요?');"><?= csrf_field() ?>
+    <input type="hidden" name="act" value="all_on"><input type="hidden" name="screen_id" value="<?= $tabScreen ? (int)$tabScreen['id'] : 0 ?>"></form>
   <?php if (!$slides): ?>
     <div class="empty">슬라이드가 없습니다. [전체 슬라이드] 에서 이 TV 칸을 누르거나 [슬라이드 추가] 를 누르세요.</div>
   <?php endif; ?>
@@ -816,11 +840,6 @@ layout_head('교회 TV 화면', 'church_tv');
           <input type="hidden" name="act" value="bunch_screen"><input type="hidden" name="group_id" value="<?= $gid ?>">
           <input type="hidden" name="screen_id" value="<?= (int)$sc['id'] ?>">
           <button class="btn sm<?= $all ? ' pri' : '' ?>" title="<?= $all ? '묶음 전체를 이 TV 에서 빼기' : '묶음 전체를 이 TV 에 넣기' ?>"><?= h(preg_replace('/\s*모니터$/u', '', (string)$sc['name'])) ?></button></form>
-        <?php endforeach; ?>
-        <?php foreach (['1' => '모두 켜기', '0' => '모두 끄기'] as $on => $lb): ?>
-        <form method="post" style="display:inline"><?= csrf_field() ?>
-          <input type="hidden" name="act" value="bunch_active"><input type="hidden" name="group_id" value="<?= $gid ?>">
-          <input type="hidden" name="on" value="<?= $on ?>"><button class="btn sm"><?= $lb ?></button></form>
         <?php endforeach; ?>
       <?php endif; ?>
       <?php if ($gid): ?><a class="btn sm" style="margin-left:auto" href="<?= $tabQ ?>&amp;group=<?= $gid ?>#g<?= $gid ?>">이름 · 설정</a><?php endif; ?>
@@ -855,12 +874,6 @@ layout_head('교회 TV 화면', 'church_tv');
     <div style="display:flex;gap:6px;align-items:center;padding:8px 14px 4px;font-size:13px">
       <b><?= $pd !== '' ? h(ctv_date_ko($pd)) : '날짜 없음' ?></b>
       <span style="color:var(--ink3);font-size:12px"><?= count($list) ?>개</span>
-      <?php if ($pd !== ''): foreach (['1' => '이 날 켜기', '0' => '이 날 끄기'] as $on => $lb): ?>
-      <form method="post" style="display:inline"><?= csrf_field() ?>
-        <input type="hidden" name="act" value="bunch_active"><input type="hidden" name="group_id" value="<?= $gid ?>">
-        <input type="hidden" name="post_date" value="<?= h($pd) ?>">
-        <input type="hidden" name="on" value="<?= $on ?>"><button class="btn sm"><?= $lb ?></button></form>
-      <?php endforeach; endif; ?>
     </div>
   <table>
     <thead><tr><th class="c" style="width:84px">순서</th><th style="width:110px"></th><th>슬라이드</th>
@@ -879,11 +892,26 @@ layout_head('교회 TV 화면', 'church_tv');
             <input type="hidden" name="dir" value="<?= $d ?>"><button class="btn sm" style="padding:0 6px"><?= $sym ?></button></form>
           <?php endforeach; ?></td>
         <td><?= ctv_thumb($s) ?></td>
-        <td><?php if ($s['label']): ?><div style="font-size:11.5px;color:#A86F00;font-weight:700"><?= h($s['label']) ?></div><?php endif; ?>
-          <div style="font-weight:700"><?= $s['title'] !== '' ? h($s['title'])
-            : '<span style="color:var(--ink3);font-weight:400">' . (!empty($s['youtube']) ? '유튜브' : (ctv_is_video($s['image_file']) ? '영상' : '사진')) . '만 (글 없음)</span>' ?></div>
-          <div style="font-size:12px;color:var(--ink3)"><?= h(mb_strimwidth((string)$s['body'], 0, 90, '…')) ?></div>
-          <?php if ($s['start_date'] || $s['end_date']): ?><div style="font-size:11.5px;color:var(--ink3)">기간 <?= h($s['start_date'] ?? '') ?> ~ <?= h($s['end_date'] ?? '') ?></div><?php endif; ?></td>
+        <td><?php
+          // 한 줄로 간단히: 제목 (없으면 내용 첫 줄). 누르면 내용 · 날짜 · 기간이 펼쳐집니다
+          $kind = !empty($s['youtube']) ? '유튜브' : (ctv_is_video($s['image_file']) ? '영상' : ($s['image_file'] ? '사진' : '글'));
+          $body = trim((string)$s['body']);
+          $first = $body !== '' ? trim((string)strtok($body, "\r\n")) : '';
+          $head = $s['title'] !== '' ? $s['title'] : $first;
+          $more = $body !== '' || $s['label'] !== '' || $s['date_text'] !== '' || $s['start_date'] || $s['end_date'];
+          $line = ($s['label'] !== '' ? '<span style="font-size:11.5px;color:#A86F00;font-weight:700;margin-right:6px">' . h($s['label']) . '</span>' : '')
+                . ($head !== '' ? '<b>' . h(mb_strimwidth($head, 0, 60, '…')) . '</b>'
+                                : '<span style="color:var(--ink3)">' . $kind . '만 (글 없음)</span>');
+          if ($more): ?>
+          <details class="ctv-d"><summary><?= $line ?></summary>
+            <div style="margin-top:6px;padding:8px 10px;background:#FAFAF7;border-radius:6px;font-size:12.5px;line-height:1.6">
+              <?php if ($s['title'] !== ''): ?><div><span style="color:var(--ink3)">제목</span> <?= h($s['title']) ?></div><?php endif; ?>
+              <?php if ($body !== ''): ?><div style="white-space:pre-wrap;margin-top:2px"><?= h($body) ?></div><?php endif; ?>
+              <?php if ($s['date_text'] !== ''): ?><div style="color:var(--ink3)">날짜 글씨 <?= h($s['date_text']) ?></div><?php endif; ?>
+              <?php if ($s['start_date'] || $s['end_date']): ?><div style="color:var(--ink3)">기간 <?= h($s['start_date'] ?? '') ?> ~ <?= h($s['end_date'] ?? '') ?></div><?php endif; ?>
+              <?php if ($s['title'] === '' && $body !== '' && $s['image_file']): ?><div style="color:#A86F00">제목이 비어 있어 TV 에는 <?= $kind ?>만 나옵니다. 글도 띄우려면 [수정] 에서 제목을 넣으세요.</div><?php endif; ?>
+            </div></details>
+          <?php else: ?><div><?= $line ?></div><?php endif; ?></td>
         <td style="white-space:nowrap">
           <?php foreach ($screens as $sc): $in = isset($links[$sid][(int)$sc['id']]); ?>
           <form method="post" style="display:inline"><?= csrf_field() ?>
@@ -922,6 +950,12 @@ layout_head('교회 TV 화면', 'church_tv');
     <button class="btn sm">만들기</button>
   </form>
 </div>
+<style>
+  .ctv-d summary { cursor: pointer; list-style: none; }
+  .ctv-d summary::-webkit-details-marker { display: none; }
+  .ctv-d summary::before { content: '▸'; color: var(--ink3); margin-right: 6px; font-size: 11px; }
+  .ctv-d[open] summary::before { content: '▾'; }
+</style>
 <script>
 // 한꺼번에 올리기 — 고른 개수 · 크기를 보여 주고, 올라가는 정도를 막대로 보여 줍니다
 (function () {
@@ -956,6 +990,11 @@ layout_head('교회 TV 화면', 'church_tv');
     x.send(new FormData(form));
   });
 })();
+function ctvPicked(what) {
+  if (document.querySelectorAll('input[form=ctv-move]:checked').length) { return true; }
+  alert(what + ' 슬라이드를 체크해 주세요.');
+  return false;
+}
 function ctvCopy(t) {
   if (navigator.clipboard) { navigator.clipboard.writeText(t).then(function () { alert('주소를 복사했습니다.\n' + t); }); }
   else { prompt('주소를 복사하세요', t); }
