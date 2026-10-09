@@ -363,8 +363,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
             $name = trim(mb_substr(post('name'), 0, 60));
             if ($name === '') { throw new RuntimeException('묶음 이름을 넣어 주세요.'); }
             if ($id > 0) {
-                $pdo->prepare('UPDATE church_tv_groups SET name = ?, show_caption = ? WHERE id = ?')
-                    ->execute([$name, post('show_caption') === '1' ? 1 : 0, $id]);
+                $per = in_array((int)post('per_screen'), CTV_PER_SCREEN, true) ? (int)post('per_screen') : 1;
+                $pdo->prepare('UPDATE church_tv_groups SET name = ?, show_caption = ?, per_screen = ? WHERE id = ?')
+                    ->execute([$name, post('show_caption') === '1' ? 1 : 0, $per, $id]);
                 flash('"' . $name . '" 묶음을 저장했습니다.');
             } else {
                 $next = (int)$pdo->query('SELECT COALESCE(MAX(sort_no),0)+1 FROM church_tv_groups')->fetchColumn();
@@ -775,7 +776,7 @@ layout_head('교회 TV 화면', 'church_tv');
           <input type="hidden" name="dir" value="<?= $d ?>"><button class="btn sm" style="padding:0 6px" title="묶음 순서"><?= $sym ?></button></form>
       <?php endforeach; endif; ?>
       <b style="font-size:15px"><?= h($g['name']) ?></b>
-      <span style="color:var(--ink3);font-size:12px"><?= $cnt ?>개</span>
+      <span style="color:var(--ink3);font-size:12px"><?= $cnt ?>개<?= (int)($g['per_screen'] ?? 1) > 1 ? ' · 사진은 한 화면에 ' . (int)$g['per_screen'] . '장씩' : '' ?></span>
       <?php if ($cnt): ?>
         <span style="margin-left:8px;font-size:12px;color:var(--ink3)">묶음 전체</span>
         <?php foreach ($screens as $sc):
@@ -800,6 +801,10 @@ layout_head('교회 TV 화면', 'church_tv');
         <input type="text" name="name" value="<?= h($g['name']) ?>" maxlength="60" required style="height:30px;width:220px">
         <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" name="show_caption" value="1" style="width:auto"<?= (int)$g['show_caption'] ? ' checked' : '' ?>>
           TV 아래에 "<?= h($g['name']) ?> · 날짜" 작게 보이기</label>
+        <label style="display:flex;gap:4px;align-items:center">글 없는 사진을 한 화면에
+          <select name="per_screen" style="height:30px;width:auto">
+            <?php foreach (CTV_PER_SCREEN as $n): ?><option value="<?= $n ?>"<?= (int)($g['per_screen'] ?? 1) === $n ? ' selected' : '' ?>><?= $n ?>장</option><?php endforeach; ?>
+          </select> 씩</label>
         <button class="btn sm pri">저장</button></form>
       <form method="post" style="display:inline" onsubmit="return confirm('묶음을 지울까요? 안의 슬라이드는 지워지지 않고 묶음 없음으로 갑니다.');"><?= csrf_field() ?>
         <input type="hidden" name="act" value="group_del"><input type="hidden" name="id" value="<?= $gid ?>">
