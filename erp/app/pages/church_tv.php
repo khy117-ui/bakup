@@ -11,7 +11,8 @@ require_once APP_DIR . '/imgshrink.php';
  *   · 위: TV 목록 — 주소 · 미리보기 · 켜기/끄기 · 지금 새로고침 · 설정
  *   · 사진 · 영상 여러 개 한꺼번에 올리기 — 한 개가 한 장이 되고, 사진은 보여 줄 시간을 고릅니다
  *   · 유튜브 링크 넣기 — 링크 한 줄이 한 장 (TV 에서 소리 없이 자동 재생, 끝나면 다음 장)
- *   · 아래: 슬라이드 — TV 마다 넣고 빼기, 순서, 기간, 시간, 사진 · 영상
+ *   · 아래: 슬라이드 — 묶음(인도네시아 선교 · 몽골 선교 …) > 올린 날짜 별로 모아 보여 줍니다.
+ *     TV 마다 넣고 빼기, 순서, 기간, 시간, 사진 · 영상, 여러 개 골라 다른 묶음으로 옮기기
  * TV 는 1분마다 tv.php 에서 내용을 받아 가므로 여기서 저장하면 저절로 바뀝니다.
  * 이 화면에 권한 표(ROUTE_PERMS) 항목이 없으므로 최고관리자만 엽니다.
  */
@@ -68,6 +69,28 @@ function ctv_files(string $field): array
                   'error' => $F['error'][$i] ?? UPLOAD_ERR_NO_FILE, 'size' => $F['size'][$i] ?? 0];
     }
     return $out;
+}
+
+/** 올리기 칸에서 고른 묶음 (새 이름을 적었으면 묶음을 새로 만듭니다) */
+function ctv_post_group(PDO $pdo): ?int
+{
+    $new = trim(mb_substr(post('new_group'), 0, 60));
+    if ($new !== '') {
+        $st = $pdo->prepare('SELECT id FROM church_tv_groups WHERE name = ?');
+        $st->execute([$new]);
+        if ($id = (int)$st->fetchColumn()) { return $id; }
+        $next = (int)$pdo->query('SELECT COALESCE(MAX(sort_no),0)+1 FROM church_tv_groups')->fetchColumn();
+        $pdo->prepare('INSERT INTO church_tv_groups (name, sort_no) VALUES (?, ?)')->execute([$new, $next]);
+        return (int)$pdo->lastInsertId();
+    }
+    $gid = (int)post('group_id');
+    return $gid > 0 ? $gid : null;
+}
+
+/** 날짜 칸 (비우면 오늘) */
+function ctv_post_date(): string
+{
+    return preg_match('/^\d{4}-\d{2}-\d{2}$/', post('post_date')) ? post('post_date') : date('Y-m-d');
 }
 
 function ctv_remove_file(?string $f): void
@@ -149,8 +172,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
             $sec = $sec >= 4 ? min(120, $sec) : null;
             $screenIds = array_map('intval', (array)($_POST['screens'] ?? []));
             $sort = (int)$pdo->query('SELECT COALESCE(MAX(sort_no),0) FROM church_tv_slides')->fetchColumn();
-            $ins = $pdo->prepare('INSERT INTO church_tv_slides (label, title, image_file, seconds, is_active, start_date, end_date, sort_no)
-                                  VALUES (?, \'\', ?, ?, 1, ?, ?, ?)');
+            $gid = ctv_post_group($pdo);
+            $pd = ctv_post_date();
+            $ins = $pdo->prepare('INSERT INTO church_tv_slides (group_id, post_date, label, title, image_file, seconds, is_active, start_date, end_date, sort_no)
+                                  VALUES (?, ?, ?, \'\', ?, ?, 1, ?, ?, ?)');
             $link = $pdo->prepare('INSERT IGNORE INTO church_tv_slide_screens (slide_id, screen_id) VALUES (?,?)');
             $sd = preg_match('/^\d{4}-\d{2}-\d{2}$/', post('start_date')) ? post('start_date') : null;
             $ed = preg_match('/^\d{4}-\d{2}-\d{2}$/', post('end_date')) ? post('end_date') : null;
@@ -161,7 +186,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
                     if ($name === null) { continue; }
                     $isV = ctv_is_video($name);
                     // 영상은 고른 시간 대신 끝까지 재생합니다
-                    $ins->execute([mb_substr(post('label'), 0, 40), $name, $isV ? null : $sec, $sd, $ed, ++$sort]);
+                    $ins->execute([$gid, $pd, mb_substr(post('label'), 0, 40), $name, $isV ? null : $sec, $sd, $ed, ++$sort]);
                     $sid = (int)$pdo->lastInsertId();
                     foreach ($screenIds as $scId) { $link->execute([$sid, $scId]); }
                     $ok++;
@@ -191,15 +216,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
             $sd = preg_match('/^\d{4}-\d{2}-\d{2}$/', post('start_date')) ? post('start_date') : null;
             $ed = preg_match('/^\d{4}-\d{2}-\d{2}$/', post('end_date')) ? post('end_date') : null;
             $sort = (int)$pdo->query('SELECT COALESCE(MAX(sort_no),0) FROM church_tv_slides')->fetchColumn();
-            $ins = $pdo->prepare('INSERT INTO church_tv_slides (label, title, youtube, seconds, sound, is_active, start_date, end_date, sort_no)
-                                  VALUES (\'\', \'\', ?, ?, ?, 1, ?, ?, ?)');
+            $gid = ctv_post_group($pdo);
+            $pd = ctv_post_date();
+            $ins = $pdo->prepare('INSERT INTO church_tv_slides (group_id, post_date, label, title, youtube, seconds, sound, is_active, start_date, end_date, sort_no)
+                                  VALUES (?, ?, \'\', \'\', ?, ?, ?, 1, ?, ?, ?)');
             $link = $pdo->prepare('INSERT IGNORE INTO church_tv_slide_screens (slide_id, screen_id) VALUES (?,?)');
             $ok = 0; $bad = [];
             foreach (preg_split('/\s+/', post('links')) as $line) {
                 if ($line === '') { continue; }
                 $yid = ctv_youtube_id($line);
                 if ($yid === null) { $bad[] = mb_strimwidth($line, 0, 40, '…'); continue; }
-                $ins->execute([$yid, $sec, post('sound') === '1' ? 1 : 0, $sd, $ed, ++$sort]);
+                $ins->execute([$gid, $pd, $yid, $sec, post('sound') === '1' ? 1 : 0, $sd, $ed, ++$sort]);
                 $sid = (int)$pdo->lastInsertId();
                 foreach ($screenIds as $scId) { $link->execute([$sid, $scId]); }
                 $ok++;
@@ -248,15 +275,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
                 mb_substr(post('label'), 0, 40), $title, mb_substr(post('body'), 0, 600), mb_substr(post('date_text'), 0, 40),
                 $img, array_key_exists(post('theme'), CTV_THEMES) ? post('theme') : 'morning',
                 $sec >= 4 ? min(3600, $sec) : null, post('sound') === '1' ? 1 : 0, post('is_active') === '1' ? 1 : 0, $sd, $ed, $yt,
+                ctv_post_group($pdo), ctv_post_date(),
             ];
             if ($id > 0) {
                 $vals[] = $id;
                 $pdo->prepare('UPDATE church_tv_slides SET label=?, title=?, body=?, date_text=?, image_file=?, theme=?,
-                               seconds=?, sound=?, is_active=?, start_date=?, end_date=?, youtube=?, updated_at=NOW() WHERE id = ?')->execute($vals);
+                               seconds=?, sound=?, is_active=?, start_date=?, end_date=?, youtube=?, group_id=?, post_date=?, updated_at=NOW() WHERE id = ?')->execute($vals);
             } else {
                 $vals[] = (int)$pdo->query('SELECT COALESCE(MAX(sort_no),0)+1 FROM church_tv_slides')->fetchColumn();
                 $pdo->prepare('INSERT INTO church_tv_slides (label, title, body, date_text, image_file, theme, seconds, sound,
-                               is_active, start_date, end_date, youtube, sort_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')->execute($vals);
+                               is_active, start_date, end_date, youtube, group_id, post_date, sort_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')->execute($vals);
                 $id = (int)$pdo->lastInsertId();
             }
             $pdo->prepare('DELETE FROM church_tv_slide_screens WHERE slide_id = ?')->execute([$id]);
@@ -299,14 +327,92 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
             redirect($back);
         }
         if ($act === 'slide_move') {
-            // 위 · 아래 화살표: 이웃과 순서를 맞바꿉니다
-            $ids = $pdo->query('SELECT id FROM church_tv_slides ORDER BY sort_no, id')->fetchAll(PDO::FETCH_COLUMN);
-            $i = array_search((int)post('id'), array_map('intval', $ids), true);
+            // 위 · 아래 화살표: 같은 묶음 · 같은 날짜 안에서 이웃과 순서를 맞바꿉니다
+            $st = $pdo->prepare('SELECT group_id, post_date FROM church_tv_slides WHERE id = ?');
+            $st->execute([(int)post('id')]);
+            if ($me = $st->fetch()) {
+                $q = $pdo->prepare('SELECT id FROM church_tv_slides WHERE group_id <=> ? AND post_date <=> ? ORDER BY sort_no, id');
+                $q->execute([$me['group_id'], $me['post_date']]);
+                $ids = array_map('intval', $q->fetchAll(PDO::FETCH_COLUMN));
+                $i = array_search((int)post('id'), $ids, true);
+                $j = $i === false ? false : (post('dir') === 'up' ? $i - 1 : $i + 1);
+                if ($i !== false && $j >= 0 && $j < count($ids)) {
+                    [$ids[$i], $ids[$j]] = [$ids[$j], $ids[$i]];
+                    // 이 날짜 안의 순서만 1, 2, 3 … 으로 다시 매깁니다 (다른 묶음 · 날짜와는 섞이지 않습니다)
+                    $up = $pdo->prepare('UPDATE church_tv_slides SET sort_no = ? WHERE id = ?');
+                    foreach ($ids as $n => $x) { $up->execute([$n + 1, $x]); }
+                }
+            }
+            redirect($back);
+        }
+        if ($act === 'move_group') {
+            // 체크한 슬라이드를 다른 묶음으로 (묶음 없음도 됩니다)
+            $ids = array_values(array_filter(array_map('intval', (array)($_POST['ids'] ?? []))));
+            if (!$ids) { throw new RuntimeException('옮길 슬라이드를 체크해 주세요.'); }
+            $gid = ctv_post_group($pdo);
+            $in = implode(',', array_fill(0, count($ids), '?'));
+            $pdo->prepare("UPDATE church_tv_slides SET group_id = ?, updated_at = NOW() WHERE id IN ($in)")->execute(array_merge([$gid], $ids));
+            if (preg_match('/^\d{4}-\d{2}-\d{2}$/', post('post_date'))) {
+                $pdo->prepare("UPDATE church_tv_slides SET post_date = ? WHERE id IN ($in)")->execute(array_merge([post('post_date')], $ids));
+            }
+            flash(count($ids) . '개를 옮겼습니다.');
+            redirect($back);
+        }
+        if ($act === 'group_save') {
+            $id = (int)post('id');
+            $name = trim(mb_substr(post('name'), 0, 60));
+            if ($name === '') { throw new RuntimeException('묶음 이름을 넣어 주세요.'); }
+            if ($id > 0) {
+                $pdo->prepare('UPDATE church_tv_groups SET name = ?, show_caption = ? WHERE id = ?')
+                    ->execute([$name, post('show_caption') === '1' ? 1 : 0, $id]);
+                flash('"' . $name . '" 묶음을 저장했습니다.');
+            } else {
+                $next = (int)$pdo->query('SELECT COALESCE(MAX(sort_no),0)+1 FROM church_tv_groups')->fetchColumn();
+                $pdo->prepare('INSERT INTO church_tv_groups (name, sort_no) VALUES (?, ?)')->execute([$name, $next]);
+                flash('"' . $name . '" 묶음을 만들었습니다. 올릴 때 이 묶음을 고르세요.');
+            }
+            redirect($back);
+        }
+        if ($act === 'group_del') {
+            $id = (int)post('id');
+            $pdo->prepare('UPDATE church_tv_slides SET group_id = NULL WHERE group_id = ?')->execute([$id]);
+            $pdo->prepare('DELETE FROM church_tv_groups WHERE id = ?')->execute([$id]);
+            flash('묶음을 지웠습니다. 안에 있던 슬라이드는 지우지 않고 "묶음 없음" 으로 옮겼습니다.');
+            redirect($back);
+        }
+        if ($act === 'group_move') {
+            $ids = array_map('intval', $pdo->query('SELECT id FROM church_tv_groups ORDER BY sort_no, id')->fetchAll(PDO::FETCH_COLUMN));
+            $i = array_search((int)post('id'), $ids, true);
             $j = $i === false ? false : (post('dir') === 'up' ? $i - 1 : $i + 1);
             if ($i !== false && $j >= 0 && $j < count($ids)) {
                 [$ids[$i], $ids[$j]] = [$ids[$j], $ids[$i]];
-                $up = $pdo->prepare('UPDATE church_tv_slides SET sort_no = ? WHERE id = ?');
-                foreach ($ids as $n => $sid) { $up->execute([$n + 1, (int)$sid]); }
+                $up = $pdo->prepare('UPDATE church_tv_groups SET sort_no = ? WHERE id = ?');
+                foreach ($ids as $n => $x) { $up->execute([$n + 1, $x]); }
+            }
+            redirect($back);
+        }
+        if ($act === 'bunch_screen' || $act === 'bunch_active') {
+            // 묶음 전체 (또는 묶음 안 한 날짜) 를 한 번에: TV 넣기 · 빼기 / 켜기 · 끄기
+            $gid = (int)post('group_id');
+            $where = $gid > 0 ? 'group_id = ?' : 'group_id IS NULL';
+            $args = $gid > 0 ? [$gid] : [];
+            if (preg_match('/^\d{4}-\d{2}-\d{2}$/', post('post_date'))) { $where .= ' AND post_date = ?'; $args[] = post('post_date'); }
+            $st = $pdo->prepare("SELECT id FROM church_tv_slides WHERE $where");
+            $st->execute($args);
+            $ids = array_map('intval', $st->fetchAll(PDO::FETCH_COLUMN));
+            if ($ids && $act === 'bunch_screen') {
+                $sid = (int)post('screen_id');
+                $in = implode(',', $ids);
+                $have = (int)$pdo->query("SELECT COUNT(*) FROM church_tv_slide_screens WHERE screen_id = $sid AND slide_id IN ($in)")->fetchColumn();
+                if ($have === count($ids)) {
+                    $pdo->exec("DELETE FROM church_tv_slide_screens WHERE screen_id = $sid AND slide_id IN ($in)");
+                } else {
+                    $link = $pdo->prepare('INSERT IGNORE INTO church_tv_slide_screens (slide_id, screen_id) VALUES (?,?)');
+                    foreach ($ids as $x) { $link->execute([$x, $sid]); }
+                }
+            }
+            if ($ids && $act === 'bunch_active') {
+                $pdo->exec('UPDATE church_tv_slides SET is_active = ' . (post('on') === '1' ? 1 : 0) . ' WHERE id IN (' . implode(',', $ids) . ')');
             }
             redirect($back);
         }
@@ -326,7 +432,8 @@ $links = [];
 foreach ($pdo->query('SELECT slide_id, screen_id FROM church_tv_slide_screens')->fetchAll() as $l) {
     $links[(int)$l['slide_id']][(int)$l['screen_id']] = true;
 }
-$allSlides = $pdo->query('SELECT * FROM church_tv_slides ORDER BY sort_no, id')->fetchAll();
+$groups = $pdo->query('SELECT * FROM church_tv_groups ORDER BY sort_no, id')->fetchAll();
+$allSlides = $pdo->query('SELECT s.* FROM church_tv_slides s LEFT JOIN church_tv_groups g ON g.id = s.group_id ORDER BY ' . CTV_ORDER)->fetchAll();
 $slides = $tabScreen
     ? array_values(array_filter($allSlides, fn($s) => isset($links[(int)$s['id']][(int)$tabScreen['id']])))
     : $allSlides;
@@ -335,7 +442,8 @@ $liveIds = $tabScreen ? array_map(fn($s) => (int)$s['id'], ctv_slides_for((int)$
 $editSlide = null;
 if (query('slide') === 'new') {
     $editSlide = ['id' => 0, 'label' => '', 'title' => '', 'body' => '', 'date_text' => '', 'image_file' => null,
-                  'theme' => 'morning', 'seconds' => null, 'sound' => 0, 'youtube' => null, 'is_active' => 1, 'start_date' => null, 'end_date' => null];
+                  'theme' => 'morning', 'seconds' => null, 'sound' => 0, 'youtube' => null, 'group_id' => null,
+                  'post_date' => date('Y-m-d'), 'is_active' => 1, 'start_date' => null, 'end_date' => null];
 } elseif ((int)query('slide') > 0) {
     foreach ($allSlides as $s) { if ((int)$s['id'] === (int)query('slide')) { $editSlide = $s; } }
 }
@@ -345,6 +453,19 @@ if (query('screen') === 'new') {
                    'font_size' => 'normal', 'box_pos' => 'auto', 'show_clock' => 1, 'on_from' => '00:00', 'on_to' => '24:00'];
 } elseif ((int)query('screen') > 0) {
     foreach ($screens as $s) { if ((int)$s['id'] === (int)query('screen')) { $editScreen = $s; } }
+}
+
+/** 묶음 고르는 칸 + 새 묶음 이름 + 날짜 (올리기 · 수정 · 옮기기 공통) */
+function ctv_group_fields(array $groups, ?int $sel, ?string $date, bool $dateRequired = true): string
+{
+    $o = '<option value="0">묶음 없음</option>';
+    foreach ($groups as $g) {
+        $o .= '<option value="' . (int)$g['id'] . '"' . ($sel === (int)$g['id'] ? ' selected' : '') . '>' . h($g['name']) . '</option>';
+    }
+    return '<div class="fw w2"><label>묶음</label><select name="group_id">' . $o . '</select></div>'
+         . '<div class="fw w2"><label>또는 새 묶음 이름</label><input type="text" name="new_group" maxlength="60" placeholder="예: 필리핀 선교"></div>'
+         . '<div class="fw w2"><label>' . ($dateRequired ? '날짜 (묶음 안에서 날짜별로 모입니다)' : '날짜도 바꾸기 (비우면 그대로)') . '</label>'
+         . '<input type="date" name="post_date" value="' . h((string)$date) . '"></div>';
 }
 
 /** 시간 고르는 칸 (빈 값 = TV 설정 / 영상은 끝까지) */
@@ -492,6 +613,7 @@ layout_head('교회 TV 화면', 'church_tv');
       <?= csrf_field() ?>
       <input type="hidden" name="act" value="slide_save">
       <input type="hidden" name="id" value="<?= (int)$editSlide['id'] ?>">
+      <?= ctv_group_fields($groups, $editSlide['group_id'] !== null ? (int)$editSlide['group_id'] : null, $editSlide['post_date'] ?? date('Y-m-d')) ?>
       <div class="fw w2"><label>위 작은 글씨</label>
         <input type="text" name="label" maxlength="40" value="<?= h($editSlide['label']) ?>" placeholder="선교소식 · 태국"></div>
       <div class="fw w4"><label>제목 (비우면 사진 · 영상만 화면 가득)</label>
@@ -550,6 +672,7 @@ layout_head('교회 TV 화면', 'church_tv');
           action="?p=church_tv&amp;tab=<?= h($tab) ?>">
       <?= csrf_field() ?>
       <input type="hidden" name="act" value="bulk_upload">
+      <?= ctv_group_fields($groups, $groups ? (int)$groups[0]['id'] : null, date('Y-m-d')) ?>
       <div class="fw w4"><label>사진 · 영상 고르기 (여러 개 한 번에 골라도 됩니다)</label>
         <input type="file" name="files[]" multiple required id="ctv-files"
                accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,.mp4,.m4v,.webm,.mov"></div>
@@ -581,6 +704,7 @@ layout_head('교회 TV 화면', 'church_tv');
     <form method="post" class="f" style="align-items:flex-end;flex-wrap:wrap" action="?p=church_tv&amp;tab=<?= h($tab) ?>">
       <?= csrf_field() ?>
       <input type="hidden" name="act" value="yt_add">
+      <?= ctv_group_fields($groups, $groups ? (int)$groups[0]['id'] : null, date('Y-m-d')) ?>
       <div class="fw w6" style="flex-basis:100%"><label>유튜브 주소 (여러 개면 한 줄에 하나씩)</label>
         <textarea name="links" rows="3" required style="width:100%" placeholder="https://youtu.be/...&#10;https://www.youtube.com/watch?v=..."></textarea></div>
       <div class="fw w2"><label>보여 줄 시간</label>
@@ -614,20 +738,100 @@ layout_head('교회 TV 화면', 'church_tv');
     <span style="margin-left:auto;font-weight:400;color:var(--ink3);font-size:12px">
       <?= $tabScreen ? h($tabScreen['name']) . '에 넣은 슬라이드 ' . count($slides) . '장 · 지금 나가는 것 ' . count($liveIds) . '장' : '모든 슬라이드 ' . count($slides) . '장' ?></span>
   </div>
+  <?php
+    // 묶음 > 날짜 > 슬라이드 로 나누기
+    $bunches = [];
+    foreach ($slides as $s) { $bunches[(int)($s['group_id'] ?? 0)][(string)($s['post_date'] ?? '')][] = $s; }
+    $sections = [];
+    if (!empty($bunches[0])) { $sections[] = ['id' => 0, 'name' => '묶음 없음', 'show_caption' => 0]; }
+    foreach ($groups as $g) { $sections[] = $g; }
+    $editGroup = (int)query('group');
+    $today = date('Y-m-d');
+    $tabQ = '?p=church_tv&amp;tab=' . h($tab);
+  ?>
+  <form id="ctv-move" method="post" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--line);font-size:12.5px">
+    <?= csrf_field() ?><input type="hidden" name="act" value="move_group">
+    <b>체크한 것을</b>
+    <select name="group_id" style="height:30px;width:auto;min-width:150px"><option value="0">묶음 없음</option>
+      <?php foreach ($groups as $g): ?><option value="<?= (int)$g['id'] ?>"><?= h($g['name']) ?></option><?php endforeach; ?></select>
+    <span>으로</span>
+    <input type="date" name="post_date" title="날짜도 바꾸려면 고르세요 (비우면 그대로)" style="height:30px;width:auto">
+    <button class="btn sm pri">옮기기</button>
+    <span style="color:var(--ink3)">날짜를 비워 두면 올린 날짜 그대로 옮깁니다.</span>
+  </form>
   <?php if (!$slides): ?>
     <div class="empty">슬라이드가 없습니다. [전체 슬라이드] 에서 이 TV 칸을 누르거나 [슬라이드 추가] 를 누르세요.</div>
-  <?php else: ?>
+  <?php endif; ?>
+  <?php foreach ($sections as $g):
+    $gid = (int)$g['id'];
+    $dates = $bunches[$gid] ?? [];
+    $cnt = 0; $gIds = [];
+    foreach ($dates as $list) { foreach ($list as $x) { $cnt++; $gIds[] = (int)$x['id']; } } ?>
+  <div id="g<?= $gid ?>" style="margin-top:6px">
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:10px 14px;background:#FFF8DC;border-top:2px solid #F2C200">
+      <?php if ($gid): foreach (['up' => '▲', 'down' => '▼'] as $d => $sym): ?>
+        <form method="post" style="display:inline"><?= csrf_field() ?>
+          <input type="hidden" name="act" value="group_move"><input type="hidden" name="id" value="<?= $gid ?>">
+          <input type="hidden" name="dir" value="<?= $d ?>"><button class="btn sm" style="padding:0 6px" title="묶음 순서"><?= $sym ?></button></form>
+      <?php endforeach; endif; ?>
+      <b style="font-size:15px"><?= h($g['name']) ?></b>
+      <span style="color:var(--ink3);font-size:12px"><?= $cnt ?>개</span>
+      <?php if ($cnt): ?>
+        <span style="margin-left:8px;font-size:12px;color:var(--ink3)">묶음 전체</span>
+        <?php foreach ($screens as $sc):
+          $all = true; foreach ($gIds as $x) { if (!isset($links[$x][(int)$sc['id']])) { $all = false; } } ?>
+        <form method="post" style="display:inline"><?= csrf_field() ?>
+          <input type="hidden" name="act" value="bunch_screen"><input type="hidden" name="group_id" value="<?= $gid ?>">
+          <input type="hidden" name="screen_id" value="<?= (int)$sc['id'] ?>">
+          <button class="btn sm<?= $all ? ' pri' : '' ?>" title="<?= $all ? '묶음 전체를 이 TV 에서 빼기' : '묶음 전체를 이 TV 에 넣기' ?>"><?= h(preg_replace('/\s*모니터$/u', '', (string)$sc['name'])) ?></button></form>
+        <?php endforeach; ?>
+        <?php foreach (['1' => '모두 켜기', '0' => '모두 끄기'] as $on => $lb): ?>
+        <form method="post" style="display:inline"><?= csrf_field() ?>
+          <input type="hidden" name="act" value="bunch_active"><input type="hidden" name="group_id" value="<?= $gid ?>">
+          <input type="hidden" name="on" value="<?= $on ?>"><button class="btn sm"><?= $lb ?></button></form>
+        <?php endforeach; ?>
+      <?php endif; ?>
+      <?php if ($gid): ?><a class="btn sm" style="margin-left:auto" href="<?= $tabQ ?>&amp;group=<?= $gid ?>#g<?= $gid ?>">이름 · 설정</a><?php endif; ?>
+    </div>
+    <?php if ($gid && $editGroup === $gid): ?>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px;background:#FFFDF2;font-size:12.5px">
+      <form method="post" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><?= csrf_field() ?>
+        <input type="hidden" name="act" value="group_save"><input type="hidden" name="id" value="<?= $gid ?>">
+        <input type="text" name="name" value="<?= h($g['name']) ?>" maxlength="60" required style="height:30px;width:220px">
+        <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" name="show_caption" value="1" style="width:auto"<?= (int)$g['show_caption'] ? ' checked' : '' ?>>
+          TV 아래에 "<?= h($g['name']) ?> · 날짜" 작게 보이기</label>
+        <button class="btn sm pri">저장</button></form>
+      <form method="post" style="display:inline" onsubmit="return confirm('묶음을 지울까요? 안의 슬라이드는 지워지지 않고 묶음 없음으로 갑니다.');"><?= csrf_field() ?>
+        <input type="hidden" name="act" value="group_del"><input type="hidden" name="id" value="<?= $gid ?>">
+        <button class="btn sm">묶음 지우기</button></form>
+      <a class="btn sm" href="<?= $tabQ ?>#g<?= $gid ?>">닫기</a>
+    </div>
+    <?php endif; ?>
+    <?php if (!$dates): ?>
+      <div style="padding:10px 14px;font-size:12.5px;color:var(--ink3)">아직 없습니다. 위에서 사진 · 영상 · 유튜브를 올릴 때 이 묶음을 고르거나, 아래 목록에서 체크해서 옮기세요.</div>
+    <?php endif; ?>
+    <?php foreach ($dates as $pd => $list): $pd = (string)$pd; ?>
+    <div style="display:flex;gap:6px;align-items:center;padding:8px 14px 4px;font-size:13px">
+      <b><?= $pd !== '' ? h(ctv_date_ko($pd)) : '날짜 없음' ?></b>
+      <span style="color:var(--ink3);font-size:12px"><?= count($list) ?>개</span>
+      <?php if ($pd !== ''): foreach (['1' => '이 날 켜기', '0' => '이 날 끄기'] as $on => $lb): ?>
+      <form method="post" style="display:inline"><?= csrf_field() ?>
+        <input type="hidden" name="act" value="bunch_active"><input type="hidden" name="group_id" value="<?= $gid ?>">
+        <input type="hidden" name="post_date" value="<?= h($pd) ?>">
+        <input type="hidden" name="on" value="<?= $on ?>"><button class="btn sm"><?= $lb ?></button></form>
+      <?php endforeach; endif; ?>
+    </div>
   <table>
-    <thead><tr><th class="c" style="width:60px">순서</th><th style="width:110px"></th><th>슬라이드</th>
+    <thead><tr><th class="c" style="width:84px">순서</th><th style="width:110px"></th><th>슬라이드</th>
       <th style="width:<?= 70 * count($screens) ?>px">TV</th><th class="c" style="width:140px">시간</th><th class="c" style="width:90px">상태</th><th class="c" style="width:120px"></th></tr></thead>
     <tbody>
-    <?php foreach ($slides as $s):
+    <?php foreach ($list as $s):
       $sid = (int)$s['id'];
-      $today = date('Y-m-d');
       $expired = $s['end_date'] && $s['end_date'] < $today;
       $notyet = $s['start_date'] && $s['start_date'] > $today; ?>
       <tr<?= (int)$s['is_active'] && !$expired ? '' : ' style="opacity:.55"' ?>>
         <td class="c" style="white-space:nowrap">
+          <input type="checkbox" name="ids[]" value="<?= $sid ?>" form="ctv-move" style="vertical-align:middle;margin-right:4px">
           <?php foreach (['up' => '▲', 'down' => '▼'] as $d => $sym): ?>
           <form method="post" style="display:inline"><?= csrf_field() ?>
             <input type="hidden" name="act" value="slide_move"><input type="hidden" name="id" value="<?= $sid ?>">
@@ -667,7 +871,15 @@ layout_head('교회 TV 화면', 'church_tv');
     <?php endforeach; ?>
     </tbody>
   </table>
-  <?php endif; ?>
+    <?php endforeach; ?>
+  </div>
+  <?php endforeach; ?>
+  <form method="post" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:12px 14px;border-top:1px solid var(--line);font-size:12.5px"><?= csrf_field() ?>
+    <input type="hidden" name="act" value="group_save"><input type="hidden" name="id" value="0">
+    <b>새 묶음 만들기</b>
+    <input type="text" name="name" maxlength="60" required placeholder="예: 필리핀 선교" style="height:30px;width:220px">
+    <button class="btn sm">만들기</button>
+  </form>
 </div>
 <script>
 // 한꺼번에 올리기 — 고른 개수 · 크기를 보여 주고, 올라가는 정도를 막대로 보여 줍니다
