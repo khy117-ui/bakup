@@ -9,7 +9,8 @@ require_once APP_DIR . '/imgshrink.php';
 /**
  * 교회 TV 화면 (시스템 > 교회 TV 화면)
  *   · 위: TV 목록 — 주소 · 미리보기 · 켜기/끄기 · 지금 새로고침 · 설정
- *   · 아래: 슬라이드 — TV 마다 넣고 빼기, 순서, 기간, 사진
+ *   · 사진 · 영상 여러 개 한꺼번에 올리기 — 한 개가 한 장이 되고, 사진은 보여 줄 시간을 고릅니다
+ *   · 아래: 슬라이드 — TV 마다 넣고 빼기, 순서, 기간, 시간, 사진 · 영상
  * TV 는 1분마다 tv.php 에서 내용을 받아 가므로 여기서 저장하면 저절로 바뀝니다.
  * 이 화면에 권한 표(ROUTE_PERMS) 항목이 없으므로 최고관리자만 엽니다.
  */
@@ -23,20 +24,29 @@ try {
 }
 $pdo = db();
 
-/** 올린 사진을 보관 폴더에 넣고 파일 이름을 돌려줍니다 */
+/** 올린 사진 · 영상을 보관 폴더에 넣고 파일 이름을 돌려줍니다 */
 function ctv_store_upload(array $f): ?string
 {
-    if (($f['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) { return null; }
-    if (($f['error'] ?? 1) !== UPLOAD_ERR_OK) { throw new RuntimeException('사진을 올리지 못했습니다.'); }
-    $ext = strtolower(pathinfo((string)$f['name'], PATHINFO_EXTENSION));
-    if (!in_array($ext, CTV_IMG_EXT, true) || !@getimagesize((string)$f['tmp_name'])) {
-        throw new RuntimeException('사진은 JPG · PNG · WEBP 만 올릴 수 있습니다.');
+    $err = $f['error'] ?? UPLOAD_ERR_NO_FILE;
+    if ($err === UPLOAD_ERR_NO_FILE) { return null; }
+    $orig = (string)($f['name'] ?? '');
+    if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+        throw new RuntimeException($orig . ': 파일이 너무 큽니다 (한 개 100MB 까지).');
     }
-    $name = 'slide_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.' . ($ext === 'jpeg' ? 'jpg' : $ext);
+    if ($err !== UPLOAD_ERR_OK) { throw new RuntimeException($orig . ': 올리지 못했습니다.'); }
+    $ext = strtolower(pathinfo($orig, PATHINFO_EXTENSION));
+    $isVideo = in_array($ext, CTV_VIDEO_EXT, true);
+    if ($isVideo) {
+        if ((int)$f['size'] > 100 * 1024 * 1024) { throw new RuntimeException($orig . ': 영상은 한 개 100MB 까지입니다.'); }
+    } elseif (!in_array($ext, CTV_IMG_EXT, true) || !@getimagesize((string)$f['tmp_name'])) {
+        throw new RuntimeException($orig . ': 사진은 JPG · PNG · WEBP, 영상은 MP4 · WEBM 만 올릴 수 있습니다.');
+    }
+    $name = ($isVideo ? 'video_' : 'slide_') . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.' . ($ext === 'jpeg' ? 'jpg' : $ext);
     $path = ctv_image_dir() . DIRECTORY_SEPARATOR . $name;
     if (!move_uploaded_file((string)$f['tmp_name'], $path)) {
-        throw new RuntimeException('사진을 저장하지 못했습니다.');
+        throw new RuntimeException($orig . ': 저장하지 못했습니다.');
     }
+    if ($isVideo) { return $name; }
     // TV 는 1920 이면 충분합니다. 휴대폰 사진을 그대로 두면 낡은 스틱이 느려집니다
     $newExt = img_shrink($path, $ext, 1920, 600 * 1024);
     if ($newExt !== $ext && $newExt !== '' && $ext !== 'jpg') {
@@ -44,6 +54,19 @@ function ctv_store_upload(array $f): ?string
         if ($renamed && @rename($path, $renamed)) { $name = basename($renamed); }
     }
     return $name;
+}
+
+/** 여러 파일 칸(name[]) 을 파일 한 개씩으로 풀어 줍니다 */
+function ctv_files(string $field): array
+{
+    $F = $_FILES[$field] ?? null;
+    if (!$F || !is_array($F['name'] ?? null)) { return []; }
+    $out = [];
+    foreach ($F['name'] as $i => $n) {
+        $out[] = ['name' => $n, 'type' => $F['type'][$i] ?? '', 'tmp_name' => $F['tmp_name'][$i] ?? '',
+                  'error' => $F['error'][$i] ?? UPLOAD_ERR_NO_FILE, 'size' => $F['size'][$i] ?? 0];
+    }
+    return $out;
 }
 
 function ctv_remove_file(?string $f): void
@@ -54,6 +77,11 @@ function ctv_remove_file(?string $f): void
 }
 
 // ---------------------------------------------------------------- 저장
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '' && empty($_POST) && (int)($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) {
+    // 한 번에 보낸 양이 서버 한도를 넘으면 PHP 가 내용을 통째로 버립니다
+    $err = '한 번에 올린 파일이 너무 큽니다. 200MB 아래로 나눠서 올려 주세요.';
+    if (isset($_GET['ajax'])) { header('Content-Type: application/json'); echo json_encode(['ok' => false, 'msg' => $err], JSON_UNESCAPED_UNICODE); exit; }
+}
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
     csrf_check();
     $act = post('act');
@@ -114,10 +142,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
             flash('1분 안에 TV 가 화면을 새로 엽니다.');
             redirect($back);
         }
+        if ($act === 'bulk_upload') {
+            // 사진 · 영상 여러 개 → 한 개당 슬라이드 한 장 (글 없이 화면 가득)
+            $sec = (int)post('seconds');
+            $sec = $sec >= 4 ? min(120, $sec) : null;
+            $screenIds = array_map('intval', (array)($_POST['screens'] ?? []));
+            $sort = (int)$pdo->query('SELECT COALESCE(MAX(sort_no),0) FROM church_tv_slides')->fetchColumn();
+            $ins = $pdo->prepare('INSERT INTO church_tv_slides (label, title, image_file, seconds, is_active, start_date, end_date, sort_no)
+                                  VALUES (?, \'\', ?, ?, 1, ?, ?, ?)');
+            $link = $pdo->prepare('INSERT IGNORE INTO church_tv_slide_screens (slide_id, screen_id) VALUES (?,?)');
+            $sd = preg_match('/^\d{4}-\d{2}-\d{2}$/', post('start_date')) ? post('start_date') : null;
+            $ed = preg_match('/^\d{4}-\d{2}-\d{2}$/', post('end_date')) ? post('end_date') : null;
+            $ok = 0; $vid = 0; $bad = [];
+            foreach (ctv_files('files') as $f) {
+                try {
+                    $name = ctv_store_upload($f);
+                    if ($name === null) { continue; }
+                    $isV = ctv_is_video($name);
+                    // 영상은 고른 시간 대신 끝까지 재생합니다
+                    $ins->execute([mb_substr(post('label'), 0, 40), $name, $isV ? null : $sec, $sd, $ed, ++$sort]);
+                    $sid = (int)$pdo->lastInsertId();
+                    foreach ($screenIds as $scId) { $link->execute([$sid, $scId]); }
+                    $ok++;
+                    if ($isV) { $vid++; }
+                } catch (RuntimeException $e) {
+                    $bad[] = $e->getMessage();
+                }
+            }
+            if ($ok > 0) { log_action('교회TV', 'CREATE', 'church_tv_slides', 0, $ok . '개 한꺼번에 올림'); }
+            $msg = $ok > 0
+                ? $ok . '개를 올렸습니다' . ($vid ? ' (영상 ' . $vid . '개)' : '') . '. 1분 안에 TV 에 반영됩니다.'
+                : '올린 파일이 없습니다.';
+            if ($bad) { $msg .= ' 못 올린 것: ' . implode(' / ', $bad); }
+            flash($msg);
+            if (isset($_GET['ajax'])) {
+                header('Content-Type: application/json');
+                echo json_encode(['ok' => $ok > 0, 'url' => $back, 'msg' => $msg], JSON_UNESCAPED_UNICODE);
+                exit;
+            }
+            redirect($back);
+        }
+        if ($act === 'slide_seconds') {
+            // 목록에서 바로 시간 고르기
+            $sec = (int)post('seconds');
+            $pdo->prepare('UPDATE church_tv_slides SET seconds = ?, updated_at = NOW() WHERE id = ?')
+                ->execute([$sec >= 4 ? min(120, $sec) : null, (int)post('id')]);
+            redirect($back);
+        }
         if ($act === 'slide_save') {
             $id = (int)post('id');
             $title = mb_substr(post('title'), 0, 120);
-            if ($title === '') { throw new RuntimeException('제목을 넣어 주세요.'); }
             $old = null;
             if ($id > 0) {
                 $st = $pdo->prepare('SELECT * FROM church_tv_slides WHERE id = ?');
@@ -133,22 +207,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
                 ctv_remove_file($img);
                 $img = null;
             }
+            if ($title === '' && !$img) { throw new RuntimeException('제목을 넣거나 사진 · 영상을 올려 주세요.'); }
             $sd = preg_match('/^\d{4}-\d{2}-\d{2}$/', post('start_date')) ? post('start_date') : null;
             $ed = preg_match('/^\d{4}-\d{2}-\d{2}$/', post('end_date')) ? post('end_date') : null;
             $sec = (int)post('seconds');
             $vals = [
                 mb_substr(post('label'), 0, 40), $title, mb_substr(post('body'), 0, 600), mb_substr(post('date_text'), 0, 40),
                 $img, array_key_exists(post('theme'), CTV_THEMES) ? post('theme') : 'morning',
-                $sec >= 4 ? min(120, $sec) : null, post('is_active') === '1' ? 1 : 0, $sd, $ed,
+                $sec >= 4 ? min(120, $sec) : null, post('sound') === '1' ? 1 : 0, post('is_active') === '1' ? 1 : 0, $sd, $ed,
             ];
             if ($id > 0) {
                 $vals[] = $id;
                 $pdo->prepare('UPDATE church_tv_slides SET label=?, title=?, body=?, date_text=?, image_file=?, theme=?,
-                               seconds=?, is_active=?, start_date=?, end_date=?, updated_at=NOW() WHERE id = ?')->execute($vals);
+                               seconds=?, sound=?, is_active=?, start_date=?, end_date=?, updated_at=NOW() WHERE id = ?')->execute($vals);
             } else {
                 $vals[] = (int)$pdo->query('SELECT COALESCE(MAX(sort_no),0)+1 FROM church_tv_slides')->fetchColumn();
-                $pdo->prepare('INSERT INTO church_tv_slides (label, title, body, date_text, image_file, theme, seconds,
-                               is_active, start_date, end_date, sort_no) VALUES (?,?,?,?,?,?,?,?,?,?,?)')->execute($vals);
+                $pdo->prepare('INSERT INTO church_tv_slides (label, title, body, date_text, image_file, theme, seconds, sound,
+                               is_active, start_date, end_date, sort_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')->execute($vals);
                 $id = (int)$pdo->lastInsertId();
             }
             $pdo->prepare('DELETE FROM church_tv_slide_screens WHERE slide_id = ?')->execute([$id]);
@@ -156,8 +231,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
             foreach ((array)($_POST['screens'] ?? []) as $sid) {
                 $link->execute([$id, (int)$sid]);
             }
-            log_action('교회TV', $old ? 'UPDATE' : 'CREATE', 'church_tv_slides', $id, $title);
-            flash('"' . $title . '" 슬라이드를 저장했습니다. 1분 안에 TV 에 반영됩니다.');
+            log_action('교회TV', $old ? 'UPDATE' : 'CREATE', 'church_tv_slides', $id, $title !== '' ? $title : '(사진 · 영상만)');
+            flash(($title !== '' ? '"' . $title . '" 슬라이드를' : '슬라이드를') . ' 저장했습니다. 1분 안에 TV 에 반영됩니다.');
             redirect($back);
         }
         if ($act === 'slide_del') {
@@ -169,7 +244,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
                 $pdo->prepare('DELETE FROM church_tv_slide_screens WHERE slide_id = ?')->execute([$id]);
                 $pdo->prepare('DELETE FROM church_tv_slides WHERE id = ?')->execute([$id]);
                 log_action('교회TV', 'DELETE', 'church_tv_slides', $id, (string)$r['title']);
-                flash('"' . $r['title'] . '" 슬라이드를 지웠습니다.');
+                flash(($r['title'] !== '' ? '"' . $r['title'] . '" ' : '') . '슬라이드를 지웠습니다.');
             }
             redirect($back);
         }
@@ -227,7 +302,7 @@ $liveIds = $tabScreen ? array_map(fn($s) => (int)$s['id'], ctv_slides_for((int)$
 $editSlide = null;
 if (query('slide') === 'new') {
     $editSlide = ['id' => 0, 'label' => '', 'title' => '', 'body' => '', 'date_text' => '', 'image_file' => null,
-                  'theme' => 'morning', 'seconds' => null, 'is_active' => 1, 'start_date' => null, 'end_date' => null];
+                  'theme' => 'morning', 'seconds' => null, 'sound' => 0, 'is_active' => 1, 'start_date' => null, 'end_date' => null];
 } elseif ((int)query('slide') > 0) {
     foreach ($allSlides as $s) { if ((int)$s['id'] === (int)query('slide')) { $editSlide = $s; } }
 }
@@ -239,8 +314,24 @@ if (query('screen') === 'new') {
     foreach ($screens as $s) { if ((int)$s['id'] === (int)query('screen')) { $editScreen = $s; } }
 }
 
+/** 시간 고르는 칸 (빈 값 = TV 설정 / 영상은 끝까지) */
+function ctv_seconds_options(?int $cur, bool $video): string
+{
+    $html = '<option value="">' . ($video ? '끝까지 재생' : 'TV 기본') . '</option>';
+    $list = CTV_SECONDS;
+    if ($cur !== null && !in_array($cur, $list, true)) { $list[] = $cur; sort($list); }
+    foreach ($list as $n) {
+        $html .= '<option value="' . $n . '"' . ($cur === $n ? ' selected' : '') . '>' . $n . '초</option>';
+    }
+    return $html;
+}
+
 function ctv_thumb(array $s): string
 {
+    if ($s['image_file'] && ctv_is_video((string)$s['image_file'])) {
+        return '<div style="width:96px;height:54px;border-radius:4px;background:#111;color:#fff;display:flex;'
+             . 'align-items:center;justify-content:center;font-size:12px;font-weight:700">▶ 영상</div>';
+    }
     if ($s['image_file']) {
         $src = str_starts_with((string)$s['image_file'], 'asset:')
             ? 'tv.php?a=' . rawurlencode(substr((string)$s['image_file'], 6))
@@ -258,7 +349,8 @@ layout_head('교회 TV 화면', 'church_tv');
   <div class="crumb">시스템 &gt; 교회 TV 화면 · 1층 · 3층 모니터에 나가는 안내 슬라이드 (테스트)</div>
   <div class="right">
     <a class="btn" href="?p=church_tv&amp;screen=new">TV 추가</a>
-    <a class="btn pri" href="?p=church_tv&amp;tab=<?= h($tab) ?>&amp;slide=new">슬라이드 추가</a>
+    <a class="btn" href="?p=church_tv&amp;tab=<?= h($tab) ?>&amp;slide=new">글 슬라이드 추가</a>
+    <a class="btn pri" href="#ctv-bulk">사진 · 영상 올리기</a>
   </div>
 </div>
 
@@ -356,19 +448,24 @@ layout_head('교회 TV 화면', 'church_tv');
       <input type="hidden" name="id" value="<?= (int)$editSlide['id'] ?>">
       <div class="fw w2"><label>위 작은 글씨</label>
         <input type="text" name="label" maxlength="40" value="<?= h($editSlide['label']) ?>" placeholder="선교소식 · 태국"></div>
-      <div class="fw w4"><label>제목 *</label>
-        <input type="text" name="title" required maxlength="120" value="<?= h($editSlide['title']) ?>"></div>
+      <div class="fw w4"><label>제목 (비우면 사진 · 영상만 화면 가득)</label>
+        <input type="text" name="title" maxlength="120" value="<?= h($editSlide['title']) ?>"></div>
       <div class="fw w6" style="flex-basis:100%"><label>내용 (기도제목 · 안내문, 2~3줄이 보기 좋습니다)</label>
         <textarea name="body" maxlength="600" rows="3" style="width:100%"><?= h($editSlide['body']) ?></textarea></div>
       <div class="fw w2"><label>날짜 글씨</label>
         <input type="text" name="date_text" maxlength="40" value="<?= h($editSlide['date_text']) ?>" placeholder="2026년 10월 12일"></div>
-      <div class="fw w3"><label>배경 사진 (없으면 색 배경)</label>
-        <input type="file" name="image" accept="image/jpeg,image/png,image/webp"></div>
+      <div class="fw w3"><label>사진 또는 영상 (없으면 색 배경)</label>
+        <input type="file" name="image" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,.mp4,.m4v,.webm,.mov"></div>
       <div class="fw w2"><label>사진 없을 때 색</label><select name="theme">
         <?php foreach (CTV_THEMES as $k => $v): ?><option value="<?= $k ?>"<?= $editSlide['theme'] === $k ? ' selected' : '' ?>><?= h($v) ?></option><?php endforeach; ?>
       </select></div>
-      <div class="fw w1"><label>이 장 시간(초)</label>
-        <input type="number" name="seconds" min="0" max="120" value="<?= $editSlide['seconds'] !== null ? (int)$editSlide['seconds'] : '' ?>" placeholder="TV 설정"></div>
+      <?php $isV = ctv_is_video($editSlide['image_file'] ?? null); ?>
+      <div class="fw w1"><label>보여 줄 시간</label>
+        <select name="seconds"><?= ctv_seconds_options($editSlide['seconds'] !== null ? (int)$editSlide['seconds'] : null, $isV) ?></select></div>
+      <?php if ($isV): ?>
+      <label style="display:flex;gap:6px;align-items:center;font-weight:400;font-size:12.5px;height:34px">
+        <input type="checkbox" name="sound" value="1"<?= (int)($editSlide['sound'] ?? 0) ? ' checked' : '' ?>> 영상 소리 켜기</label>
+      <?php endif; ?>
       <div class="fw w2"><label>보여 줄 시작일</label>
         <input type="date" name="start_date" value="<?= h($editSlide['start_date'] ?? '') ?>"></div>
       <div class="fw w2"><label>마지막 날</label>
@@ -385,7 +482,7 @@ layout_head('교회 TV 화면', 'church_tv');
         </div></div>
       <?php if ($editSlide['image_file']): ?>
         <div style="display:flex;gap:10px;align-items:center"><?= ctv_thumb($editSlide) ?>
-          <label style="font-weight:400;font-size:12.5px"><input type="checkbox" name="remove_image" value="1"> 사진 빼기</label></div>
+          <label style="font-weight:400;font-size:12.5px"><input type="checkbox" name="remove_image" value="1"> <?= ctv_is_video($editSlide['image_file']) ? '영상' : '사진' ?> 빼기</label></div>
       <?php endif; ?>
       <button class="btn pri">저장</button>
       <a class="btn" href="?p=church_tv&amp;tab=<?= h($tab) ?>">닫기</a>
@@ -396,6 +493,38 @@ layout_head('교회 TV 화면', 'church_tv');
   </div>
 </div>
 <?php endif; ?>
+
+<div class="card" id="ctv-bulk">
+  <div class="ch">사진 · 영상 한꺼번에 올리기 <span style="font-weight:400;color:var(--ink3)">한 개가 한 장이 되어 글 없이 화면 가득 나옵니다. 영상은 끝까지 재생한 뒤 넘어갑니다.</span></div>
+  <div class="cb">
+    <form method="post" enctype="multipart/form-data" class="f" id="ctv-bulk-form" style="align-items:flex-end;flex-wrap:wrap"
+          action="?p=church_tv&amp;tab=<?= h($tab) ?>">
+      <?= csrf_field() ?>
+      <input type="hidden" name="act" value="bulk_upload">
+      <div class="fw w4"><label>사진 · 영상 고르기 (여러 개 한 번에 골라도 됩니다)</label>
+        <input type="file" name="files[]" multiple required id="ctv-files"
+               accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,.mp4,.m4v,.webm,.mov"></div>
+      <div class="fw w2"><label>사진 한 장 보여 줄 시간</label>
+        <select name="seconds"><?= ctv_seconds_options(10, false) ?></select></div>
+      <div class="fw w2"><label>보여 줄 시작일</label><input type="date" name="start_date"></div>
+      <div class="fw w2"><label>마지막 날</label><input type="date" name="end_date"></div>
+      <div class="fw" style="flex-basis:100%"><label>보여 줄 TV</label>
+        <div style="display:flex;gap:14px;flex-wrap:wrap">
+        <?php foreach ($screens as $s): ?>
+          <label style="display:flex;gap:6px;align-items:center;font-weight:400">
+            <input type="checkbox" name="screens[]" value="<?= (int)$s['id'] ?>"<?= $tabScreen && (int)$tabScreen['id'] === (int)$s['id'] ? ' checked' : '' ?>> <?= h($s['name']) ?></label>
+        <?php endforeach; ?>
+        </div></div>
+      <button class="btn pri" id="ctv-bulk-btn">올리기</button>
+      <span id="ctv-bulk-info" style="font-size:12.5px;color:var(--ink3)"></span>
+    </form>
+    <div id="ctv-bar" style="display:none;margin-top:10px;height:8px;background:#eee;border-radius:4px;overflow:hidden">
+      <div id="ctv-bar-in" style="height:100%;width:0;background:#F2B632;transition:width .3s"></div></div>
+    <div style="font-size:11.5px;color:var(--ink3);margin-top:8px">
+      사진은 JPG · PNG · WEBP, 영상은 MP4 가 TV 스틱에서 가장 잘 나옵니다. 영상은 한 개 100MB, 한 번에 모두 합쳐 200MB 까지 올릴 수 있습니다.
+      사진마다 시간을 다르게 하려면 아래 목록의 시간 칸에서 바로 고르세요.</div>
+  </div>
+</div>
 
 <div class="card">
   <div class="ch" style="gap:6px;flex-wrap:wrap;height:auto;min-height:44px">
@@ -411,7 +540,7 @@ layout_head('교회 TV 화면', 'church_tv');
   <?php else: ?>
   <table>
     <thead><tr><th class="c" style="width:60px">순서</th><th style="width:110px"></th><th>슬라이드</th>
-      <th style="width:<?= 70 * count($screens) ?>px">TV</th><th class="c" style="width:90px">상태</th><th class="c" style="width:120px"></th></tr></thead>
+      <th style="width:<?= 70 * count($screens) ?>px">TV</th><th class="c" style="width:140px">시간</th><th class="c" style="width:90px">상태</th><th class="c" style="width:120px"></th></tr></thead>
     <tbody>
     <?php foreach ($slides as $s):
       $sid = (int)$s['id'];
@@ -427,7 +556,8 @@ layout_head('교회 TV 화면', 'church_tv');
           <?php endforeach; ?></td>
         <td><?= ctv_thumb($s) ?></td>
         <td><?php if ($s['label']): ?><div style="font-size:11.5px;color:#A86F00;font-weight:700"><?= h($s['label']) ?></div><?php endif; ?>
-          <div style="font-weight:700"><?= h($s['title']) ?></div>
+          <div style="font-weight:700"><?= $s['title'] !== '' ? h($s['title'])
+            : '<span style="color:var(--ink3);font-weight:400">' . (ctv_is_video($s['image_file']) ? '영상' : '사진') . '만 (글 없음)</span>' ?></div>
           <div style="font-size:12px;color:var(--ink3)"><?= h(mb_strimwidth((string)$s['body'], 0, 90, '…')) ?></div>
           <?php if ($s['start_date'] || $s['end_date']): ?><div style="font-size:11.5px;color:var(--ink3)">기간 <?= h($s['start_date'] ?? '') ?> ~ <?= h($s['end_date'] ?? '') ?></div><?php endif; ?></td>
         <td style="white-space:nowrap">
@@ -437,6 +567,12 @@ layout_head('교회 TV 화면', 'church_tv');
             <input type="hidden" name="screen_id" value="<?= (int)$sc['id'] ?>">
             <button class="btn sm<?= $in ? ' pri' : '' ?>" title="<?= $in ? '이 TV 에서 빼기' : '이 TV 에 넣기' ?>"><?= h(preg_replace('/\s*모니터$/u', '', (string)$sc['name'])) ?></button></form>
           <?php endforeach; ?></td>
+        <td class="c">
+          <form method="post" style="display:inline"><?= csrf_field() ?>
+            <input type="hidden" name="act" value="slide_seconds"><input type="hidden" name="id" value="<?= $sid ?>">
+            <select name="seconds" onchange="this.form.submit()" style="height:28px;font-size:12px;min-width:112px">
+              <?= ctv_seconds_options($s['seconds'] !== null ? (int)$s['seconds'] : null, ctv_is_video($s['image_file'])) ?></select></form>
+          <?php if (ctv_is_video($s['image_file']) && (int)($s['sound'] ?? 0)): ?><div style="font-size:11px;color:var(--ink3)">소리 켬</div><?php endif; ?></td>
         <td class="c">
           <form method="post" style="display:inline"><?= csrf_field() ?>
             <input type="hidden" name="act" value="slide_active"><input type="hidden" name="id" value="<?= $sid ?>">
@@ -455,6 +591,39 @@ layout_head('교회 TV 화면', 'church_tv');
   <?php endif; ?>
 </div>
 <script>
+// 한꺼번에 올리기 — 고른 개수 · 크기를 보여 주고, 올라가는 정도를 막대로 보여 줍니다
+(function () {
+  var form = document.getElementById('ctv-bulk-form');
+  if (!form || !window.FormData || !window.XMLHttpRequest) { return; }
+  var input = document.getElementById('ctv-files'), info = document.getElementById('ctv-bulk-info');
+  var btn = document.getElementById('ctv-bulk-btn');
+  var bar = document.getElementById('ctv-bar'), barIn = document.getElementById('ctv-bar-in');
+  function total() { var t = 0; for (var i = 0; i < input.files.length; i++) { t += input.files[i].size; } return t; }
+  input.addEventListener('change', function () {
+    var n = input.files.length, v = 0;
+    for (var i = 0; i < n; i++) { if (/^video\//.test(input.files[i].type) || /\.(mp4|m4v|webm|mov)$/i.test(input.files[i].name)) { v++; } }
+    info.textContent = n ? n + '개 고름' + (v ? ' (영상 ' + v + '개)' : '') + ' · ' + (total() / 1048576).toFixed(1) + 'MB' : '';
+  });
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!input.files.length) { return; }
+    if (!form.querySelector('input[name="screens[]"]:checked')) { alert('보여 줄 TV 를 하나 이상 골라 주세요.'); return; }
+    if (total() > 200 * 1048576) { alert('한 번에 200MB 까지 올릴 수 있습니다. 나눠서 올려 주세요.'); return; }
+    var x = new XMLHttpRequest();
+    x.open('POST', form.getAttribute('action') + '&ajax=1', true);
+    btn.disabled = true; btn.textContent = '올리는 중…'; bar.style.display = '';
+    x.upload.onprogress = function (ev) { if (ev.lengthComputable) { barIn.style.width = Math.round(ev.loaded / ev.total * 100) + '%'; } };
+    x.onload = function () {
+      var d = null;
+      try { d = JSON.parse(x.responseText); } catch (er) {}
+      if (d && d.url) { location.href = d.url; return; }
+      alert(d && d.msg ? d.msg : '올리지 못했습니다. 다시 해 주세요.');
+      btn.disabled = false; btn.textContent = '올리기'; bar.style.display = 'none';
+    };
+    x.onerror = function () { alert('인터넷이 끊겨 올리지 못했습니다.'); btn.disabled = false; btn.textContent = '올리기'; };
+    x.send(new FormData(form));
+  });
+})();
 function ctvCopy(t) {
   if (navigator.clipboard) { navigator.clipboard.writeText(t).then(function () { alert('주소를 복사했습니다.\n' + t); }); }
   else { prompt('주소를 복사하세요', t); }
