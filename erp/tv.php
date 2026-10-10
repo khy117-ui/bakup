@@ -137,7 +137,8 @@ $first = ctv_feed($scr);
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
   body { font-family: "Pretendard", "Noto Sans KR", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
          -webkit-font-smoothing: antialiased; }
-  .stage { position: fixed; left: 0; top: 0; right: 0; bottom: 0; overflow: hidden; }
+  .stage { position: fixed; left: 0; top: 0; right: 0; bottom: 0; overflow: hidden; background: #000;
+           -webkit-transition: top .8s ease, bottom .8s ease; transition: top .8s ease, bottom .8s ease; }
   .slide { position: absolute; left: 0; top: 0; right: 0; bottom: 0; opacity: 0;
            -webkit-transition: opacity 1.4s ease, -webkit-transform 1.4s ease; transition: opacity 1.4s ease, transform 1.4s ease; }
   .slide.on { opacity: 1; }
@@ -197,13 +198,17 @@ $first = ctv_feed($scr);
   .multi { position: absolute; left: 2vw; top: 6vh; right: 2vw; bottom: 9vh; display: -webkit-box; display: -webkit-flex; display: flex; }
   .multi .cell { position: relative; -webkit-box-flex: 1; -webkit-flex: 1; flex: 1; margin: 0 .8vw;
                  background-size: contain; background-repeat: no-repeat; background-position: center; }
-  /* 선교지 묶음: 위 가운데 '태국 선교 · 이국찬 선교사', 아래에는 기도제목이 오른쪽에서 왼쪽으로 흐릅니다 */
-  .mhead { position: fixed; left: 50%; top: 2.4vh; -webkit-transform: translateX(-50%); transform: translateX(-50%);
-           background: rgba(0,0,0,.62); color: #fff; padding: .7vw 2.4vw .8vw; border-radius: 3vw; z-index: 6;
-           text-align: center; white-space: nowrap; display: none; box-shadow: 0 .4vw 1.6vw rgba(0,0,0,.3); }
-  .mhead b { font-size: 2.5vw; font-weight: 800; letter-spacing: -.01em; }
-  .mhead .who { font-size: 2.2vw; font-weight: 700; color: #FFD23F; margin-left: 1.2vw; }
-  .mhead .day { display: block; font-size: 1.25vw; font-weight: 500; color: rgba(255,255,255,.75); margin-top: .2vw; }
+  /* 선교지 묶음: 위에 '태국 선교 · 이국찬 선교사' 띠, 아래에는 기도제목이 오른쪽에서 왼쪽으로 흐릅니다.
+     사진은 두 띠 사이에만 놓아서 제목이 사진을 가리지 않습니다 */
+  .mhead { position: fixed; left: 0; right: 0; top: 0; height: 8.4vh; z-index: 6; display: none;
+           background: #121212; border-bottom: .35vh solid #F2B632; color: #fff;
+           text-align: center; white-space: nowrap; overflow: hidden; line-height: 8vh; }
+  .mhead b { font-size: 2.5vw; font-weight: 800; letter-spacing: -.01em; vertical-align: middle; }
+  .mhead .who { font-size: 2.2vw; font-weight: 700; color: #FFD23F; margin-left: 1.4vw; vertical-align: middle; }
+  .mhead .day { font-size: 1.4vw; font-weight: 500; color: rgba(255,255,255,.7); margin-left: 1.8vw; vertical-align: middle; }
+  .has-mh .stage { top: 8.75vh; }
+  .has-tk .stage { bottom: 7.4vh; }
+  .has-mh .corner.c0, .has-mh .corner.c1 { top: 11vh; }
   .ticker { position: fixed; left: 0; right: 0; bottom: 0; height: 7.4vh; z-index: 6; display: none;
             background: rgba(12,12,12,.80); border-top: .35vh solid #F2B632; }
   .tk-lbl { position: absolute; left: 0; top: 0; bottom: 0; width: 11vw; background: #F2B632; color: #111;
@@ -215,11 +220,7 @@ $first = ctv_feed($scr);
   @-webkit-keyframes tk { from { -webkit-transform: translate3d(0, 0, 0); } to { -webkit-transform: translate3d(-50%, 0, 0); } }
   @keyframes tk { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(-50%, 0, 0); } }
   .has-tk .corner.c2, .has-tk .corner.c3 { bottom: 10vh; }
-  .has-tk .box { bottom: 13%; } .has-tk .box.p-up { bottom: auto; }
-  .has-tk .multi { bottom: 10vh; }
-  .has-mh .multi { top: 12vh; } .has-mh .box.p-up { top: 18%; }
-  /* 글 없는 사진 한 장은 위 · 아래 띠에 가리지 않게 그 사이에 놓습니다 (영상 · 유튜브는 화면 가득 그대로) */
-  .has-mh .has-tk div.full, .has-mh.has-tk div.full { top: 12vh; bottom: 8.5vh; height: auto; }
+  .has-mh .multi { top: 2vh; bottom: 2vh; }
   .black { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background: #000; z-index: 9; display: none; }
   .empty { position: fixed; left: 0; top: 0; right: 0; bottom: 0; display: flex; align-items: center;
            justify-content: center; color: #555; font-size: 2vw; }
