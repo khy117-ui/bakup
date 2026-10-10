@@ -342,6 +342,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
             $pdo->prepare('UPDATE church_tv_slides SET is_active = 1 - is_active WHERE id = ?')->execute([(int)post('id')]);
             redirect($back);
         }
+        if ($act === 'slide_order') {
+            // 목록에서 끌어다 놓은 순서 그대로 (같은 묶음 · 같은 날짜 안의 슬라이드들) 1, 2, 3 … 으로 매깁니다
+            $ids = array_values(array_filter(array_map('intval', (array)($_POST['ids'] ?? []))));
+            $up = $pdo->prepare('UPDATE church_tv_slides SET sort_no = ? WHERE id = ?');
+            foreach ($ids as $n => $x) { $up->execute([$n + 1, $x]); }
+            if (isset($_GET['ajax'])) {
+                header('Content-Type: application/json');
+                echo json_encode(['ok' => true, 'n' => count($ids)]);
+                exit;
+            }
+            flash('순서를 바꿨습니다. 1분 안에 TV 에 반영됩니다.');
+            redirect($back);
+        }
         if ($act === 'slide_move') {
             // 위 · 아래 화살표: 같은 묶음 · 같은 날짜 안에서 이웃과 순서를 맞바꿉니다
             $st = $pdo->prepare('SELECT group_id, post_date FROM church_tv_slides WHERE id = ?');
@@ -948,13 +961,14 @@ layout_head('교회 TV 화면', 'church_tv');
   <table class="ctv-sl">
     <thead><tr><th class="c" style="width:84px">순서</th><th style="width:110px"></th><th>슬라이드</th>
       <th style="width:<?= 70 * count($screens) ?>px">TV</th><th class="c" style="width:140px">시간</th><th class="c" style="width:90px">상태</th><th class="c" style="width:120px"></th></tr></thead>
-    <tbody>
+    <tbody class="ctv-sort">
     <?php foreach ($list as $s):
       $sid = (int)$s['id'];
       $expired = $s['end_date'] && $s['end_date'] < $today;
       $notyet = $s['start_date'] && $s['start_date'] > $today; ?>
-      <tr<?= (int)$s['is_active'] && !$expired ? '' : ' style="opacity:.55"' ?>>
+      <tr data-id="<?= $sid ?>"<?= (int)$s['is_active'] && !$expired ? '' : ' style="opacity:.55"' ?>>
         <td class="c ctv-ord" style="white-space:nowrap">
+          <span class="ctv-drag" title="끌어다 놓아 순서 바꾸기">⠿</span>
           <input type="checkbox" name="ids[]" value="<?= $sid ?>" form="ctv-move" style="vertical-align:middle;margin-right:4px">
           <?php foreach (['up' => '▲', 'down' => '▼'] as $d => $sym): ?>
           <form method="post" style="display:inline"><?= csrf_field() ?>
@@ -1036,6 +1050,13 @@ layout_head('교회 TV 화면', 'church_tv');
   .ctv-tt:hover b { text-decoration: underline; }
   .ctv-tt small { color: var(--ink3); font-size: 12px; }
   .ctv-ta { display: flex; gap: 6px; flex-shrink: 0; }
+  .ctv-drag { display: inline-block; width: 26px; height: 30px; line-height: 30px; text-align: center; vertical-align: middle;
+              font-size: 20px; color: #8A8F98; cursor: grab; touch-action: none; user-select: none; border-radius: 4px; }
+  .ctv-drag:hover { background: #F2EFE6; color: #333; }
+  tr.ctv-dragging { background: #FFF3C4 !important; box-shadow: 0 4px 14px rgba(0,0,0,.18); opacity: 1 !important; }
+  tr.ctv-dragging .ctv-drag { cursor: grabbing; color: #A86F00; }
+  .ctv-toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #222; color: #fff;
+               padding: 10px 18px; border-radius: 20px; font-size: 13px; z-index: 99; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
   /* 휴대폰 · 태블릿: 표를 한 장씩 카드처럼 세로로 쌓습니다 */
   @media (max-width: 900px) {
     .ctv-menu { width: 100%; flex-wrap: nowrap !important; overflow-x: auto; padding-bottom: 2px; }
@@ -1051,7 +1072,8 @@ layout_head('교회 TV 화면', 'church_tv');
     table.ctv-sl td { display: block; border: 0; padding: 0; text-align: left; }
     table.ctv-sl td.ctv-th { order: 1; }
     table.ctv-sl td.ctv-ti { order: 2; flex: 1 1 160px; min-width: 0; }
-    table.ctv-sl td.ctv-ord { order: 3; }
+    table.ctv-sl td.ctv-ord { order: 0; }
+    .ctv-drag { width: 34px; height: 38px; line-height: 38px; font-size: 24px; }
     table.ctv-sl td.ctv-tv { order: 4; }
     table.ctv-sl td:nth-child(5) { order: 5; }
     table.ctv-sl td:nth-child(6) { order: 6; }
@@ -1116,6 +1138,60 @@ function ctvGroup(id) {
     var b = document.getElementById('gb' + id);
     if (b && b.style.display === 'none') { b.style.display = ''; document.getElementById('ga' + id).textContent = '▾'; }
   }
+})();
+// 슬라이드 목록: ⠿ 를 잡고 위 · 아래로 끌어다 놓으면 순서가 바뀝니다 (마우스 · 손가락 모두).
+// 같은 날짜 표 안에서만 움직이고, 놓는 순간 저장합니다
+(function () {
+  var tok = document.querySelector('input[name=_csrf]');
+  var drag = null;
+  function ids(tb) { var a = []; for (var i = 0; i < tb.children.length; i++) { a.push(tb.children[i].getAttribute('data-id')); } return a; }
+  function toast(t) {
+    var d = document.createElement('div'); d.className = 'ctv-toast'; d.textContent = t; document.body.appendChild(d);
+    setTimeout(function () { if (d.parentNode) { d.parentNode.removeChild(d); } }, 2200);
+  }
+  document.addEventListener('pointerdown', function (e) {
+    var h = e.target.closest ? e.target.closest('.ctv-drag') : null;
+    if (!h) { return; }
+    var tr = h.closest('tr');
+    if (!tr || !tr.parentNode.classList.contains('ctv-sort')) { return; }
+    e.preventDefault();
+    drag = { tr: tr, tb: tr.parentNode, before: ids(tr.parentNode).join(',') };
+    tr.classList.add('ctv-dragging');
+    if (h.setPointerCapture) { try { h.setPointerCapture(e.pointerId); } catch (er) {} }
+  });
+  document.addEventListener('pointermove', function (e) {
+    if (!drag) { return; }
+    e.preventDefault();
+    // 화면 끝에 가까우면 저절로 내려가거나 올라갑니다 (긴 목록 · 휴대폰)
+    if (e.clientY < 70) { window.scrollBy(0, -14); } else if (e.clientY > window.innerHeight - 70) { window.scrollBy(0, 14); }
+    var rows = drag.tb.children;
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (r === drag.tr) { continue; }
+      var b = r.getBoundingClientRect();
+      if (e.clientY > b.top && e.clientY < b.bottom) {
+        drag.tb.insertBefore(drag.tr, e.clientY < b.top + b.height / 2 ? r : r.nextSibling);
+        break;
+      }
+    }
+  });
+  function end() {
+    if (!drag) { return; }
+    var d = drag; drag = null;
+    d.tr.classList.remove('ctv-dragging');
+    var now = ids(d.tb);
+    if (now.join(',') === d.before) { return; }
+    var fd = new FormData();
+    fd.append('_csrf', tok ? tok.value : '');
+    fd.append('act', 'slide_order');
+    for (var i = 0; i < now.length; i++) { fd.append('ids[]', now[i]); }
+    fetch(location.pathname + location.search + '&ajax=1', { method: 'POST', body: fd, credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (j && j.ok) { toast('순서를 바꿨습니다. 1분 안에 TV 에 반영됩니다.'); } else { throw 0; } })
+      .catch(function () { alert('순서를 저장하지 못했습니다. 화면을 다시 엽니다.'); location.reload(); });
+  }
+  document.addEventListener('pointerup', end);
+  document.addEventListener('pointercancel', end);
 })();
 function ctvPicked(what) {
   if (document.querySelectorAll('input[form=ctv-move]:checked').length) { return true; }
