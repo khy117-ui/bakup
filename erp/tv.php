@@ -208,7 +208,10 @@ $first = ctv_feed($scr);
   .mhead .day { font-size: 1.4vw; font-weight: 500; color: rgba(255,255,255,.7); margin-left: 1.8vw; vertical-align: middle; }
   .has-mh .stage { top: 8.75vh; }
   .has-tk .stage { bottom: 7.4vh; }
-  .has-mh .corner.c0, .has-mh .corner.c1 { top: 11vh; }
+  /* 선교지 화면에서는 로고 · 시계도 위 띠 안 양쪽 끝에 넣습니다 (3분마다 오른쪽 · 왼쪽을 바꿔 잔상 방지) */
+  .has-mh .corner { top: 0 !important; bottom: auto !important; height: 8.4vh; z-index: 7; opacity: .95; text-shadow: none; }
+  .has-mh .corner.c0, .has-mh .corner.c2 { right: 2vw; left: auto; }
+  .has-mh .corner.c1, .has-mh .corner.c3 { left: 2vw; right: auto; }
   .ticker { position: fixed; left: 0; right: 0; bottom: 0; height: 7.4vh; z-index: 6; display: none;
             background: rgba(12,12,12,.80); border-top: .35vh solid #F2B632; }
   .tk-lbl { position: absolute; left: 0; top: 0; bottom: 0; width: 11vw; background: #F2B632; color: #111;
