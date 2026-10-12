@@ -392,6 +392,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
             flash($n ? $n . '개를 켰습니다. 1분 안에 TV 에 반영됩니다.' : '꺼진 슬라이드가 없습니다.');
             redirect($back);
         }
+        if ($act === 'move_group' && (post('do') === 'scr_add' || post('do') === 'scr_del')) {
+            // 체크한 슬라이드를 고른 TV(1층 · 3층)에 넣기 · 빼기
+            $ids = array_values(array_filter(array_map('intval', (array)($_POST['ids'] ?? []))));
+            if (!$ids) { throw new RuntimeException('TV 에 넣거나 뺄 슬라이드를 체크해 주세요.'); }
+            $sid = (int)post('screen_id');
+            $sname = $pdo->prepare('SELECT name FROM church_tv_screens WHERE id = ?');
+            $sname->execute([$sid]);
+            $sname = (string)$sname->fetchColumn();
+            if ($sname === '') { throw new RuntimeException('TV 를 골라 주세요.'); }
+            if (post('do') === 'scr_add') {
+                $link = $pdo->prepare('INSERT IGNORE INTO church_tv_slide_screens (slide_id, screen_id) VALUES (?,?)');
+                foreach ($ids as $x) { $link->execute([$x, $sid]); }
+                flash(count($ids) . '개를 ' . $sname . '에 넣었습니다. 1분 안에 TV 에 반영됩니다.');
+            } else {
+                $pdo->exec("DELETE FROM church_tv_slide_screens WHERE screen_id = $sid AND slide_id IN (" . implode(',', $ids) . ')');
+                flash(count($ids) . '개를 ' . $sname . '에서 뺐습니다. 슬라이드는 지우지 않았습니다.');
+            }
+            redirect($back);
+        }
         if ($act === 'move_group' && post('do') === 'del') {
             // 체크한 슬라이드를 한꺼번에 지우기 (사진 · 영상 파일도 지웁니다)
             $ids = array_values(array_filter(array_map('intval', (array)($_POST['ids'] ?? []))));
@@ -510,9 +529,9 @@ foreach ($groups as $g) {
 }
 $eduGroups = array_values(array_filter($groups, fn($g) => in_array($g['name'], CTV_EDU_GROUPS, true)));
 $allSlides = $pdo->query('SELECT s.* FROM church_tv_slides s LEFT JOIN church_tv_groups g ON g.id = s.group_id ORDER BY ' . CTV_ORDER)->fetchAll();
-$slides = $tabScreen
-    ? array_values(array_filter($allSlides, fn($s) => isset($links[(int)$s['id']][(int)$tabScreen['id']])))
-    : $allSlides;
+// TV 탭에서도 모든 슬라이드를 보여 줍니다. 그 TV 에 없는 것은 흐리게 두고 [1층] [3층] 칸이나 체크로 넣고 뺍니다
+$slides = $allSlides;
+$tabIn = $tabScreen ? count(array_filter($allSlides, fn($s) => isset($links[(int)$s['id']][(int)$tabScreen['id']]))) : 0;
 $liveIds = $tabScreen ? array_map(fn($s) => (int)$s['id'], ctv_slides_for((int)$tabScreen['id'])) : [];
 
 // 처음에는 TV 기본 정보와 링크만. 나머지는 위 메뉴(글 슬라이드 · 사진 · 영상 · 유튜브 · 목록)를 눌러 엽니다
@@ -877,7 +896,7 @@ layout_head('교회 TV 화면', 'church_tv');
     <?php endforeach; ?>
     <a class="btn sm<?= $tab === 'all' ? ' pri' : '' ?>" href="?p=church_tv&amp;tab=all&amp;v=list">전체 슬라이드</a>
     <span style="margin-left:auto;font-weight:400;color:var(--ink3);font-size:12px">
-      <?= $tabScreen ? h($tabScreen['name']) . '에 넣은 슬라이드 ' . count($slides) . '장 · 지금 나가는 것 ' . count($liveIds) . '장' : '모든 슬라이드 ' . count($slides) . '장' ?></span>
+      <?= $tabScreen ? h($tabScreen['name']) . '에 넣은 슬라이드 ' . $tabIn . '장 · 지금 나가는 것 ' . count($liveIds) . '장 · 전체 ' . count($slides) . '장 (이 TV 에 없는 것은 흐리게)' : '모든 슬라이드 ' . count($slides) . '장' ?></span>
   </div>
   <?php
     // 묶음 > 날짜 > 슬라이드 로 나누기
@@ -900,6 +919,13 @@ layout_head('교회 TV 화면', 'church_tv');
     <button class="btn sm pri" name="do" value="move">옮기기</button>
     <span style="color:var(--ink3)">날짜를 비워 두면 올린 날짜 그대로 옮깁니다.</span>
     <span style="margin-left:auto"></span>
+    <span style="flex-basis:100%;height:0"></span>
+    <b>체크한 것을</b>
+    <select name="screen_id" style="height:30px;width:auto">
+      <?php foreach ($screens as $sc): ?><option value="<?= (int)$sc['id'] ?>"<?= $tabScreen && (int)$tabScreen['id'] === (int)$sc['id'] ? ' selected' : '' ?>><?= h($sc['name']) ?></option><?php endforeach; ?></select>
+    <button class="btn sm pri" name="do" value="scr_add" onclick="return ctvPicked('TV 에 넣을')">에 넣기</button>
+    <button class="btn sm" name="do" value="scr_del" onclick="return ctvPicked('TV 에서 뺄')">에서 빼기</button>
+    <span style="margin-left:auto"></span>
     <button class="btn sm" name="do" value="on" onclick="return ctvPicked('켤')">체크한 것 켜기</button>
     <button class="btn sm" name="do" value="off" onclick="return ctvPicked('끌')">체크한 것 끄기</button>
     <button class="btn sm" name="do" value="del" style="color:#8A1C1C"
@@ -911,7 +937,7 @@ layout_head('교회 TV 화면', 'church_tv');
   <form id="ctv-all-on" method="post" onsubmit="return confirm('꺼 둔 슬라이드를 모두 켤까요?');"><?= csrf_field() ?>
     <input type="hidden" name="act" value="all_on"><input type="hidden" name="screen_id" value="<?= $tabScreen ? (int)$tabScreen['id'] : 0 ?>"></form>
   <?php if (!$slides): ?>
-    <div class="empty">슬라이드가 없습니다. [전체 슬라이드] 에서 이 TV 칸을 누르거나, 위 메뉴에서 글 · 사진 · 유튜브를 넣으세요.</div>
+    <div class="empty">슬라이드가 없습니다. 위 메뉴에서 글 · 사진 · 유튜브를 넣으세요.</div>
   <?php endif; ?>
   <?php foreach ($sections as $g):
     $gid = (int)$g['id'];
@@ -993,7 +1019,8 @@ layout_head('교회 TV 화면', 'church_tv');
       $sid = (int)$s['id'];
       $expired = $s['end_date'] && $s['end_date'] < $today;
       $notyet = $s['start_date'] && $s['start_date'] > $today; ?>
-      <tr data-id="<?= $sid ?>"<?= (int)$s['is_active'] && !$expired ? '' : ' style="opacity:.55"' ?>>
+      <?php $offTab = $tabScreen && !isset($links[$sid][(int)$tabScreen['id']]); ?>
+      <tr data-id="<?= $sid ?>"<?= $offTab ? ' class="ctv-off"' : '' ?><?= (int)$s['is_active'] && !$expired ? '' : ' style="opacity:.55"' ?>>
         <td class="c ctv-ord" style="white-space:nowrap">
           <span class="ctv-drag" title="끌어다 놓아 순서 바꾸기">⠿</span>
           <input type="checkbox" name="ids[]" value="<?= $sid ?>" form="ctv-move" style="vertical-align:middle;margin-right:4px">
@@ -1029,7 +1056,8 @@ layout_head('교회 TV 화면', 'church_tv');
             <input type="hidden" name="act" value="slide_toggle"><input type="hidden" name="id" value="<?= $sid ?>">
             <input type="hidden" name="screen_id" value="<?= (int)$sc['id'] ?>">
             <button class="btn sm<?= $in ? ' pri' : '' ?>" title="<?= $in ? '이 TV 에서 빼기' : '이 TV 에 넣기' ?>"><?= h(preg_replace('/\s*모니터$/u', '', (string)$sc['name'])) ?></button></form>
-          <?php endforeach; ?></td>
+          <?php endforeach; ?>
+          <?php if ($offTab): ?><div style="font-size:11px;color:var(--ink3)"><?= h(preg_replace('/\s*모니터$/u', '', (string)$tabScreen['name'])) ?>에 없음</div><?php endif; ?></td>
         <td class="c">
           <form method="post" style="display:inline"><?= csrf_field() ?>
             <input type="hidden" name="act" value="slide_seconds"><input type="hidden" name="id" value="<?= $sid ?>">
@@ -1080,6 +1108,8 @@ layout_head('교회 TV 화면', 'church_tv');
   .ctv-drag { display: inline-block; width: 26px; height: 30px; line-height: 30px; text-align: center; vertical-align: middle;
               font-size: 20px; color: #8A8F98; cursor: grab; touch-action: none; user-select: none; border-radius: 4px; }
   .ctv-drag:hover { background: #F2EFE6; color: #333; }
+  /* TV 탭에서 그 TV 에 없는 슬라이드: 흐리게 (TV 칸은 또렷하게 두어 바로 넣을 수 있게) */
+  tr.ctv-off > td:not(.ctv-tv) { opacity: .45; }
   tr.ctv-dragging { background: #FFF3C4 !important; box-shadow: 0 4px 14px rgba(0,0,0,.18); opacity: 1 !important; }
   tr.ctv-dragging .ctv-drag { cursor: grabbing; color: #A86F00; }
   .ctv-edu { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 10px 12px; margin-bottom: 12px;
