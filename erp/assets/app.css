@@ -96,6 +96,15 @@ td.c, th.c { text-align: center; }
 .fw { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .fw.w1 { width: 150px; } .fw.w2 { width: 220px; } .fw.w3 { width: 320px; }
 .fw.gr { flex-grow: 1; }
+/* PC — 넓은 모니터에서 칸이 왼쪽에 몰리지 않게 줄 폭에 맞춰 같이 늘어납니다.
+   작은칸 : 중간칸 : 큰칸 = 1 : 2 : 3 비율로 늘고, 혼자 남은 칸이 끝없이 길어지지 않게 최대폭을 둡니다 */
+@media (min-width: 901px) {
+  .f > .fw.w1 { flex: 1 1 150px; width: auto; max-width: 420px; }
+  .f > .fw.w2 { flex: 2 1 220px; width: auto; max-width: 640px; }
+  .f > .fw.w3 { flex: 3 1 320px; width: auto; max-width: 900px; }
+  .f > .fw.gr { flex: 4 1 200px; max-width: none; }
+  .f > .fw[style*="width:100%"] { flex-basis: 100%; max-width: none; }
+}
 label { font-size: 11px; font-weight: 600; color: var(--ink2); }
 input[type=text], input[type=date], input[type=number], input[type=password],
 select, textarea {
@@ -204,8 +213,10 @@ td .btn { flex-shrink: 0; }
   .card .cb { padding: 12px; }
   .tscroll th, .tscroll td { white-space: nowrap; }
 
-  .fw.w1 { width: calc(50% - 6px); }
-  .fw.w2, .fw.w3 { width: 100%; }
+  /* 태블릿 — 작은칸 3개 · 중간칸 2개 · 큰칸은 한 줄 */
+  .fw.w1 { width: calc(33.333% - 8px); }
+  .fw.w2 { width: calc(50% - 6px); }
+  .fw.w3, .fw.gr { width: 100%; }
   .fw[style*="min-width"] { min-width: 0 !important; width: 100%; }
   .body div[style*="display:flex"] { flex-wrap: wrap; }
   /* 16px 미만이면 아이폰이 입력칸을 누를 때마다 화면을 확대한다 */
@@ -250,4 +261,11 @@ a.kpi-link:hover .kpi-go { color: var(--accent-deep); }
   .tscroll td input[type=text], .tscroll td input[type=password], .tscroll td input[type=number],
   .tscroll td input[type=date], .tscroll td select { min-width: 170px; }
   .tscroll td input[type=checkbox], .tscroll td input[type=radio] { min-width: 0; }
+}
+
+/* 휴대폰 — 작은칸 2개씩, 나머지는 한 줄에 하나 */
+@media (max-width: 600px) {
+  .fw.w1 { width: calc(50% - 6px); }
+  .fw.w2, .fw.w3, .fw.gr { width: 100%; }
+  .f > .btn, .f > button { flex: 1 1 auto; }
 }

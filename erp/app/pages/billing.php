@@ -5,6 +5,99 @@ $eid = entity_id();
 $err = '';
 schema_upgrade_invoices();   // 재발행 컬럼(issued_at · issue_count · changed_at) 보강
 
+// ---------------------------------------------------------------- 지난 청구 정리
+// 옛 전산에서 이미 청구한 전표를 날짜 기준으로 한 번에 '청구' 로 표시합니다 (청구서는 만들지 않음).
+// 바꾼 전표 번호를 billing_bulk_marks 에 남겨 두어 [되돌리기] 로 정확히 되돌립니다. (2026-10-12)
+function bill_marks_table(): void
+{
+    db()->exec("CREATE TABLE IF NOT EXISTS billing_bulk_marks (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        business_entity_id BIGINT UNSIGNED NOT NULL,
+        cutoff_date DATE NOT NULL,
+        shipment_ids MEDIUMTEXT NOT NULL,
+        cnt INT NOT NULL DEFAULT 0,
+        amount DECIMAL(15,2) NOT NULL DEFAULT 0,
+        created_by BIGINT UNSIGNED NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        undone_at DATETIME NULL,
+        PRIMARY KEY (id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='지난 청구 정리 기록'");
+}
+
+/** 날짜까지의 미청구 전표 (임시 · 확정, 청구서에 안 담긴 것) */
+function bill_marks_targets(int $eid, string $cutoff): array
+{
+    $st = db()->prepare("SELECT s.id, COALESCE(t.grand_total, 0) AS amt
+                           FROM shipments s
+                           LEFT JOIN v_shipment_totals t ON t.shipment_id = s.id
+                           LEFT JOIN invoice_shipments xs ON xs.shipment_id = s.id
+                          WHERE s.business_entity_id = ? AND s.deleted_at IS NULL
+                            AND s.status IN ('DRAFT', 'CONFIRMED') AND xs.id IS NULL
+                            AND s.voucher_date <= ?");
+    $st->execute([$eid, $cutoff]);
+    return $st->fetchAll();
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(post('act'), ['mark_billed', 'mark_undo'], true)) {
+    csrf_check();
+    bill_marks_table();
+    $pdo = db();
+    try {
+        if (post('act') === 'mark_billed') {
+            $cutoff = post('cutoff');
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $cutoff)) { throw new RuntimeException('기준 날짜를 고르세요.'); }
+            if ($cutoff >= date('Y-m-d')) { throw new RuntimeException('오늘 이전 날짜만 됩니다.'); }
+            $rows = bill_marks_targets($eid, $cutoff);
+            if (!$rows) { throw new RuntimeException($cutoff . ' 까지 미청구 전표가 없습니다.'); }
+            $ids = array_map(static fn ($r) => (int)$r['id'], $rows);
+            $amt = array_sum(array_map(static fn ($r) => (float)$r['amt'], $rows));
+            $pdo->beginTransaction();
+            foreach (array_chunk($ids, 500) as $chunk) {
+                $ph = implode(',', array_fill(0, count($chunk), '?'));
+                $pdo->prepare("UPDATE shipments SET status = 'BILLED'
+                                WHERE id IN ($ph) AND status IN ('DRAFT', 'CONFIRMED')")->execute($chunk);
+            }
+            $pdo->prepare('INSERT INTO billing_bulk_marks (business_entity_id, cutoff_date, shipment_ids, cnt, amount, created_by)
+                           VALUES (?, ?, ?, ?, ?, ?)')
+                ->execute([$eid, $cutoff, implode(',', $ids), count($ids), $amt, $_SESSION['admin_id'] ?? null]);
+            $mid = (int)$pdo->lastInsertId();
+            log_action('청구', 'UPDATE', 'billing_bulk_marks', $mid, $cutoff . ' 까지',
+                       null, count($ids) . '건 청구 표시 · ' . money($amt) . '원', post('reason') ?: '지난 청구 정리');
+            $pdo->commit();
+            flash($cutoff . ' 까지 미청구 전표 ' . number_format(count($ids)) . '건(' . money($amt)
+                . '원)을 \'청구\' 로 표시했습니다. 잘못했으면 아래 [되돌리기] 를 누르세요.');
+        } else {
+            $mid = (int)post('mark_id');
+            $st = $pdo->prepare('SELECT * FROM billing_bulk_marks WHERE id = ? AND business_entity_id = ? AND undone_at IS NULL');
+            $st->execute([$mid, $eid]);
+            $m = $st->fetch();
+            if (!$m) { throw new RuntimeException('되돌릴 기록이 없습니다.'); }
+            $ids = array_values(array_filter(array_map('intval', explode(',', (string)$m['shipment_ids']))));
+            $pdo->beginTransaction();
+            $back = 0;
+            foreach (array_chunk($ids, 500) as $chunk) {
+                $ph = implode(',', array_fill(0, count($chunk), '?'));
+                // 그 사이 청구서에 담겼거나 입금된 전표는 그대로 둡니다
+                $u = $pdo->prepare("UPDATE shipments s
+                                       LEFT JOIN invoice_shipments xs ON xs.shipment_id = s.id
+                                       SET s.status = 'CONFIRMED'
+                                     WHERE s.id IN ($ph) AND s.status = 'BILLED' AND xs.id IS NULL");
+                $u->execute($chunk);
+                $back += $u->rowCount();
+            }
+            $pdo->prepare('UPDATE billing_bulk_marks SET undone_at = NOW() WHERE id = ?')->execute([$mid]);
+            log_action('청구', 'UPDATE', 'billing_bulk_marks', $mid, $m['cutoff_date'] . ' 까지',
+                       null, '되돌림 ' . $back . '건', '지난 청구 정리 되돌리기');
+            $pdo->commit();
+            flash('되돌렸습니다 — ' . number_format($back) . '건이 다시 미청구(확정)입니다.');
+        }
+        redirect('?p=billing');
+    } catch (RuntimeException $e) {
+        if ($pdo->inTransaction()) { $pdo->rollBack(); }
+        $err = $e->getMessage();
+    }
+}
+
 // ---------------------------------------------------------------- 청구서 생성
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'create') {
     csrf_check();
@@ -111,7 +204,7 @@ if ($selCid > 0) {
            LEFT JOIN invoice_shipments xs ON xs.shipment_id = s.id
           WHERE s.business_entity_id = ? AND s.company_id = ?
             AND s.deleted_at IS NULL AND s.status <> \'CANCELLED\'
-            AND xs.id IS NULL
+            AND xs.id IS NULL AND s.status <> 'BILLED'
             AND s.voucher_date BETWEEN ? AND ?
           ORDER BY s.voucher_date, s.id');
     $st->execute([$eid, $selCid, $selFrom, $selTo]);
@@ -137,6 +230,15 @@ foreach ($invoices as $i) {
     if ($i['status'] !== 'CANCELLED') { $openTotal += $i['balance']; }
 }
 
+// 지난 청구 정리 — 미리보기 · 최근 기록
+bill_marks_table();
+$markCut = preg_match('/^\d{4}-\d{2}-\d{2}$/', query('mark_cut')) ? query('mark_cut') : date('Y-m-t', strtotime('first day of last month'));
+$markPrev = bill_marks_targets($eid, $markCut);
+$markAmt = array_sum(array_map(static fn ($r) => (float)$r['amt'], $markPrev));
+$st = db()->prepare('SELECT * FROM billing_bulk_marks WHERE business_entity_id = ? ORDER BY id DESC LIMIT 5');
+$st->execute([$eid]);
+$marks = $st->fetchAll();
+
 layout_head('청구관리', 'billing');
 ?>
 <div class="head">
@@ -145,6 +247,56 @@ layout_head('청구관리', 'billing');
 </div>
 
 <?php if ($err !== ''): ?><div class="msg err"><?= h($err) ?></div><?php endif; ?>
+
+<details class="card"<?= $markPrev ? ' open' : '' ?>>
+  <summary class="ch" style="cursor:pointer">지난 청구 정리
+    <span style="font-weight:400;color:var(--ink3)">옛 전산 등에서 이미 청구한 전표를 날짜 기준으로 한 번에 '청구' 로 표시 — 청구서는 만들지 않습니다</span></summary>
+  <div class="cb">
+    <form method="get" class="f" style="align-items:flex-end">
+      <input type="hidden" name="p" value="billing">
+      <div class="fw w1"><label for="mc">이 날짜까지 (전표일)</label>
+        <input type="date" id="mc" name="mark_cut" value="<?= h($markCut) ?>" onchange="this.form.submit()"></div>
+      <div class="fw w2"><label>대상 — 미청구(임시 · 확정) 이면서 청구서에 안 담긴 전표</label>
+        <div style="height:34px;display:flex;align-items:center;font-weight:700">
+          <?= number_format(count($markPrev)) ?>건 · <?= money($markAmt) ?>원</div></div>
+    </form>
+    <?php if ($markPrev): ?>
+    <form method="post" class="f" style="align-items:flex-end;margin-top:10px"
+          onsubmit="return confirm('<?= h($markCut) ?> 까지 미청구 전표 <?= number_format(count($markPrev)) ?>건을 \'청구\' 로 표시합니다. 진행할까요?')">
+      <?= csrf_field() ?>
+      <input type="hidden" name="act" value="mark_billed">
+      <input type="hidden" name="cutoff" value="<?= h($markCut) ?>">
+      <div class="fw gr"><label for="mr">메모</label>
+        <input type="text" id="mr" name="reason" maxlength="200" value="옛 전산에서 청구 완료"></div>
+      <button class="btn pri"><?= h($markCut) ?> 까지 <?= number_format(count($markPrev)) ?>건 '청구' 로 표시</button>
+    </form>
+    <?php endif; ?>
+    <?php if ($marks): ?>
+    <table style="margin-top:12px">
+      <thead><tr><th style="width:150px">한 때</th><th style="width:120px">기준일</th>
+        <th class="r" style="width:90px">건수</th><th class="r" style="width:140px">금액</th><th>상태</th></tr></thead>
+      <tbody>
+      <?php foreach ($marks as $m): ?>
+        <tr>
+          <td class="tnum"><?= h(substr((string)$m['created_at'], 0, 16)) ?></td>
+          <td class="tnum"><?= h((string)$m['cutoff_date']) ?> 까지</td>
+          <td class="r tnum"><?= number_format((int)$m['cnt']) ?></td>
+          <td class="r tnum"><?= money($m['amount']) ?></td>
+          <td><?php if ($m['undone_at']): ?>
+                <span class="badge b-info">되돌림 <?= h(substr((string)$m['undone_at'], 0, 16)) ?></span>
+              <?php else: ?>
+                <form method="post" style="display:inline" onsubmit="return confirm('이 정리를 되돌려 다시 미청구로 만들까요? (그 사이 청구서에 담긴 전표는 그대로 둡니다)')">
+                  <?= csrf_field() ?><input type="hidden" name="act" value="mark_undo">
+                  <input type="hidden" name="mark_id" value="<?= (int)$m['id'] ?>">
+                  <button class="btn sm">되돌리기</button></form>
+              <?php endif; ?></td>
+        </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+    <?php endif; ?>
+  </div>
+</details>
 
 <div class="card">
   <div class="ch">청구서 만들기
