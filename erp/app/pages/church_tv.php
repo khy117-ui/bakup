@@ -529,9 +529,9 @@ foreach ($groups as $g) {
 }
 $eduGroups = array_values(array_filter($groups, fn($g) => in_array($g['name'], CTV_EDU_GROUPS, true)));
 $allSlides = $pdo->query('SELECT s.* FROM church_tv_slides s LEFT JOIN church_tv_groups g ON g.id = s.group_id ORDER BY ' . CTV_ORDER)->fetchAll();
-$slides = $tabScreen
-    ? array_values(array_filter($allSlides, fn($s) => isset($links[(int)$s['id']][(int)$tabScreen['id']])))
-    : $allSlides;
+// 1층 · 3층 탭에서도 모든 슬라이드를 보여 줍니다. 그 TV 에 없는 것은 흐리게 보이고 [넣기] 로 바로 넣습니다
+$slides = $allSlides;
+$tabCount = $tabScreen ? count(array_filter($allSlides, fn($s) => isset($links[(int)$s['id']][(int)$tabScreen['id']]))) : count($allSlides);
 $liveIds = $tabScreen ? array_map(fn($s) => (int)$s['id'], ctv_slides_for((int)$tabScreen['id'])) : [];
 
 // 처음에는 TV 기본 정보와 링크만. 나머지는 위 메뉴(글 슬라이드 · 사진 · 영상 · 유튜브 · 목록)를 눌러 엽니다
@@ -896,7 +896,7 @@ layout_head('교회 TV 화면', 'church_tv');
     <?php endforeach; ?>
     <a class="btn sm<?= $tab === 'all' ? ' pri' : '' ?>" href="?p=church_tv&amp;tab=all&amp;v=list">전체 슬라이드</a>
     <span style="margin-left:auto;font-weight:400;color:var(--ink3);font-size:12px">
-      <?= $tabScreen ? h($tabScreen['name']) . '에 넣은 슬라이드 ' . count($slides) . '장 · 지금 나가는 것 ' . count($liveIds) . '장' : '모든 슬라이드 ' . count($slides) . '장' ?></span>
+      <?= $tabScreen ? h($tabScreen['name']) . '에 넣은 슬라이드 ' . $tabCount . '장 · 지금 나가는 것 ' . count($liveIds) . '장' : '모든 슬라이드 ' . count($slides) . '장' ?></span>
   </div>
   <?php
     // 묶음 > 날짜 > 슬라이드 로 나누기
@@ -941,10 +941,12 @@ layout_head('교회 TV 화면', 'church_tv');
                      if (!n) { alert('삭제할 슬라이드를 체크해 주세요.'); return false; }
                      return confirm('체크한 ' + n + '개를 아예 삭제할까요? 1층 · 3층 모두에서 없어지고 사진 · 영상 파일도 지워집니다.');">아예 삭제</button>
     <span style="color:var(--ink3)">빼기는 그 TV 에서만 빠지고 슬라이드는 남습니다. 아예 삭제는 모든 TV 에서 지웁니다.</span>
-    <?php if ($tabScreen): ?><a class="btn sm" style="margin-left:auto" href="?p=church_tv&amp;tab=all&amp;v=list">＋ 다른 슬라이드 골라 넣기 (전체 슬라이드)</a><?php endif; ?>
+    <?php if ($tabScreen): ?><span style="color:var(--ink3)">흐린 줄은 <?= h(preg_replace('/\s*모니터$/u', '', (string)$tabScreen['name'])) ?>에 없는 슬라이드입니다.</span><?php endif; ?>
   </div>
   <?php if (!$slides): ?>
-    <div class="empty">슬라이드가 없습니다. <a href="?p=church_tv&amp;tab=all&amp;v=list">[전체 슬라이드]</a> 에서 넣을 것을 체크하고 위의 "넣기" 를 누르거나, 위 메뉴에서 글 · 사진 · 유튜브를 넣으세요.</div>
+    <div class="empty">슬라이드가 없습니다. 위 메뉴에서 글 · 사진 · 유튜브를 넣으세요.</div>
+  <?php elseif (!$tabCount): ?>
+    <div class="empty">아직 <?= h($tabScreen['name']) ?>에 넣은 슬라이드가 없습니다. 아래에서 넣을 것을 체크하고 위의 "넣기" 를 누르거나, 줄마다 있는 TV 단추를 누르세요.</div>
   <?php endif; ?>
   <?php foreach ($sections as $g):
     $gid = (int)$g['id'];
@@ -1026,7 +1028,8 @@ layout_head('교회 TV 화면', 'church_tv');
       $sid = (int)$s['id'];
       $expired = $s['end_date'] && $s['end_date'] < $today;
       $notyet = $s['start_date'] && $s['start_date'] > $today; ?>
-      <tr data-id="<?= $sid ?>"<?= (int)$s['is_active'] && !$expired ? '' : ' style="opacity:.55"' ?>>
+      <?php $notHere = $tabScreen && !isset($links[$sid][(int)$tabScreen['id']]); ?>
+      <tr data-id="<?= $sid ?>"<?= $notHere ? ' style="opacity:.4"' : ((int)$s['is_active'] && !$expired ? '' : ' style="opacity:.55"') ?>>
         <td class="c ctv-ord" style="white-space:nowrap">
           <span class="ctv-drag" title="끌어다 놓아 순서 바꾸기">⠿</span>
           <input type="checkbox" name="ids[]" value="<?= $sid ?>" form="ctv-move" style="vertical-align:middle;margin-right:4px">
@@ -1055,7 +1058,8 @@ layout_head('교회 TV 화면', 'church_tv');
               <?php if ($s['start_date'] || $s['end_date']): ?><div style="color:var(--ink3)">기간 <?= h($s['start_date'] ?? '') ?> ~ <?= h($s['end_date'] ?? '') ?></div><?php endif; ?>
               <?php if ($s['title'] === '' && $body !== '' && $s['image_file']): ?><div style="color:#A86F00">제목이 비어 있어 TV 에는 <?= $kind ?>만 나옵니다. 글도 띄우려면 [수정] 에서 제목을 넣으세요.</div><?php endif; ?>
             </div></details>
-          <?php else: ?><div><?= $line ?></div><?php endif; ?></td>
+          <?php else: ?><div><?= $line ?></div><?php endif; ?>
+          <?php if ($notHere): ?><div style="font-size:11px;color:#8A1C1C"><?= h(preg_replace('/\s*모니터$/u', '', (string)$tabScreen['name'])) ?>에 없음</div><?php endif; ?></td>
         <td class="ctv-tv" style="white-space:nowrap">
           <?php foreach ($screens as $sc): $in = isset($links[$sid][(int)$sc['id']]); ?>
           <form method="post" style="display:inline"><?= csrf_field() ?>
