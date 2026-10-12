@@ -1,6 +1,22 @@
 # 홈페이지 루트 — 웹에서 열 필요 없는 파일 · 폴더 막기 (2026-09-19)
 Options -Indexes
 
+# 옛 주소 postgood.co.kr → good-post.co.kr 로 영구 이동 (2026-10-12)
+#   postgood.co.kr 을 이 서버(AISpace)에 연결하면 그때부터 작동합니다. 연결 전에는 영향 없음.
+#   주소를 하나로 모아야 ERP 로그인이 주소마다 따로 되지 않고, 검색엔진에도 한 주소로 모입니다.
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  # 옛 관리자 화면(/ADM/...) 은 새 ERP 로
+  RewriteCond %{HTTP_HOST} ^(www\.)?postgood\.co\.kr$ [NC]
+  RewriteRule ^ADM(/.*)?$ https://good-post.co.kr/erp/ [R=301,L]
+  # 옛 화면 주소(.asp)는 새 홈페이지 첫 화면으로 — 같은 이름의 화면이 없습니다
+  RewriteCond %{HTTP_HOST} ^(www\.)?postgood\.co\.kr$ [NC]
+  RewriteRule \.asp$ https://good-post.co.kr/ [R=301,L]
+  # 그 밖에는 같은 경로 그대로
+  RewriteCond %{HTTP_HOST} ^(www\.)?postgood\.co\.kr$ [NC]
+  RewriteRule ^(.*)$ https://good-post.co.kr/$1 [R=301,L]
+</IfModule>
+
 # 설계 문서 · DB 구조 · 배포 설정 · 서버 코드 폴더 (PHP 가 파일로 읽는 것은 영향 없음)
 RedirectMatch 404 ^/(db|deploy|includes)(/|$)
 RedirectMatch 404 ^/\.git
