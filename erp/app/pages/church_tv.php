@@ -427,9 +427,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
                 $per = in_array((int)post('per_screen'), CTV_PER_SCREEN, true) ? (int)post('per_screen') : 1;
                 // 기도제목은 한 줄에 하나. 빈 줄은 뺍니다
                 $prayer = implode("\n", array_filter(array_map('trim', preg_split('/\R/u', mb_substr(post('prayer'), 0, 2000))), 'strlen'));
-                $pdo->prepare('UPDATE church_tv_groups SET name = ?, missionary = ?, prayer = ?, show_caption = ?, per_screen = ? WHERE id = ?')
+                $home = preg_replace('/[^a-z0-9_-]/i', '', post('home_screen'));
+                $pdo->prepare('UPDATE church_tv_groups SET name = ?, missionary = ?, prayer = ?, show_caption = ?, per_screen = ?, home_screen = ? WHERE id = ?')
                     ->execute([$name, trim(mb_substr(post('missionary'), 0, 60)) ?: null, $prayer !== '' ? $prayer : null,
-                               post('show_caption') === '1' ? 1 : 0, $per, $id]);
+                               post('show_caption') === '1' ? 1 : 0, $per, $home !== '' ? $home : null, $id]);
                 flash('"' . $name . '" 묶음을 저장했습니다.');
             } else {
                 $next = (int)$pdo->query('SELECT COALESCE(MAX(sort_no),0)+1 FROM church_tv_groups')->fetchColumn();
@@ -498,6 +499,16 @@ foreach ($pdo->query('SELECT slide_id, screen_id FROM church_tv_slide_screens')-
     $links[(int)$l['slide_id']][(int)$l['screen_id']] = true;
 }
 $groups = $pdo->query('SELECT * FROM church_tv_groups ORDER BY sort_no, id')->fetchAll();
+// 묶음마다 '기본 TV' (교육국 부서 = 3층). 올리기 칸에서 그 묶음을 고르면 그 TV 만 체크됩니다
+$ctvSlugId = [];
+foreach ($screens as $s) { $ctvSlugId[(string)$s['slug']] = (int)$s['id']; }
+$upGroup = $groups ? (int)$groups[0]['id'] : null;
+foreach ($groups as $g) { if ((int)$g['id'] === (int)query('g')) { $upGroup = (int)$g['id']; } }
+$upScreen = $tabScreen ? (int)$tabScreen['id'] : 0;
+foreach ($groups as $g) {
+    if ((int)$g['id'] === $upGroup && !empty($g['home_screen']) && isset($ctvSlugId[$g['home_screen']])) { $upScreen = $ctvSlugId[$g['home_screen']]; }
+}
+$eduGroups = array_values(array_filter($groups, fn($g) => in_array($g['name'], CTV_EDU_GROUPS, true)));
 $allSlides = $pdo->query('SELECT s.* FROM church_tv_slides s LEFT JOIN church_tv_groups g ON g.id = s.group_id ORDER BY ' . CTV_ORDER)->fetchAll();
 $slides = $tabScreen
     ? array_values(array_filter($allSlides, fn($s) => isset($links[(int)$s['id']][(int)$tabScreen['id']])))
@@ -526,9 +537,11 @@ if (query('screen') === 'new') {
 /** 묶음 고르는 칸 + 새 묶음 이름 + 날짜 (올리기 · 수정 · 옮기기 공통) */
 function ctv_group_fields(array $groups, ?int $sel, ?string $date, bool $dateRequired = true): string
 {
+    global $ctvSlugId;
     $o = '<option value="0">묶음 없음</option>';
     foreach ($groups as $g) {
-        $o .= '<option value="' . (int)$g['id'] . '"' . ($sel === (int)$g['id'] ? ' selected' : '') . '>' . h($g['name']) . '</option>';
+        $tv = !empty($g['home_screen']) && isset($ctvSlugId[$g['home_screen']]) ? ' data-tv="' . $ctvSlugId[$g['home_screen']] . '"' : '';
+        $o .= '<option value="' . (int)$g['id'] . '"' . $tv . ($sel === (int)$g['id'] ? ' selected' : '') . '>' . h($g['name']) . '</option>';
     }
     return '<div class="fw w2"><label>묶음</label><select name="group_id">' . $o . '</select></div>'
          . '<div class="fw w2"><label>또는 새 묶음 이름</label><input type="text" name="new_group" maxlength="60" placeholder="예: 필리핀 선교"></div>'
@@ -783,11 +796,20 @@ layout_head('교회 TV 화면', 'church_tv');
 <div class="card" id="ctv-bulk">
   <div class="ch">사진 · 영상 한꺼번에 올리기 <span style="font-weight:400;color:var(--ink3)">한 개가 한 장이 되어 글 없이 화면 가득 나옵니다. 영상은 끝까지 재생한 뒤 넘어갑니다.</span></div>
   <div class="cb">
+    <?php if ($eduGroups): ?>
+    <div class="ctv-edu">
+      <b>교육국 (3층 TV)</b>
+      <?php foreach ($eduGroups as $g): ?>
+      <a class="btn sm<?= $upGroup === (int)$g['id'] ? ' pri' : '' ?>" href="?p=church_tv&amp;tab=<?= h($tab) ?>&amp;v=bulk&amp;g=<?= (int)$g['id'] ?>"><?= h($g['name']) ?></a>
+      <?php endforeach; ?>
+      <span style="color:var(--ink3);font-size:12px">부서를 누르고 사진 · 영상을 고르면 3층 TV 에만 나갑니다.</span>
+    </div>
+    <?php endif; ?>
     <form method="post" enctype="multipart/form-data" class="f" id="ctv-bulk-form" style="align-items:flex-end;flex-wrap:wrap"
           action="?p=church_tv&amp;tab=<?= h($tab) ?>&amp;v=bulk">
       <?= csrf_field() ?>
       <input type="hidden" name="act" value="bulk_upload">
-      <?= ctv_group_fields($groups, $groups ? (int)$groups[0]['id'] : null, date('Y-m-d')) ?>
+      <?= ctv_group_fields($groups, $upGroup, date('Y-m-d')) ?>
       <div class="fw w4"><label>사진 · 영상 고르기 (여러 개 한 번에 골라도 됩니다)</label>
         <input type="file" name="files[]" multiple required id="ctv-files"
                accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,.mp4,.m4v,.webm,.mov"></div>
@@ -799,7 +821,7 @@ layout_head('교회 TV 화면', 'church_tv');
         <div style="display:flex;gap:14px;flex-wrap:wrap">
         <?php foreach ($screens as $s): ?>
           <label style="display:flex;gap:6px;align-items:center;font-weight:400">
-            <input type="checkbox" name="screens[]" value="<?= (int)$s['id'] ?>"<?= $tabScreen && (int)$tabScreen['id'] === (int)$s['id'] ? ' checked' : '' ?>> <?= h($s['name']) ?></label>
+            <input type="checkbox" name="screens[]" value="<?= (int)$s['id'] ?>"<?= $upScreen === (int)$s['id'] ? ' checked' : '' ?>> <?= h($s['name']) ?></label>
         <?php endforeach; ?>
         </div></div>
       <button class="btn pri" id="ctv-bulk-btn">올리기</button>
@@ -821,7 +843,7 @@ layout_head('교회 TV 화면', 'church_tv');
     <form method="post" class="f" style="align-items:flex-end;flex-wrap:wrap" action="?p=church_tv&amp;tab=<?= h($tab) ?>&amp;v=yt">
       <?= csrf_field() ?>
       <input type="hidden" name="act" value="yt_add">
-      <?= ctv_group_fields($groups, $groups ? (int)$groups[0]['id'] : null, date('Y-m-d')) ?>
+      <?= ctv_group_fields($groups, $upGroup, date('Y-m-d')) ?>
       <div class="fw w6" style="flex-basis:100%"><label>유튜브 주소 (여러 개면 한 줄에 하나씩)</label>
         <textarea name="links" rows="3" required style="width:100%" placeholder="https://youtu.be/...&#10;https://www.youtube.com/watch?v=..."></textarea></div>
       <div class="fw w2"><label>보여 줄 시간</label>
@@ -835,7 +857,7 @@ layout_head('교회 TV 화면', 'church_tv');
         <div style="display:flex;gap:14px;flex-wrap:wrap">
         <?php foreach ($screens as $s): ?>
           <label style="display:flex;gap:6px;align-items:center;font-weight:400">
-            <input type="checkbox" name="screens[]" value="<?= (int)$s['id'] ?>"<?= $tabScreen && (int)$tabScreen['id'] === (int)$s['id'] ? ' checked' : '' ?>> <?= h($s['name']) ?></label>
+            <input type="checkbox" name="screens[]" value="<?= (int)$s['id'] ?>"<?= $upScreen === (int)$s['id'] ? ' checked' : '' ?>> <?= h($s['name']) ?></label>
         <?php endforeach; ?>
         </div></div>
       <button class="btn pri">넣기</button>
@@ -902,6 +924,7 @@ layout_head('교회 TV 화면', 'church_tv');
       <span class="ctv-ar" id="ga<?= $gid ?>"><?= $open ? '▾' : '▸' ?></span>
       <b style="font-size:15px"><?= h($g['name']) ?></b>
       <?php if (!empty($g['missionary'])): ?><span style="font-size:13px;color:#A86F00;font-weight:700"><?= h($g['missionary']) ?></span><?php endif; ?>
+      <?php if (!empty($g['home_screen'])): foreach ($screens as $sc): if ($sc['slug'] === $g['home_screen']): ?><span class="badge b-info"><?= h(preg_replace('/\s*모니터$/u', '', (string)$sc['name'])) ?> TV 용</span><?php endif; endforeach; endif; ?>
       <span style="color:var(--ink3);font-size:12px"><?= $cnt ?>개</span>
     </div>
     <div class="ctv-gb" id="gb<?= $gid ?>" data-open="<?= $open ? 1 : 0 ?>"<?= $open ? '' : ' style="display:none"' ?>>
@@ -939,6 +962,10 @@ layout_head('교회 TV 화면', 'church_tv');
           <select name="per_screen" style="height:30px;width:auto">
             <?php foreach (CTV_PER_SCREEN as $n): ?><option value="<?= $n ?>"<?= (int)($g['per_screen'] ?? 1) === $n ? ' selected' : '' ?>><?= $n ?>장</option><?php endforeach; ?>
           </select> 씩</label>
+        <label style="display:flex;gap:4px;align-items:center">올릴 때 기본 TV
+          <select name="home_screen" style="height:30px;width:auto"><option value="">따로 없음</option>
+            <?php foreach ($screens as $sc): ?><option value="<?= h($sc['slug']) ?>"<?= (string)($g['home_screen'] ?? '') === (string)$sc['slug'] ? ' selected' : '' ?>><?= h($sc['name']) ?></option><?php endforeach; ?>
+          </select></label>
         <div style="flex-basis:100%">
           <label style="display:block;margin-bottom:4px">기도제목 — 한 줄에 하나씩. TV 아래에 계속 흐르고, 위 가운데에는 "<?= h($g['name']) ?> · 선교사 이름" 이 나옵니다.
             <span style="color:#8A1C1C">이 화면은 누구나 보므로 가족 · 자녀 이야기는 넣지 마세요.</span></label>
@@ -1055,6 +1082,8 @@ layout_head('교회 TV 화면', 'church_tv');
   .ctv-drag:hover { background: #F2EFE6; color: #333; }
   tr.ctv-dragging { background: #FFF3C4 !important; box-shadow: 0 4px 14px rgba(0,0,0,.18); opacity: 1 !important; }
   tr.ctv-dragging .ctv-drag { cursor: grabbing; color: #A86F00; }
+  .ctv-edu { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 10px 12px; margin-bottom: 12px;
+             background: #F3F7FF; border: 1px solid #D6E2F7; border-radius: 8px; font-size: 13px; }
   .ctv-toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #222; color: #fff;
                padding: 10px 18px; border-radius: 20px; font-size: 13px; z-index: 99; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
   /* 휴대폰 · 태블릿: 표를 한 장씩 카드처럼 세로로 쌓습니다 */
@@ -1193,6 +1222,15 @@ function ctvGroup(id) {
   document.addEventListener('pointerup', end);
   document.addEventListener('pointercancel', end);
 })();
+// 올리기 칸에서 묶음을 고르면, 그 묶음의 기본 TV (교육국 = 3층) 만 체크합니다
+document.addEventListener('change', function (e) {
+  var sel = e.target;
+  if (sel.name !== 'group_id' || !sel.form || !sel.form.querySelector('input[name="screens[]"]') || sel.form.id === 'ctv-move') { return; }
+  var tv = sel.options[sel.selectedIndex].getAttribute('data-tv');
+  if (!tv) { return; }
+  var boxes = sel.form.querySelectorAll('input[name="screens[]"]');
+  for (var i = 0; i < boxes.length; i++) { boxes[i].checked = boxes[i].value === tv; }
+});
 function ctvPicked(what) {
   if (document.querySelectorAll('input[form=ctv-move]:checked').length) { return true; }
   alert(what + ' 슬라이드를 체크해 주세요.');
