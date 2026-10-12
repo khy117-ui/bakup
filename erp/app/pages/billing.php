@@ -400,18 +400,20 @@ layout_head('청구관리', 'billing');
       <th class="c" style="width:60px"></th>
     </tr></thead>
     <tbody>
-    <?php foreach ($invoices as $i): [$lab,$cls] = invoice_state($i); ?>
-      <tr>
+    <?php foreach ($invoices as $i): [$lab,$cls] = invoice_state($i);
+      // 취소된 청구서는 받을 돈이 아닙니다 — 금액은 흐리게, 미수는 '-' 로 (미수 합계에도 안 들어감)
+      $cancelled = $i['status'] === 'CANCELLED'; ?>
+      <tr<?= $cancelled ? ' style="color:var(--ink3)"' : '' ?>>
         <td class="tnum" style="font-weight:600"><?= h($i['invoice_no']) ?></td>
         <td class="tnum"><?= h($i['invoice_date']) ?></td>
         <td><?= h($i['name_ko']) ?></td>
         <td class="tnum" style="font-size:11.5px;color:var(--ink2)">
           <?= h($i['period_from']) ?> ~ <?= h($i['period_to']) ?></td>
         <td class="r tnum"><?= money($i['ship_cnt']) ?></td>
-        <td class="r tnum" style="font-weight:700"><?= money($i['grand_total']) ?></td>
+        <td class="r tnum" style="font-weight:700<?= $cancelled ? ';text-decoration:line-through' : '' ?>"><?= money($i['grand_total']) ?></td>
         <td class="r tnum"><?= money($i['paid_amount']) ?></td>
-        <td class="r tnum" style="color:<?= $i['balance']>0?'var(--err-fg)':'var(--ink3)' ?>">
-          <?= money($i['balance']) ?></td>
+        <td class="r tnum" style="color:<?= !$cancelled && $i['balance']>0?'var(--err-fg)':'var(--ink3)' ?>">
+          <?= $cancelled ? '-' : money($i['balance']) ?></td>
         <td class="c"><span class="badge <?= $cls ?>"><?= h($lab) ?></span>
           <?php if ((int)($i['issue_count'] ?? 0) > 1): ?><div style="font-size:10.5px;color:var(--ink3)">재발행 <?= (int)$i['issue_count'] ?>회</div><?php endif; ?>
           <?php if ($i['status'] !== 'DRAFT' && $i['status'] !== 'CANCELLED' && !empty($i['changed_at']) && (empty($i['issued_at']) || $i['changed_at'] > $i['issued_at'])): ?>
