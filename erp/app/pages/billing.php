@@ -204,7 +204,7 @@ if ($selCid > 0) {
            LEFT JOIN invoice_shipments xs ON xs.shipment_id = s.id
           WHERE s.business_entity_id = ? AND s.company_id = ?
             AND s.deleted_at IS NULL AND s.status <> \'CANCELLED\'
-            AND xs.id IS NULL AND s.status <> 'BILLED'
+            AND xs.id IS NULL AND s.status <> \'BILLED\'
             AND s.voucher_date BETWEEN ? AND ?
           ORDER BY s.voucher_date, s.id');
     $st->execute([$eid, $selCid, $selFrom, $selTo]);
