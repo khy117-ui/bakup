@@ -27,6 +27,9 @@ const CTV_PER_SCREEN  = [1, 2, 3, 4];                       // 묶음마다 한 
 const CTV_SLIDE_BOX   = ['' => 'TV 설정대로', 'l' => '왼쪽 아래', 'r' => '오른쪽 아래', 'c' => '가운데 아래',
                          'lu' => '왼쪽 위 (좁게)', 'ru' => '오른쪽 위 (좁게)'];
 
+/** 교육국 부서 — 3층 TV 에 나갈 사진 · 영상 묶음 (2026-10-12 시험용) */
+const CTV_EDU_GROUPS  = ['유아유치부', '초등부', '청소년부', '청년부'];
+
 /** 선교지 묶음의 처음 값 — 선교 편지에서 누구나 봐도 되는 기도제목만 (가정 · 자녀 이야기는 넣지 않습니다) */
 const CTV_MISSION_SEED = [
     '인도네시아 선교' => ['김영찬 선교사', "한국 방문을 마치고 인도네시아에서의 삶을 잘 준비하며 영적 · 육적으로 새 힘을 얻도록
@@ -114,6 +117,13 @@ function ctv_ensure_tables(): void
         $pdo->exec('ALTER TABLE church_tv_groups ADD COLUMN prayer TEXT NULL AFTER missionary');
         $who = $pdo->prepare('UPDATE church_tv_groups SET missionary = ?, prayer = ? WHERE name = ?');
         foreach (CTV_MISSION_SEED as $name => [$m, $p]) { $who->execute([$m, $p, $name]); }
+    }
+    // 2026-10-12 교육국 부서 묶음 (3층 TV 시험용) — 올릴 때 이 묶음을 고르면 '기본 TV'(3층) 가 저절로 체크됩니다
+    if (!in_array('home_screen', $gcols, true)) {
+        $pdo->exec('ALTER TABLE church_tv_groups ADD COLUMN home_screen VARCHAR(20) NULL AFTER per_screen');
+        // 처음 한 번만 만듭니다 (지우면 다시 생기지 않습니다). 선교지 묶음 뒤에 오도록 순서는 100 부터
+        $g = $pdo->prepare("INSERT INTO church_tv_groups (name, show_caption, sort_no, home_screen) VALUES (?, 1, ?, '3f')");
+        foreach (CTV_EDU_GROUPS as $i => $name) { $g->execute([$name, 100 + $i]); }
     }
     // 2026-10-09 슬라이드마다 글 상자 자리 — 예시 '처음 오신 분' 장은 교회 로고를 가리지 않게 왼쪽 위 하늘에
     if (!in_array('box_pos', $cols, true)) {
