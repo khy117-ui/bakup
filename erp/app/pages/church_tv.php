@@ -210,6 +210,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
                     $bad[] = $e->getMessage();
                 }
             }
+            if (isset($_GET['ajax']) && post('part') === '1') {
+                // 휴대폰에서 한 개씩 나눠 보낼 때: 결과만 돌려주고, 마지막에 bulk_done 이 한 번에 알립니다
+                header('Content-Type: application/json');
+                echo json_encode(['ok' => $ok > 0, 'n' => $ok, 'vid' => $vid, 'bad' => $bad], JSON_UNESCAPED_UNICODE);
+                exit;
+            }
             if ($ok > 0) { log_action('교회TV', 'CREATE', 'church_tv_slides', 0, $ok . '개 한꺼번에 올림'); }
             $msg = $ok > 0
                 ? $ok . '개를 올렸습니다' . ($vid ? ' (영상 ' . $vid . '개)' : '') . '. 1분 안에 TV 에 반영됩니다.'
@@ -222,6 +228,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err === '') {
                 exit;
             }
             redirect($back);
+        }
+        if ($act === 'bulk_done') {
+            // 한 개씩 나눠 올린 것을 다 보낸 뒤: 몇 개 올렸는지 한 번에 알려 줍니다
+            $ok = max(0, (int)post('n'));
+            $vid = max(0, (int)post('vid'));
+            $bad = array_slice(array_map(fn($x) => mb_substr((string)$x, 0, 120), (array)($_POST['bad'] ?? [])), 0, 20);
+            if ($ok > 0) { log_action('교회TV', 'CREATE', 'church_tv_slides', 0, $ok . '개 한꺼번에 올림'); }
+            $msg = $ok > 0
+                ? $ok . '개를 올렸습니다' . ($vid ? ' (영상 ' . $vid . '개)' : '') . '. 1분 안에 TV 에 반영됩니다.'
+                : '올린 파일이 없습니다.';
+            if ($bad) { $msg .= ' 못 올린 것: ' . implode(' / ', $bad); }
+            flash($msg);
+            header('Content-Type: application/json');
+            echo json_encode(['ok' => $ok > 0, 'url' => $back, 'msg' => $msg], JSON_UNESCAPED_UNICODE);
+            exit;
         }
         if ($act === 'yt_add') {
             // 유튜브 링크 여러 줄 → 한 줄당 슬라이드 한 장
@@ -1163,24 +1184,88 @@ layout_head('교회 TV 화면', 'church_tv');
     for (var i = 0; i < n; i++) { if (/^video\//.test(input.files[i].type) || /\.(mp4|m4v|webm|mov)$/i.test(input.files[i].name)) { v++; } }
     info.textContent = n ? n + '개 고름' + (v ? ' (영상 ' + v + '개)' : '') + ' · ' + (total() / 1048576).toFixed(1) + 'MB' : '';
   });
+  // 휴대폰 사진은 한 장에 4~10MB 라서 여러 장을 한 번에 보내면 서버 앞단에서 막힙니다.
+  // 그래서 사진은 브라우저에서 TV 크기(긴 변 1920)로 줄이고, 한 개씩 차례로 보냅니다
+  function shrink(file, cb) {
+    var big = file.size > 1.5 * 1048576;
+    if (!/^image\/(jpeg|webp|png)$/.test(file.type) || (file.type === 'image/png' && file.size < 3 * 1048576) || !window.URL || !document.createElement('canvas').toBlob) {
+      cb(file, file.name); return;
+    }
+    var url = URL.createObjectURL(file), img = new Image();
+    img.onload = function () {
+      var w = img.naturalWidth, h = img.naturalHeight, s = Math.min(1, 1920 / Math.max(w, h));
+      if (s === 1 && !big) { URL.revokeObjectURL(url); cb(file, file.name); return; }
+      var c = document.createElement('canvas');
+      c.width = Math.round(w * s); c.height = Math.round(h * s);
+      var g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      c.toBlob(function (b) {
+        if (!b || b.size >= file.size) { cb(file, file.name); return; }
+        cb(b, file.name.replace(/\.[^.]+$/, '') + '.jpg');
+      }, 'image/jpeg', 0.86);
+    };
+    img.onerror = function () { URL.revokeObjectURL(url); cb(file, file.name); };
+    img.src = url;
+  }
+  function post(fd, onprog, done) {
+    var x = new XMLHttpRequest();
+    x.open('POST', form.getAttribute('action') + '&ajax=1', true);
+    if (onprog) { x.upload.onprogress = function (ev) { if (ev.lengthComputable) { onprog(ev.loaded / ev.total); } }; }
+    x.onload = function () { var d = null; try { d = JSON.parse(x.responseText); } catch (er) {} done(d, x.status); };
+    x.onerror = function () { done(null, 0); };
+    x.send(fd);
+  }
   form.addEventListener('submit', function (e) {
     e.preventDefault();
     if (!input.files.length) { return; }
     if (!form.querySelector('input[name="screens[]"]:checked')) { alert('보여 줄 TV 를 하나 이상 골라 주세요.'); return; }
-    if (total() > 200 * 1048576) { alert('한 번에 200MB 까지 올릴 수 있습니다. 나눠서 올려 주세요.'); return; }
-    var x = new XMLHttpRequest();
-    x.open('POST', form.getAttribute('action') + '&ajax=1', true);
-    btn.disabled = true; btn.textContent = '올리는 중…'; bar.style.display = '';
-    x.upload.onprogress = function (ev) { if (ev.lengthComputable) { barIn.style.width = Math.round(ev.loaded / ev.total * 100) + '%'; } };
-    x.onload = function () {
-      var d = null;
-      try { d = JSON.parse(x.responseText); } catch (er) {}
-      if (d && d.url) { location.href = d.url; return; }
-      alert(d && d.msg ? d.msg : '올리지 못했습니다. 다시 해 주세요.');
-      btn.disabled = false; btn.textContent = '올리기'; bar.style.display = 'none';
-    };
-    x.onerror = function () { alert('인터넷이 끊겨 올리지 못했습니다.'); btn.disabled = false; btn.textContent = '올리기'; };
-    x.send(new FormData(form));
+    var files = [], i;
+    for (i = 0; i < input.files.length; i++) {
+      if (input.files[i].size > 100 * 1048576) { alert(input.files[i].name + ' 은(는) 100MB 가 넘어 올릴 수 없습니다.'); return; }
+      files.push(input.files[i]);
+    }
+    btn.disabled = true; bar.style.display = ''; barIn.style.width = '0';
+    var n = 0, vid = 0, bad = [], k = 0;
+    function finish() {
+      var fd = new FormData();
+      fd.append('_csrf', form.querySelector('input[name=_csrf]').value);
+      fd.append('act', 'bulk_done'); fd.append('n', n); fd.append('vid', vid);
+      for (var j = 0; j < bad.length; j++) { fd.append('bad[]', bad[j]); }
+      post(fd, null, function (d) {
+        if (d && d.url) { location.href = d.url; return; }
+        alert(n + '개를 올렸습니다.' + (bad.length ? ' 못 올린 것: ' + bad.join(' / ') : ''));
+        location.reload();
+      });
+    }
+    function next() {
+      if (k >= files.length) { barIn.style.width = '100%'; finish(); return; }
+      var f = files[k];
+      btn.textContent = '올리는 중… ' + (k + 1) + ' / ' + files.length;
+      shrink(f, function (blob, name) {
+        var fd = new FormData();
+        for (var j = 0; j < form.elements.length; j++) {
+          var el = form.elements[j];
+          if (!el.name || el.type === 'file' || el.disabled || ((el.type === 'checkbox' || el.type === 'radio') && !el.checked)) { continue; }
+          fd.append(el.name, el.value);
+        }
+        fd.append('files[]', blob, name);
+        fd.append('part', '1');
+        post(fd, function (p) { barIn.style.width = Math.round((k + p) / files.length * 100) + '%'; }, function (d, st) {
+          if (d && typeof d.n !== 'undefined') {
+            n += d.n; vid += d.vid || 0;
+            for (var j = 0; j < (d.bad || []).length; j++) { bad.push(d.bad[j]); }
+          } else if (d && d.msg) {
+            bad.push(f.name + ': ' + d.msg);
+          } else {
+            bad.push(f.name + ': ' + (st === 413 ? '파일이 커서 서버가 받지 않았습니다' : st === 0 ? '인터넷이 끊겼습니다' : '서버 오류 (' + st + ')'));
+          }
+          k++; next();
+        });
+      });
+    }
+    next();
   });
 })();
 // 묶음은 제목만 보이고, 누르면 펼칩니다. 펼친 묶음은 이 브라우저가 기억합니다
