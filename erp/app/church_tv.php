@@ -266,7 +266,7 @@ const CTV_ORDER = 's.group_id IS NOT NULL, g.sort_no, g.id, s.post_date DESC, s.
 /** 이 화면에 지금 나갈 슬라이드 (켜짐 · 기간 안 · 순서대로) */
 function ctv_slides_for(int $screenId): array
 {
-    $st = db()->prepare("SELECT s.*, g.name AS group_name, g.show_caption, g.per_screen, g.missionary, g.prayer FROM church_tv_slides s
+    $st = db()->prepare("SELECT s.*, g.name AS group_name, g.show_caption, g.per_screen, g.missionary, g.prayer, g.home_screen FROM church_tv_slides s
                            JOIN church_tv_slide_screens l ON l.slide_id = s.id AND l.screen_id = ?
                            LEFT JOIN church_tv_groups g ON g.id = s.group_id
                           WHERE s.is_active = 1
@@ -287,7 +287,8 @@ function ctv_feed(array $scr): array
         // 선교사 이름이나 기도제목이 있는 묶음은 TV 위에 '태국 선교 · 이국찬 선교사', 아래에 기도제목이 흐릅니다
         $gid = $s['group_id'] !== null ? (int)$s['group_id'] : 0;
         $lines = $gid ? array_values(array_filter(array_map('trim', preg_split('/\R/u', (string)($s['prayer'] ?? ''))), 'strlen')) : [];
-        $hasMission = $gid && (trim((string)($s['missionary'] ?? '')) !== '' || $lines);
+        // 교육국 부서처럼 '기본 TV' 가 정해진 묶음도 위 띠에 '초등부 · 날짜' 를 띄웁니다 (선교지와 같은 화면 구성)
+        $hasMission = $gid && (trim((string)($s['missionary'] ?? '')) !== '' || $lines || !empty($s['home_screen']));
         if ($hasMission && !isset($groups[$gid])) {
             $groups[$gid] = ['name' => (string)$s['group_name'], 'who' => trim((string)$s['missionary']), 'prayer' => $lines];
         }
