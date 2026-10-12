@@ -284,7 +284,28 @@ LEFT JOIN carriers ca ON ca.id = COALESCE(
     LIMIT 1))
 -- 다시 돌려도 안전하게 — 이미 들어간 전표는 건너뜁니다 (연결이 끊겨 '실패' 로 보여도 실제로는 들어갔을 수 있음)
 WHERE NOT EXISTS (SELECT 1 FROM shipments done_sh
-                   WHERE done_sh.legacy_idx = CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED));
+                   WHERE done_sh.legacy_idx = CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED))
+  -- 옛 전산이 마감된 뒤에도 쓰였다면 같은 건을 새 전산에도 입력했을 수 있습니다.
+  -- 새 전산에서 입력한 전표(legacy_idx 없음)에 같은 AWB 가 있으면 넣지 않습니다 —
+  -- 넣으면 매출이 두 번 잡힙니다. 건너뛴 건은 아래에서 migration_errors 에 남깁니다 (2026-10-12)
+  AND NOT EXISTS (SELECT 1 FROM shipments new_sh
+                   WHERE new_sh.legacy_idx IS NULL AND new_sh.deleted_at IS NULL
+                     AND COALESCE(TRIM(s.BLNUM), '') <> ''
+                     AND new_sh.awb_no = TRIM(s.BLNUM));
+
+-- 위에서 건너뛴 전표 — 새 전산에 같은 AWB 가 이미 있음. 사람이 보고 판단합니다
+INSERT INTO migration_errors (source_table, source_idx, column_name, raw_value, reason)
+SELECT 'IS_SALES', TRIM(s.IDX), 'BLNUM', TRIM(s.BLNUM),
+       CONCAT('새 전산에 같은 AWB 전표가 이미 있어 넣지 않음 (', MIN(n.voucher_date), ' 입력분)')
+FROM shipments_staging s
+JOIN shipments n ON n.legacy_idx IS NULL AND n.deleted_at IS NULL AND n.awb_no = TRIM(s.BLNUM)
+WHERE COALESCE(TRIM(s.BLNUM), '') <> ''
+  AND NOT EXISTS (SELECT 1 FROM shipments done_sh
+                   WHERE done_sh.legacy_idx = CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED))
+  AND NOT EXISTS (SELECT 1 FROM migration_errors me
+                   WHERE me.source_table = 'IS_SALES' AND me.source_idx = TRIM(s.IDX)
+                     AND me.column_name = 'BLNUM' AND me.reason LIKE '새 전산에 같은 AWB%')
+GROUP BY s.IDX, s.BLNUM;
 
 -- 미해석 컬럼 보관
 INSERT INTO shipments_legacy_extra (

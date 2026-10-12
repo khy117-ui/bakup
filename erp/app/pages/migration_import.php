@@ -382,6 +382,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             mi_json(['key' => $key, 'status' => 'OK', 'affected' => count($rows)]);
         }
 
+        if ($action === 'delta_prep') {
+            // 추가분 가져오기 준비 — 지난번에 끝낸 이관 단계(15 · 13b · 14b) 기록만 지웁니다.
+            // 이관 스크립트는 이미 들어간 거래처 · 전표를 건너뛰므로, 다시 돌리면 새 줄만 들어갑니다.
+            // 업무 자료와 원본(staging)은 손대지 않습니다. (2026-10-12)
+            $n = db()->exec("DELETE FROM migration_run_log
+                              WHERE run_key LIKE '15:%' OR run_key LIKE '13b:%' OR run_key LIKE '14b:%'");
+            log_action('시스템', 'UPDATE', 'migration_run_log', null, '옛 자료 가져오기',
+                       null, null, '추가분 가져오기 준비 — 이관 단계 기록 ' . (int)$n . '개 지움');
+            mi_json(['status' => 'OK', 'cleared' => (int)$n]);
+        }
+
         if ($action === 'reset') {
             if (post('confirm') !== '지우기') {
                 mi_json(['status' => 'FAIL', 'error' => "확인란에 '지우기' 라고 적어야 합니다."]);
@@ -509,6 +520,17 @@ layout_head('옛 자료 가져오기', 'migration_import');
 </div>
 
 <div class="card">
+  <div class="ch">추가분 가져오기 <span style="font-weight:400;color:var(--ink3)">이미 넣은 자료 뒤에 새로 생긴 줄만</span></div>
+  <div class="cb" style="font-size:12.5px;line-height:1.9;color:var(--ink2)">
+    <b>① [추가분 준비]</b> — 지난번 이관 단계 기록만 지웁니다. 거래처 · 전표 · 원본은 그대로입니다.<br>
+    <b>② 2단계</b>에서 추가분 CSV(예: <code>IS_SALES_add.csv</code>)를 올립니다. 기존 원본 뒤에 덧붙습니다.<br>
+    <b>③ [이관 실행]</b> — 이미 들어간 거래처 · 전표(같은 옛 IDX)는 건너뛰고 새 줄만 넣습니다.
+    새 전산에 같은 AWB 로 이미 입력된 전표도 넣지 않고 <b>진행 기록 · 오류 목록</b>에 남깁니다.
+    <div style="margin-top:8px"><button class="btn" type="button" onclick="deltaPrep()">추가분 준비</button></div>
+  </div>
+</div>
+
+<div class="card">
   <div class="ch">3. 이관 실행 <span class="badge b-info" id="ph-finish">-</span>
     <span class="badge b-info" id="ph-migrate">-</span></div>
   <div class="cb">
@@ -531,7 +553,9 @@ layout_head('옛 자료 가져오기', 'migration_import');
     <p style="margin:0 0 10px;font-size:12.5px;color:var(--ink2)">
       거래처 · 전표 · 매입 · 청구 · 입출금 등 <b>업무 자료를 모두 비웁니다</b>.
       사업자 · 관리자 · 권한 · 환경설정 · 단가표 · 게시판은 남습니다.
-      리허설 뒤, 그리고 실제 전환 직전에 씁니다. 되돌릴 수 없습니다.</p>
+      리허설 뒤, 그리고 실제 전환 직전에 씁니다. 되돌릴 수 없습니다.<br>
+      <b style="color:var(--err-fg)">⚠ 전환한 뒤(10/1~)에는 쓰지 마세요 — 새 전산에서 넣은 전표 · 입금까지 모두 지워집니다.
+      추가분만 넣을 때는 위의 [추가분 준비] 를 쓰세요.</b></p>
     <div class="f" style="align-items:flex-end">
       <div class="fw w2"><label for="rs-confirm">확인 — '지우기' 라고 적으세요</label>
         <input type="text" id="rs-confirm" autocomplete="off"></div>
@@ -717,6 +741,10 @@ function runPhase(ph) { return runPhases([ph]); }
 
 // ---------------------------------------------------------------- CSV
 function decode(buf) {
+  var b = new Uint8Array(buf);
+  // SQL Server 관리 도구에서 '유니코드' 로 저장하면 UTF-16 입니다 (앞 두 바이트 FF FE / FE FF)
+  if (b.length > 1 && b[0] === 0xFF && b[1] === 0xFE) return new TextDecoder('utf-16le').decode(buf);
+  if (b.length > 1 && b[0] === 0xFE && b[1] === 0xFF) return new TextDecoder('utf-16be').decode(buf);
   try { return new TextDecoder('utf-8', {fatal: true}).decode(buf); }
   catch (e) { return new TextDecoder('euc-kr').decode(buf); }
 }
@@ -810,6 +838,23 @@ async function stageAll() {
     BUSY = false;
     btn.disabled = false;
     refreshCounts();
+  }
+}
+
+async function deltaPrep() {
+  if (BUSY) return;
+  if (!confirm('지난번 이관 단계 기록만 지웁니다. 거래처 · 전표 · 원본 자료는 그대로입니다.\n'
+             + '그 다음 2단계에서 추가분 CSV 를 올리고 [이관 실행] 을 누르세요. 진행할까요?')) return;
+  BUSY = true;
+  try {
+    var r = await post({action: 'delta_prep'});
+    if (r.status !== 'OK') throw new Error(r.error || '실패');
+    alert('준비됐습니다 (단계 기록 ' + r.cleared + '개 지움). 이제 2단계에서 추가분 CSV 를 올리세요.');
+    location.reload();
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    BUSY = false;
   }
 }
 

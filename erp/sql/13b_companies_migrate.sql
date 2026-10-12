@@ -98,7 +98,10 @@ SELECT
                 THEN STR_TO_DATE(LEFT(TRIM(s.REGDATE), 19), '%Y-%m-%d %H:%i:%s') END, NOW()),
   NULL,                          -- deleted_at : 전 건 활성. DEL 판정은 6번에서
   CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED)
-FROM companies_staging s;
+FROM companies_staging s
+-- 다시 돌려도 안전하게 — 이미 들어간 거래처(같은 옛 IDX)는 건너뜁니다 (추가분 가져오기 · 2026-10-12)
+WHERE NOT EXISTS (SELECT 1 FROM companies done_c
+                   WHERE done_c.legacy_idx = CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED));
 
 -- 미해석 컬럼 + DEL 원본 보관
 INSERT INTO companies_legacy_extra (
@@ -112,7 +115,8 @@ SELECT c.id,
        NULLIF(TRIM(s.C_FUEL3), ''), s.`DEL`,
        NULLIF(TRIM(s.CATEGORY), ''), NULLIF(TRIM(s.BUSINESS), '')
 FROM companies_staging s
-JOIN companies c ON c.legacy_idx = CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED);
+JOIN companies c ON c.legacy_idx = CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED)
+WHERE NOT EXISTS (SELECT 1 FROM companies_legacy_extra e0 WHERE e0.company_id = c.id);
 
 
 -- ============================================================================
@@ -127,20 +131,23 @@ INSERT INTO company_contacts (company_id, name, phone, contact_type, is_primary,
 SELECT c.id, '담당자1', TRIM(s.RPHONE), 'GENERAL', 1, '기존 CUSTOMERS.RPHONE 이관 — 이름 확인 필요'
 FROM companies_staging s
 JOIN companies c ON c.legacy_idx = CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED)
-WHERE COALESCE(TRIM(s.RPHONE), '') <> '';
+WHERE COALESCE(TRIM(s.RPHONE), '') <> ''
+  AND NOT EXISTS (SELECT 1 FROM company_contacts x WHERE x.company_id = c.id AND x.name = '담당자1');
 
 INSERT INTO company_contacts (company_id, name, phone, contact_type, is_primary, memo)
 SELECT c.id, '담당자2', TRIM(s.RPHONE2), 'GENERAL', 0, '기존 CUSTOMERS.RPHONE2 이관 — 이름 확인 필요'
 FROM companies_staging s
 JOIN companies c ON c.legacy_idx = CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED)
-WHERE COALESCE(TRIM(s.RPHONE2), '') <> '';
+WHERE COALESCE(TRIM(s.RPHONE2), '') <> ''
+  AND NOT EXISTS (SELECT 1 FROM company_contacts x WHERE x.company_id = c.id AND x.name = '담당자2');
 
 -- 첨부파일 — 경로만 옮깁니다. 실제 파일은 별도로 복사해야 합니다
 INSERT INTO company_files (company_id, file_type, original_name, stored_path, created_at)
 SELECT c.id, 'OTHER', TRIM(s.file1), TRIM(s.file1), NOW()
 FROM companies_staging s
 JOIN companies c ON c.legacy_idx = CAST(NULLIF(TRIM(s.IDX), '') AS SIGNED)
-WHERE COALESCE(TRIM(s.file1), '') <> '';
+WHERE COALESCE(TRIM(s.file1), '') <> ''
+  AND NOT EXISTS (SELECT 1 FROM company_files x WHERE x.company_id = c.id AND x.stored_path = TRIM(s.file1));
 
 -- 할인율 : 컬럼 6개 → 행으로. TNT 계열(DCTNT / IDC_TNT)은 FedEx 전환으로 제외합니다
 -- carriers 가 먼저 적재돼 있어야 합니다 (12_seed.sql)
@@ -169,7 +176,9 @@ WHERE COALESCE(TRIM(v.val), '') <> ''
   AND REPLACE(REPLACE(REPLACE(v.val, ',', ''), '%', ''), ' ', '') REGEXP '^[0-9]+(\\.[0-9]+)?$'
   -- discount_rate 는 DECIMAL(5,2) 로 999.99 까지입니다. 할인율은 % 이므로 100 을
   -- 넘는 값은 데이터 오류입니다. 넣지 않고 아래에서 migration_errors 에 남깁니다
-  AND CAST(REPLACE(REPLACE(REPLACE(v.val, ',', ''), '%', ''), ' ', '') AS DECIMAL(10,2)) <= 100;
+  AND CAST(REPLACE(REPLACE(REPLACE(v.val, ',', ''), '%', ''), ' ', '') AS DECIMAL(10,2)) <= 100
+  AND NOT EXISTS (SELECT 1 FROM company_carrier_terms x
+                   WHERE x.company_id = c.id AND x.carrier_id = ca.id AND x.trade_type = m.trade_type);
 
 -- 숫자로 바꿀 수 없던 할인율은 버리지 않고 기록합니다
 INSERT INTO migration_errors (source_table, source_idx, column_name, raw_value, reason)
@@ -184,7 +193,9 @@ JOIN (
 WHERE COALESCE(TRIM(v.val), '') <> ''
   AND (REPLACE(REPLACE(REPLACE(v.val, ',', ''), '%', ''), ' ', '') NOT REGEXP '^[0-9]+(\\.[0-9]+)?$'
        OR CAST(REPLACE(REPLACE(REPLACE(v.val, ',', ''), '%', ''), ' ', '')
-               AS DECIMAL(10,2)) > 100);
+               AS DECIMAL(10,2)) > 100)
+  AND NOT EXISTS (SELECT 1 FROM migration_errors me
+                   WHERE me.source_table = 'CUSTOMERS' AND me.source_idx = s.IDX AND me.column_name = v.src);
 
 
 -- ============================================================================
