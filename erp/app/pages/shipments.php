@@ -85,9 +85,17 @@ $off  = ($page - 1) * $per;
 $where  = ['s.business_entity_id = ?', 's.deleted_at IS NULL'];
 $params = [$eid];
 if ($kw !== '') {
-    $where[] = '(s.awb_no LIKE ? OR c.name_ko LIKE ?)';
+    // 맨 앞 검색칸 하나로 AWB · 거래처 · 도착지 · 운송사(코드 · 이름)를 함께 찾습니다.
+    // 도착지는 한글 이름(도착지 관리의 name_ko, 예: 일본)으로 적어도 찾습니다
     $like = '%' . $kw . '%';
-    array_push($params, $like, $like);
+    $or = ['s.awb_no LIKE ?', 'c.name_ko LIKE ?', 's.dest_city LIKE ?',
+           'EXISTS (SELECT 1 FROM carriers kca WHERE kca.id = s.carrier_id AND (kca.code LIKE ? OR kca.name LIKE ?))'];
+    array_push($params, $like, $like, $like, $like, $like);
+    if ($destList) {
+        $or[] = 'EXISTS (SELECT 1 FROM destinations kd WHERE kd.name = s.dest_city AND kd.name_ko LIKE ?)';
+        $params[] = $like;
+    }
+    $where[] = '(' . implode(' OR ', $or) . ')';
 }
 if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) {
     $where[] = 's.voucher_date >= ?';
@@ -99,8 +107,15 @@ if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
 }
 if ($dest !== '') {
     // 일부만 적어도 찾습니다 (예: 'JAP' → JAPAN). 도착지 관리에서 넘어온 정확한 이름도 그대로 맞습니다
-    $where[] = 's.dest_city LIKE ?';
-    $params[] = '%' . $dest . '%';
+    // 한글 이름(예: 일본)으로 적어도 도착지 관리의 영문 이름으로 찾아 줍니다
+    if ($destList) {
+        $where[] = '(s.dest_city LIKE ? OR EXISTS (SELECT 1 FROM destinations dd
+                                                    WHERE dd.name = s.dest_city AND dd.name_ko LIKE ?))';
+        array_push($params, '%' . $dest . '%', '%' . $dest . '%');
+    } else {
+        $where[] = 's.dest_city LIKE ?';
+        $params[] = '%' . $dest . '%';
+    }
 }
 if ($carrierQ > 0) {
     $where[] = 's.carrier_id = ?';
@@ -170,7 +185,7 @@ layout_head('매출전표', 'shipments');
   <form class="f" method="get" style="align-items:flex-end">
     <input type="hidden" name="p" value="shipments">
     <div class="fw w3"><label for="kw">검색</label>
-      <input type="text" id="kw" name="kw" value="<?= h($kw) ?>" placeholder="AWB · 거래처명"></div>
+      <input type="text" id="kw" name="kw" value="<?= h($kw) ?>" placeholder="AWB · 거래처 · 도착지 · 운송사"></div>
     <div class="fw w1"><label for="from">전표일 시작</label>
       <input type="date" id="from" name="from" value="<?= h($from) ?>"></div>
     <div class="fw w1"><label for="to">전표일 종료</label>
