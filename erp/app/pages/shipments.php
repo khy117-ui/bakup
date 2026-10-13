@@ -104,7 +104,9 @@ $total = (int)$st->fetchColumn();
 
 $st = db()->prepare(
     "SELECT s.id, s.awb_no, s.voucher_date, s.trade_type, s.status, s.charge_weight,
-            c.name_ko, ca.code AS carrier,
+            c.name_ko, ca.code AS carrier, s.dest_city,
+            -- 출고지 : 새로 입력한 값이 없으면 옛 전산의 '출고지역'(FACTORY_A) 을 보여 줍니다
+            COALESCE(NULLIF(s.origin_city, ''), lx.factory_a) AS origin_disp,
             COALESCE(t.zero_supply,0) AS zero_supply,
             COALESCE(t.taxable_supply,0) AS taxable_supply,
             COALESCE(t.tax_total,0) AS tax_total,
@@ -112,6 +114,7 @@ $st = db()->prepare(
        FROM shipments s
        JOIN companies c  ON c.id = s.company_id
        JOIN carriers  ca ON ca.id = s.carrier_id
+       LEFT JOIN shipments_legacy_extra lx ON lx.shipment_id = s.id
        LEFT JOIN v_shipment_totals t ON t.shipment_id = s.id
       WHERE $w
       ORDER BY s.voucher_date DESC, s.id DESC
@@ -202,6 +205,7 @@ layout_head('매출전표', 'shipments');
       <?php if ($canBill): ?><th class="c" style="width:40px"><input type="checkbox" id="bill-all" title="이 쪽의 미청구 전표 모두"></th><?php endif; ?>
       <th style="width:100px">전표일</th><th style="width:160px">AWB</th>
       <th>거래처</th><th class="c" style="width:70px">운송사</th>
+      <th style="width:110px">출고지</th><th style="width:110px">도착지</th>
       <th class="c" style="width:60px">구분</th><th class="r" style="width:75px">중량</th>
       <th class="r" style="width:105px">영세</th><th class="r" style="width:105px">과세</th>
       <th class="r" style="width:90px">VAT</th><th class="r" style="width:110px">합계</th>
@@ -220,6 +224,10 @@ layout_head('매출전표', 'shipments');
         <td class="tnum" style="font-weight:600"><a href="?p=shipment_form&amp;id=<?= (int)$r['id'] ?>"><?= h($r['awb_no']) ?></a></td>
         <td><?= h($r['name_ko']) ?></td>
         <td class="c"><?= h($r['carrier']) ?></td>
+        <td style="font-size:12px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="<?= h((string)$r['origin_disp']) ?>"><?= h((string)($r['origin_disp'] ?? '')) ?></td>
+        <td style="font-size:12px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="<?= h((string)$r['dest_city']) ?>"><?= h((string)($r['dest_city'] ?? '')) ?></td>
         <td class="c"><?= $r['trade_type'] === 'IMPORT' ? '수입' : '수출' ?></td>
         <td class="r tnum"><?= $r['charge_weight'] !== null ? h(rtrim(rtrim(number_format((float)$r['charge_weight'],2),'0'),'.')) : '-' ?></td>
         <td class="r tnum"><?= money($r['zero_supply']) ?></td>
