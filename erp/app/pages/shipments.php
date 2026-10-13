@@ -68,7 +68,16 @@ $to   = query('to');
 $STATUS = ['unbilled' => ['DRAFT', 'CONFIRMED'], 'BILLED' => ['BILLED'], 'PAID' => ['PAID'],
            'CANCELLED' => ['CANCELLED']];
 $status = array_key_exists(query('status'), $STATUS) ? query('status') : '';
-$dest   = trim(query('dest'));   // 도착지 관리에서 '전표 수' 를 누르면
+$dest   = trim(query('dest'));   // 도착지 — 검색칸에 적거나, 도착지 관리에서 '전표 수' 를 누르면
+$carrierQ = (int)query('carrier', '0');   // 운송사
+$carrierList = db()->query('SELECT id, code, name, is_active FROM carriers
+                             ORDER BY is_active DESC, sort_order, code')->fetchAll();
+$destList = [];
+try {
+    $destList = db()->query('SELECT name, name_ko FROM destinations WHERE is_active = 1 ORDER BY name')->fetchAll();
+} catch (PDOException $e) {
+    $destList = [];   // 도착지 관리 표가 아직 없으면 직접 적기만
+}
 $page = max(1, (int)query('page', '1'));
 $per  = 20;
 $off  = ($page - 1) * $per;
@@ -89,8 +98,13 @@ if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
     $params[] = $to;
 }
 if ($dest !== '') {
-    $where[] = 's.dest_city = ?';
-    $params[] = $dest;
+    // 일부만 적어도 찾습니다 (예: 'JAP' → JAPAN). 도착지 관리에서 넘어온 정확한 이름도 그대로 맞습니다
+    $where[] = 's.dest_city LIKE ?';
+    $params[] = '%' . $dest . '%';
+}
+if ($carrierQ > 0) {
+    $where[] = 's.carrier_id = ?';
+    $params[] = $carrierQ;
 }
 if ($status !== '') {
     $where[] = 's.status IN (' . implode(',', array_fill(0, count($STATUS[$status]), '?')) . ')';
@@ -169,8 +183,21 @@ layout_head('매출전표', 'shipments');
         <option value="PAID"<?= $status==='PAID'?' selected':'' ?>>입금</option>
         <option value="CANCELLED"<?= $status==='CANCELLED'?' selected':'' ?>>취소</option>
       </select></div>
-    <?php if ($dest !== ''): ?><input type="hidden" name="dest" value="<?= h($dest) ?>">
-      <span class="badge b-info" style="height:34px">도착지: <?= h($dest) ?></span><?php endif; ?>
+    <div class="fw w1"><label for="dest">도착지</label>
+      <input type="text" id="dest" name="dest" value="<?= h($dest) ?>" list="dest-list" placeholder="예) JAPAN">
+      <datalist id="dest-list">
+        <?php foreach ($destList as $d): ?>
+          <option value="<?= h((string)$d['name']) ?>"><?= h((string)($d['name_ko'] ?? '')) ?></option>
+        <?php endforeach; ?>
+      </datalist></div>
+    <div class="fw w1"><label for="carrier">운송사</label>
+      <select id="carrier" name="carrier">
+        <option value="">전체</option>
+        <?php foreach ($carrierList as $c): ?>
+          <option value="<?= (int)$c['id'] ?>"<?= $carrierQ === (int)$c['id'] ? ' selected' : '' ?>>
+            <?= h($c['code'] . ' · ' . $c['name']) ?><?= (int)$c['is_active'] ? '' : ' (중지)' ?></option>
+        <?php endforeach; ?>
+      </select></div>
     <button class="btn">검색</button>
     <a class="btn" href="?p=shipments">초기화</a>
   </form>
@@ -269,7 +296,7 @@ layout_head('매출전표', 'shipments');
     <span>전체 <b class="tnum"><?= money($total) ?></b> 건 ·
       <span class="tnum"><?= money($off+1) ?>–<?= money(min($off+$per,$total)) ?></span></span>
     <div class="right">
-      <?php $qs='p=shipments&kw='.urlencode($kw).'&from='.urlencode($from).'&to='.urlencode($to).'&status='.urlencode($status).'&dest='.urlencode($dest); ?>
+      <?php $qs='p=shipments&kw='.urlencode($kw).'&from='.urlencode($from).'&to='.urlencode($to).'&status='.urlencode($status).'&dest='.urlencode($dest).'&carrier='.($carrierQ ?: ''); ?>
       <?php if ($page>1): ?><a class="btn sm" href="?<?= h($qs) ?>&amp;page=<?= $page-1 ?>">이전</a><?php endif; ?>
       <?php if ($off+$per<$total): ?><a class="btn sm" href="?<?= h($qs) ?>&amp;page=<?= $page+1 ?>">다음</a><?php endif; ?>
     </div>
