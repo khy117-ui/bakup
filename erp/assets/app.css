@@ -269,3 +269,33 @@ a.kpi-link:hover .kpi-go { color: var(--accent-deep); }
   .fw.w2, .fw.w3, .fw.gr { width: 100%; }
   .f > .btn, .f > button { flex: 1 1 auto; }
 }
+
+/* 휴대폰 — 목록 표는 한 줄을 카드 한 장으로 (layout.php 의 gpCardify 가 칸마다 머리글 이름을 붙여 둡니다).
+   표가 옆으로 밀려 앞쪽 칸(전표일 · AWB · 거래처)이 안 보이던 문제. 이름은 위에 작게, 값은 아래에 2칸씩 */
+@media (max-width: 600px) {
+  .tscroll:has(> table.mcard) { overflow: visible; }
+  table.mcard, table.mcard tbody, table.mcard tfoot { display: block; width: 100%; }
+  table.mcard thead { display: none; }
+  table.mcard tr { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; position: relative;
+    padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  table.mcard tr[hidden] { display: none; }
+  table.mcard tbody tr:nth-child(even) { background: #FAFCFD; }
+  table.mcard tfoot tr { background: #F2F7F9; font-weight: 700; }
+  table.mcard td, table.mcard th { display: block; padding: 0; border: 0; min-width: 0 !important;
+    max-width: none !important; width: auto !important; white-space: normal !important;
+    text-align: left !important; overflow-wrap: anywhere; font-size: 13.5px; background: none; }
+  table.mcard td[data-label]::before { content: attr(data-label); display: block; font-size: 11px;
+    font-weight: 600; color: var(--ink3); margin-bottom: 2px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  table.mcard td.mc-wide, table.mcard tr > th { grid-column: 1 / -1; }
+  table.mcard td.mc-act { grid-column: 1 / -1; display: flex; gap: 6px; justify-content: flex-end;
+    flex-wrap: wrap; align-items: center; }
+  table.mcard td.mc-act form { display: inline-flex; }
+  table.mcard td.mc-chk { position: absolute; top: 12px; right: 14px; }
+  table.mcard tr:has(> td.mc-chk) > td:first-of-type:not(.mc-chk),
+  table.mcard tr:has(> td.mc-chk) > td.mc-chk + td { padding-right: 30px; }
+  table.mcard td.mc-chk input { width: 20px; height: 20px; }
+  table.mcard td.mc-blank { display: none; }
+  table.mcard td .bar { max-width: 100%; }
+  table.mcard td .empty, table.mcard td.mc-wide.empty { text-align: center !important; }
+}

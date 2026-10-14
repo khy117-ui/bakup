@@ -178,6 +178,47 @@ document.querySelectorAll('.body table').forEach(function (t) {
   p.insertBefore(w, t);
   w.appendChild(t);
 });
+// 휴대폰에서는 목록 표를 '한 줄 = 카드 한 장' 으로 바꿔 보여줍니다 (CSS 의 table.mcard).
+//   각 칸에 머리글 이름을 붙여 두고, 화면이 좁을 때만 카드로 펼칩니다. 입력칸이 있는 표는 그대로 좌우로 밀기.
+window.gpCardify = function (root) {
+  (root || document).querySelectorAll('.body table').forEach(function (t) {
+    if (t.classList.contains('mcard') || t.classList.contains('nocard') || t.closest('.nocard')) return;
+    if (!t.tHead || !t.tHead.rows.length) return;
+    if (t.querySelector('input:not([type=checkbox]):not([type=hidden]), select, textarea')) return;
+    // 머리글 → 칸 번호별 이름 (여러 줄 머리글 · 합친 칸 처리)
+    var labels = [], taken = [];
+    Array.prototype.forEach.call(t.tHead.rows, function (tr, ri) {
+      var col = 0;
+      Array.prototype.forEach.call(tr.cells, function (th) {
+        while (taken[ri] && taken[ri][col]) col++;
+        var span = th.colSpan || 1, rs = th.rowSpan || 1;
+        var txt = (th.textContent || '').replace(/\s+/g, ' ').trim();
+        for (var c = col; c < col + span; c++) {
+          for (var r = ri; r < ri + rs; r++) { (taken[r] = taken[r] || [])[c] = true; }
+          if (txt && labels[c] !== txt) labels[c] = labels[c] ? labels[c] + ' · ' + txt : txt;
+        }
+        col += span;
+      });
+    });
+    var ncol = labels.length || 1;
+    Array.prototype.forEach.call(t.querySelectorAll('tbody tr, tfoot tr'), function (tr) {
+      var col = 0;
+      Array.prototype.forEach.call(tr.cells, function (td) {
+        var span = td.colSpan || 1, lab = labels[col] || '';
+        if (td.tagName === 'TD' && lab) td.setAttribute('data-label', lab);
+        if (span > 1 || tr.cells.length === 1) td.classList.add('mc-wide');
+        if (span >= ncol) td.removeAttribute('data-label');
+        var only = td.children.length && td.textContent.trim() === '' ;
+        if (!lab && td.querySelector('input[type=checkbox]') && only) td.classList.add('mc-chk');
+        else if (!lab && td.querySelector('a.btn, button, form')) td.classList.add('mc-act');
+        if (td.textContent.trim() === '' && !td.children.length) td.classList.add('mc-blank');
+        col += span;
+      });
+    });
+    t.classList.add('mcard');
+  });
+};
+window.gpCardify();
 document.addEventListener('keydown', function (e) {
   if (e.key === 'Escape') document.body.classList.remove('nav-open');
 });
