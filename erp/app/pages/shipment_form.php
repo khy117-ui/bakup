@@ -47,6 +47,27 @@ $docTypes = db()->query('SELECT id, code, name FROM document_types WHERE is_acti
 $docDefault = 0;
 foreach ($docTypes as $t) { if ($t['code'] === 'ETC') { $docDefault = (int)$t['id']; } }
 
+// 업체 청구 중량 · 매입 내용 — 전표에 바로 붙여 둡니다 (추가 매입가가 0 이어도 내용이 남도록)
+function schema_upgrade_shipcost(): void
+{
+    if (!empty($_SESSION['schema_shipcost_v1'])) { return; }
+    try {
+        $have = db()->query("SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'shipments'
+                                AND COLUMN_NAME IN ('cost_weight', 'cost_memo')")->fetchAll(PDO::FETCH_COLUMN);
+        if (!in_array('cost_weight', $have, true)) {
+            db()->exec("ALTER TABLE shipments ADD COLUMN cost_weight DECIMAL(10,2) NULL COMMENT '업체(운송사)가 청구한 중량 kg'");
+        }
+        if (!in_array('cost_memo', $have, true)) {
+            db()->exec("ALTER TABLE shipments ADD COLUMN cost_memo VARCHAR(200) NULL COMMENT '추가 매입 내용'");
+        }
+        $_SESSION['schema_shipcost_v1'] = 1;
+    } catch (PDOException $e) {
+        error_log('업체 청구 중량 칸 준비 실패: ' . $e->getMessage());
+    }
+}
+schema_upgrade_shipcost();
+
 $in = [
     'company_id' => '', 'carrier_id' => '', 'voucher_date' => date('Y-m-d'),
     'ship_date' => '', 'trade_type' => 'EXPORT', 'dest_city' => '', 'origin_city' => '',
@@ -58,6 +79,7 @@ $in = [
     'awb_mode' => 'auto', 'awb_no' => '',
     // 매입원가 = 운송사 매입가(불러온 값) + 추가 매입가. 둘 다 purchases 에 한 줄씩 남습니다
     'cost_base' => '', 'cost_extra' => '', 'cost_extra_memo' => '',
+    'cost_weight' => '',   // 업체 청구 중량 (kg)
 ];
 $lines = [];
 for ($i = 0; $i < $MAXLINE; $i++) {
@@ -127,7 +149,14 @@ if ($id > 0) {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         $in['cost_base']  = $pur['base']  ? (string)(int)round((float)$pur['base']['supply_amount'])  : '';
         $in['cost_extra'] = $pur['extra'] ? (string)(int)round((float)$pur['extra']['supply_amount']) : '';
-        $in['cost_extra_memo'] = $pur['extra'] ? (string)($pur['extra']['remark'] ?? '') : '';
+        $memo = (string)($cur['cost_memo'] ?? '');
+        if ($memo === '' && $pur['extra']) {
+            $memo = (string)($pur['extra']['remark'] ?? '');
+            if ($memo === '추가 매입') { $memo = ''; }
+        }
+        $in['cost_extra_memo'] = $memo;
+        $in['cost_weight'] = isset($cur['cost_weight']) && $cur['cost_weight'] !== null
+            ? rtrim(rtrim(number_format((float)$cur['cost_weight'], 2, '.', ''), '0'), '.') : '';
     }
 }
 
@@ -276,6 +305,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
             $in[$k] = $v;
         }
         $in['cost_extra_memo'] = mb_substr(trim((string)$in['cost_extra_memo']), 0, 200);
+        $w = str_replace([',', ' ', 'kg', 'KG'], '', (string)$in['cost_weight']);
+        if ($err === '' && $w !== '' && (!is_numeric($w) || (float)$w < 0)) {
+            $err = '업체 청구 중량은 0 이상 숫자(kg)로 적어 주세요.';
+        }
+        $in['cost_weight'] = $w;
     }
     if ($err === '') {
         foreach (['base' => ['cost_base', '운송사 매입가'], 'extra' => ['cost_extra', '추가 매입가']] as $slot => [$k, $label]) {
@@ -437,6 +471,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') !== 'cancel') {
                                    $ctype, $amt, $amt, $memo]);
                 }
             }
+
+            $pdo->prepare('UPDATE shipments SET cost_weight = ?, cost_memo = ? WHERE id = ?')
+                ->execute([$in['cost_weight'] !== '' ? round((float)$in['cost_weight'], 2) : null,
+                           $in['cost_extra_memo'] !== '' ? $in['cost_extra_memo'] : null, $sid]);
 
             $after = snapshot($sid);
             log_action('매출전표', $id > 0 ? 'UPDATE' : 'CREATE', 'shipments', $sid, $awb,
@@ -928,6 +966,10 @@ layout_head($title, 'shipments');
   <div class="ch">매입원가 <span style="font-weight:400;color:var(--ink3)">운송사 매입가 + 추가 매입가 = 매입원가 → 손익에 바로 반영</span></div>
   <div class="cb f" style="align-items:flex-end">
     <?php $bLock = $pur['base'] && $pur['base']['locked']; $xLock = $pur['extra'] && $pur['extra']['locked']; ?>
+    <div class="fw w1"><label for="cost_weight">업체 청구 중량 (kg)</label>
+      <input type="text" id="cost_weight" name="cost_weight" class="tnum" inputmode="decimal" style="text-align:right"
+             value="<?= h($in['cost_weight']) ?>" placeholder="운송사 청구서 중량">
+      <small id="cw-diff" style="color:var(--ink3)"></small></div>
     <div class="fw w2"><label for="cost_base">운송사 매입가 <?= $id > 0 && $pur['base'] ? '(불러온 값)' : '' ?></label>
       <input type="text" id="cost_base" name="cost_base" class="tnum cost" inputmode="numeric" style="text-align:right"
              value="<?= h($in['cost_base']) ?>" placeholder="0"<?= $bLock ? ' readonly' : '' ?>>
@@ -980,9 +1022,22 @@ layout_head($title, 'shipments');
     p.style.color = profit < 0 ? 'var(--err-fg)' : '';
     document.getElementById('k-rate').textContent = rev > 0 ? '이익률 ' + (profit / rev * 100).toFixed(1) + '%' : '이익률 -';
   }
+  // 업체 청구 중량 vs 우리 청구중량(실중량 · 부피중량 중 큰 값)
+  function cwDiff() {
+    var box = document.getElementById('cw-diff');
+    if (!box) { return; }
+    var f = function (nm) { var el = document.querySelector('[name="' + nm + '"]'); return el ? n(el.value) : 0; };
+    var ours = Math.max(f('actual_weight'), f('volume_weight')), theirs = f('cost_weight');
+    if (!theirs || !ours) { box.textContent = ours ? '우리 청구중량 ' + ours + 'kg' : ''; box.style.color = 'var(--ink3)'; return; }
+    var d = Math.round((theirs - ours) * 100) / 100;
+    box.textContent = '우리 ' + ours + 'kg · 차이 ' + (d > 0 ? '+' : '') + d + 'kg';
+    box.style.color = d > 0 ? 'var(--err-fg)' : 'var(--ink3)';
+  }
   document.addEventListener('input', function (e) {
     if (e.target.matches('.cost, input.supply, input.vat')) { calc(); }
+    if (e.target.matches('[name="cost_weight"], [name="actual_weight"], [name="volume_weight"]')) { cwDiff(); }
   });
+  cwDiff();
   document.addEventListener('change', function (e) {
     if (e.target.matches('select.ctype')) { setTimeout(calc, 0); }
   });
