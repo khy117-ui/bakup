@@ -102,7 +102,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && post('act') === 'paid') {
     db()->prepare('UPDATE purchases SET is_paid = 1 - is_paid
                     WHERE id = ? AND business_entity_id = ?')->execute([$pid, $eid]);
     log_action('매입', 'UPDATE', 'purchases', $pid, null, null, '지급여부 변경');
-    redirect('?p=purchases&from=' . urlencode(post('from')) . '&to=' . urlencode(post('to')));
+    redirect('?p=purchases&from=' . urlencode(post('from')) . '&to=' . urlencode(post('to'))
+             . '&vendor=' . urlencode(post('vendor')) . '&carrier=' . urlencode(post('carrier'))
+             . '&paid=' . urlencode(post('paid')) . '&q=' . urlencode(post('q')));
 }
 
 // ---------------------------------------------------------------- 목록
@@ -111,31 +113,51 @@ $to   = query('to', date('Y-m-d'));
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) { $from = date('Y-m-01'); }
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $to))   { $to   = date('Y-m-d'); }
 
+$fVendor  = trim(query('vendor', ''));
+$fCarrier = (int)query('carrier', '0');
+$fPaid    = query('paid', '');
+if (!in_array($fPaid, ['', 'Y', 'N'], true)) { $fPaid = ''; }
+$fQ       = trim(query('q', ''));
+
+// 업체 고르기 목록 — 매입에 쓰인 거래상대 이름 (많이 쓴 순)
+$vst = db()->prepare('SELECT vendor_name, COUNT(*) AS n FROM purchases
+                       WHERE business_entity_id = ? AND deleted_at IS NULL AND vendor_name <> \'\'
+                       GROUP BY vendor_name ORDER BY n DESC, vendor_name LIMIT 400');
+$vst->execute([$eid]);
+$vendors = $vst->fetchAll();
+
+$where = 'p.business_entity_id = ? AND p.deleted_at IS NULL AND p.purchase_date BETWEEN ? AND ?';
+$args  = [$eid, $from, $to];
+if ($fVendor !== '') { $where .= ' AND p.vendor_name = ?'; $args[] = $fVendor; }
+if ($fCarrier > 0)   { $where .= ' AND p.carrier_id = ?'; $args[] = $fCarrier; }
+if ($fPaid !== '')   { $where .= ' AND p.is_paid = ?'; $args[] = $fPaid === 'Y' ? 1 : 0; }
+if ($fQ !== '') {
+    // 거래상대 · AWB · 거래처 · 비고 — 일부만 적어도 찾습니다
+    $where .= ' AND (p.vendor_name LIKE ? OR s.awb_no LIKE ? OR c.name_ko LIKE ? OR p.remark LIKE ?)';
+    $like = '%' . $fQ . '%';
+    array_push($args, $like, $like, $like, $like);
+}
+$FROM = ' FROM purchases p
+          LEFT JOIN shipments s ON s.id = p.shipment_id
+          LEFT JOIN companies c ON c.id = s.company_id
+         WHERE ' . $where;
+
 $st = db()->prepare(
     'SELECT p.id, p.purchase_date, p.vendor_name, p.charge_type, p.supply_amount,
             p.tax_type, p.tax_amount, p.total_amount, p.recon_status, p.recon_diff,
-            p.is_paid, p.remark, s.awb_no, c.name_ko
-       FROM purchases p
-       LEFT JOIN shipments s ON s.id = p.shipment_id
-       LEFT JOIN companies c ON c.id = s.company_id
-      WHERE p.business_entity_id = ? AND p.deleted_at IS NULL
-        AND p.purchase_date BETWEEN ? AND ?
+            p.is_paid, p.remark, s.awb_no, c.name_ko' . $FROM . '
       ORDER BY p.purchase_date DESC, p.id DESC
-      LIMIT 200');
-$st->execute([$eid, $from, $to]);
+      LIMIT 500');
+$st->execute($args);
 $rows = $st->fetchAll();
 
-$sum = ['supply' => 0, 'tax' => 0, 'unpaid' => 0, 'diff' => 0];
-foreach ($rows as $r) {
-    $sum['supply'] += $r['supply_amount'];
-    $sum['tax']    += $r['tax_amount'];
-    if (!$r['is_paid']) {
-        $sum['unpaid'] += $r['total_amount'];
-    }
-    if ($r['recon_status'] === 'DIFF') {
-        $sum['diff']++;
-    }
-}
+// 합계는 목록 줄 수 제한과 상관없이 조건 전체로 셉니다
+$st = db()->prepare(
+    'SELECT COUNT(*) AS n, COALESCE(SUM(p.supply_amount),0) AS supply, COALESCE(SUM(p.tax_amount),0) AS tax,
+            COALESCE(SUM(CASE WHEN p.is_paid = 0 THEN p.total_amount ELSE 0 END),0) AS unpaid,
+            COALESCE(SUM(CASE WHEN p.recon_status = \'DIFF\' THEN 1 ELSE 0 END),0) AS diff' . $FROM);
+$st->execute($args);
+$sum = $st->fetch();
 
 layout_head('매입관리', 'purchases');
 ?>
@@ -198,12 +220,35 @@ layout_head('매입관리', 'purchases');
       <input type="date" id="from" name="from" value="<?= h($from) ?>"></div>
     <div class="fw w1"><label for="to">종료일</label>
       <input type="date" id="to" name="to" value="<?= h($to) ?>"></div>
-    <button class="btn">조회</button>
+    <div class="fw w2"><label for="vendor">업체 (거래상대)</label>
+      <select id="vendor" name="vendor" data-search="1">
+        <option value="">전체 업체</option>
+        <?php foreach ($vendors as $v): ?>
+          <option value="<?= h($v['vendor_name']) ?>"<?= $fVendor === (string)$v['vendor_name'] ? ' selected' : '' ?>><?= h($v['vendor_name']) ?> — <?= (int)$v['n'] ?>건</option>
+        <?php endforeach; ?>
+      </select></div>
+    <div class="fw w1"><label for="carrier">운송사</label>
+      <select id="carrier" name="carrier">
+        <option value="0">전체</option>
+        <?php foreach ($carriers as $c): ?>
+          <option value="<?= (int)$c['id'] ?>"<?= $fCarrier === (int)$c['id'] ? ' selected' : '' ?>><?= h($c['code']) ?></option>
+        <?php endforeach; ?>
+      </select></div>
+    <div class="fw w1"><label for="paid">지급</label>
+      <select id="paid" name="paid">
+        <option value="">전체</option>
+        <option value="N"<?= $fPaid === 'N' ? ' selected' : '' ?>>미지급</option>
+        <option value="Y"<?= $fPaid === 'Y' ? ' selected' : '' ?>>지급</option>
+      </select></div>
+    <div class="fw w2"><label for="q">검색어</label>
+      <input type="text" id="q" name="q" value="<?= h($fQ) ?>" placeholder="업체 · AWB · 거래처 · 비고"></div>
+    <button class="btn pri">조회</button>
+    <a class="btn" href="?p=purchases&amp;from=<?= h($from) ?>&amp;to=<?= h($to) ?>">초기화</a>
   </form>
 </div></div>
 
 <div class="kpis">
-  <div class="kpi"><div class="lab">매입 공급가액</div>
+  <div class="kpi"><div class="lab">매입 공급가액<?= $fVendor !== '' ? ' · ' . h($fVendor) : '' ?></div>
     <div class="val tnum"><?= money($sum['supply']) ?></div>
     <div class="sub tnum">VAT <?= money($sum['tax']) ?></div></div>
   <div class="kpi"><div class="lab">미지급</div>
@@ -215,7 +260,7 @@ layout_head('매입관리', 'purchases');
 </div>
 
 <div class="card">
-  <div class="ch">매입 목록 <span style="font-weight:400;color:var(--ink3)"><?= h($from) ?> ~ <?= h($to) ?> · 최근 200건</span></div>
+  <div class="ch">매입 목록 <span style="font-weight:400;color:var(--ink3)"><?= h($from) ?> ~ <?= h($to) ?> · <?= number_format((int)$sum['n']) ?>건<?= (int)$sum['n'] > count($rows) ? ' 중 최근 ' . count($rows) . '건 표시' : '' ?></span></div>
   <?php if (!$rows): ?>
     <div class="empty">이 기간에 매입이 없습니다.</div>
   <?php else: ?>
@@ -231,7 +276,7 @@ layout_head('매입관리', 'purchases');
     <?php foreach ($rows as $r): ?>
       <tr>
         <td class="tnum"><?= h($r['purchase_date']) ?></td>
-        <td><?= h($r['vendor_name']) ?></td>
+        <td><a href="?p=purchases&amp;from=<?= h($from) ?>&amp;to=<?= h($to) ?>&amp;vendor=<?= h(urlencode((string)$r['vendor_name'])) ?>" title="이 업체만 보기"><?= h($r['vendor_name']) ?></a></td>
         <td class="tnum"><?= $r['awb_no'] ? h($r['awb_no']) : '<span style="color:var(--ink3)">—</span>' ?></td>
         <td><?= h($r['name_ko'] ?? '') ?></td>
         <td><?= h($CHARGE[$r['charge_type']] ?? $r['charge_type']) ?></td>
@@ -254,6 +299,10 @@ layout_head('매입관리', 'purchases');
             <input type="hidden" name="pid" value="<?= (int)$r['id'] ?>">
             <input type="hidden" name="from" value="<?= h($from) ?>">
             <input type="hidden" name="to" value="<?= h($to) ?>">
+            <input type="hidden" name="vendor" value="<?= h($fVendor) ?>">
+            <input type="hidden" name="carrier" value="<?= (int)$fCarrier ?>">
+            <input type="hidden" name="paid" value="<?= h($fPaid) ?>">
+            <input type="hidden" name="q" value="<?= h($fQ) ?>">
             <button class="btn sm" style="<?= $r['is_paid'] ? 'background:var(--ok-bg);color:var(--ok-fg);border-color:var(--ok-bg)' : '' ?>">
               <?= $r['is_paid'] ? '지급완료' : '미지급' ?></button>
           </form>
