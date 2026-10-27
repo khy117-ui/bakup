@@ -33,7 +33,7 @@ $banks = $st->fetchAll();
 
 $st = db()->prepare(
     'SELECT xs.line_no, s.awb_no, s.voucher_date, s.trade_type, s.dest_city,
-            s.charge_weight,
+            s.charge_weight, s.remark AS ship_remark,
             COALESCE(t.zero_supply,0)    AS zero_supply,
             COALESCE(t.taxable_supply,0) AS taxable_supply,
             COALESCE(t.tax_total,0)      AS tax_total,
@@ -44,6 +44,14 @@ $st = db()->prepare(
       WHERE xs.invoice_id = ? ORDER BY xs.line_no');
 $st->execute([$id]);
 $ships = $st->fetchAll();
+
+// 비고 — 청구서에 적은 비고 + 매출전표마다 적은 비고 (AWB 와 함께)
+$notes = [];
+if (trim((string)$inv['remark']) !== '') { $notes[] = trim((string)$inv['remark']); }
+foreach ($ships as $sh) {
+    $rm = trim((string)($sh['ship_remark'] ?? ''));
+    if ($rm !== '') { $notes[] = $sh['awb_no'] . ' : ' . $rm; }
+}
 
 $st = db()->prepare('SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY line_no');
 $st->execute([$id]);
@@ -176,7 +184,7 @@ if (query('xlsx') === '1') {
     foreach ($banks as $b) {
         $left[] = ['', $b['bank_name'] . ' ' . $b['account_no'] . ' 예금주 ' . $b['account_holder']];
     }
-    if ($inv['remark']) { $left[] = ['비고', (string)$inv['remark']]; }
+    foreach ($notes as $i => $nt) { $left[] = [$i === 0 ? '비고' : '', $nt]; }
 
     $n = max(count($sums), count($left));
     for ($i = 0; $i < $n; $i++) {
@@ -425,11 +433,11 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
     </table>
   </div>
 
-  <?php if (trim((string)$inv['remark']) !== ''): ?>
-  <!-- 비고 — 청구서 화면의 '비고' 칸에 적은 내용 -->
+  <?php if ($notes): ?>
+  <!-- 비고 — 청구서 화면의 '비고' 칸 + 매출전표 비고 -->
   <div class="box" style="margin-top:12px;padding:11px 13px">
     <div style="font-size:11px;font-weight:700;color:#33485A;margin-bottom:6px">비고 · REMARKS</div>
-    <div style="font-size:12.5px;line-height:1.7;color:#0E2235"><?= nl2br(h((string)$inv['remark'])) ?></div>
+    <div style="font-size:12.5px;line-height:1.7;color:#0E2235"><?= implode('<br>', array_map(fn($x) => nl2br(h($x)), $notes)) ?></div>
   </div>
   <?php endif; ?>
 

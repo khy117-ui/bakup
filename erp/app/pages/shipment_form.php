@@ -699,7 +699,7 @@ layout_head($title, 'shipments');
       <input type="text" name="sales_rep" value="<?= h($in['sales_rep']) ?>"></div>
   </div>
   <div class="cb" style="border-top:1px solid var(--line2)">
-    <div class="fw" style="width:100%"><label for="remark">비고</label>
+    <div class="fw" style="width:100%"><label for="remark">비고 <span style="font-weight:400;color:var(--ink3)">— 청구서(인보이스) 비고란에 AWB 와 함께 나옵니다</span></label>
       <textarea id="remark" name="remark" rows="3"
                 placeholder="특이사항 · 고객 요청 · 통관 메모 등"><?= h($in['remark']) ?></textarea></div>
   </div>
