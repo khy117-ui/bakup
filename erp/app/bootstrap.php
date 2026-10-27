@@ -532,6 +532,26 @@ function schema_upgrade_invoices(): void
     }
 }
 
+/** 청구서 한 회차(발행 · 재발행)마다 인쇄 · PDF · 엑셀로 내보낼 수 있는 횟수 */
+const INVOICE_PRINT_LIMIT = 3;
+
+/** invoices.print_count — 이번 회차에 출력 · 변환한 횟수 (재발행하면 0 으로) */
+function schema_upgrade_invoice_prints(): void
+{
+    if (!empty($_SESSION['schema_invoice_prints_v1'])) { return; }
+    try {
+        $st = db()->query("SELECT COUNT(*) FROM information_schema.COLUMNS
+                            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'invoices' AND COLUMN_NAME = 'print_count'");
+        if ((int)$st->fetchColumn() === 0) {
+            db()->exec("ALTER TABLE invoices ADD COLUMN print_count INT UNSIGNED NOT NULL DEFAULT 0
+                          COMMENT '이번 발행 회차의 출력 · 변환 횟수 (재발행 때 0)'");
+        }
+        $_SESSION['schema_invoice_prints_v1'] = 1;
+    } catch (Throwable $e) {
+        error_log('schema_upgrade_invoice_prints: ' . $e->getMessage());
+    }
+}
+
 /**
  * 세금계산서 재발행용 컬럼을 DB 에 붙입니다 (issued_at · revision · reissue_reason · replaced_by).
  * 이미 있으면 아무것도 안 합니다. 기록용 SQL: sql/23_tax_invoice_reissue.sql

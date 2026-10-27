@@ -7,6 +7,7 @@ if (!defined('APP_DIR')) { http_response_code(403); exit('Forbidden'); }
  */
 $eid = entity_id();
 $id  = (int)query('id', '0');
+schema_upgrade_invoice_prints();
 
 $st = db()->prepare(
     'SELECT i.*, c.name_ko, c.name_en, c.company_code, c.business_number,
@@ -19,6 +20,42 @@ $st->execute([$id, $eid]);
 $inv = $st->fetch();
 if (!$inv) {
     exit('청구서를 찾을 수 없습니다.');
+}
+
+// ---------------------------------------------------------------- 출력 횟수
+//   인쇄 / PDF 저장 버튼 · 엑셀 저장을 합쳐 발행 회차마다 INVOICE_PRINT_LIMIT 번까지.
+//   다 쓰면 [재발행] 하면 다시 3번. 최고관리자는 제한 없이 (횟수는 그대로 셉니다)
+$printUsed = (int)($inv['print_count'] ?? 0);
+$printLeft = max(0, INVOICE_PRINT_LIMIT - $printUsed);
+$printOk   = $printLeft > 0 || is_super();
+$printTake = function () use ($id, $eid): void {
+    db()->prepare('UPDATE invoices SET print_count = print_count + 1 WHERE id = ? AND business_entity_id = ?')
+        ->execute([$id, $eid]);
+};
+// 인쇄 버튼을 누를 때 화면이 먼저 물어봅니다 (?count=1) — 남았으면 1 을 쓰고 ok
+if (query('count') === '1') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    if (!hash_equals(csrf_token(), (string)query('t', ''))) {
+        echo json_encode(['ok' => false, 'msg' => '화면이 오래되었습니다. 새로고침 후 다시 눌러 주세요.']);
+        exit;
+    }
+    if (!$printOk) {
+        echo json_encode(['ok' => false, 'msg' => '이 청구서는 출력 · 변환 ' . INVOICE_PRINT_LIMIT . '번을 모두 썼습니다. 청구서 화면에서 [재발행] 하면 다시 ' . INVOICE_PRINT_LIMIT . '번 출력할 수 있습니다.']);
+        exit;
+    }
+    $printTake();
+    log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no'], null, '인쇄 / PDF (' . ($printUsed + 1) . '번째)');
+    echo json_encode(['ok' => true, 'left' => max(0, $printLeft - 1)]);
+    exit;
+}
+// 다 쓴 뒤에 엑셀을 누르면 안내만
+if (query('xlsx') === '1' && !$printOk) {
+    http_response_code(403);
+    header('Content-Type: text/html; charset=utf-8');
+    exit('<p style="font-family:sans-serif;padding:30px">이 청구서는 출력 · 변환 ' . INVOICE_PRINT_LIMIT
+       . '번을 모두 썼습니다. 청구서 화면에서 [재발행] 하면 다시 ' . INVOICE_PRINT_LIMIT . '번 출력할 수 있습니다.'
+       . ' <a href="?p=invoice_view&amp;id=' . $id . '">청구서로 돌아가기</a></p>');
 }
 
 $st = db()->prepare('SELECT * FROM business_entities WHERE id = ?');
@@ -45,13 +82,9 @@ $st = db()->prepare(
 $st->execute([$id]);
 $ships = $st->fetchAll();
 
-// 비고 — 청구서에 적은 비고 + 매출전표마다 적은 비고 (AWB 와 함께)
+// 비고 — 아래 비고 상자는 청구서에 적은 비고. 매출전표 비고는 명세 표의 그 전표 줄 '비고' 칸에 나옵니다
 $notes = [];
 if (trim((string)$inv['remark']) !== '') { $notes[] = trim((string)$inv['remark']); }
-foreach ($ships as $sh) {
-    $rm = trim((string)($sh['ship_remark'] ?? ''));
-    if ($rm !== '') { $notes[] = $sh['awb_no'] . ' : ' . $rm; }
-}
 
 $st = db()->prepare('SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY line_no');
 $st->execute([$id]);
@@ -70,7 +103,7 @@ if (query('xlsx') === '1') {
         $rows[] = $cells;
         return $r++;
     };
-    $blank = static fn (int $n = 10): array => array_fill(0, $n, '');
+    $blank = static fn (int $n = 11): array => array_fill(0, $n, '');
     $cell = static fn ($v, string $st = ''): array => ['v' => $v, 's' => $st];
 
     // ── 머리: 왼쪽 제목 / 오른쪽 공급자
@@ -79,14 +112,14 @@ if (query('xlsx') === '1') {
     $line[7] = $cell((string)($be['name_en'] ?: $be['name_ko']), 'co');
     $heights[$r] = 30;
     $merges[] = 'A' . ($r + 1) . ':C' . ($r + 1);
-    $merges[] = 'H' . ($r + 1) . ':J' . ($r + 1);
+    $merges[] = 'H' . ($r + 1) . ':K' . ($r + 1);
     $put($line);
 
     $line = $blank();
     $line[0] = $cell((string)$inv['invoice_no'], 'tdb');
     $line[7] = $cell(trim((string)$be['address_ko']), 'cor');
     $merges[] = 'A' . ($r + 1) . ':C' . ($r + 1);
-    $merges[] = 'H' . ($r + 1) . ':J' . ($r + 1);
+    $merges[] = 'H' . ($r + 1) . ':K' . ($r + 1);
     $put($line);
 
     $line = $blank();
@@ -94,18 +127,18 @@ if (query('xlsx') === '1') {
                    . $inv['period_to'] . ($inv['due_date'] ? '  ·  DUE ' . $inv['due_date'] : ''), 'sub');
     $line[7] = $cell('TEL ' . (string)$be['phone'] . '   FAX ' . (string)$be['fax'], 'cor');
     $merges[] = 'A' . ($r + 1) . ':E' . ($r + 1);
-    $merges[] = 'H' . ($r + 1) . ':J' . ($r + 1);
+    $merges[] = 'H' . ($r + 1) . ':K' . ($r + 1);
     $put($line);
 
     $line = $blank();
     $line[7] = $cell('사업자등록번호 ' . (string)$be['business_number'], 'cor');
-    $merges[] = 'H' . ($r + 1) . ':J' . ($r + 1);
+    $merges[] = 'H' . ($r + 1) . ':K' . ($r + 1);
     $put($line);
 
     $line = $blank();
     $line[7] = $cell('대표자 ' . (string)$be['representative']
                    . ($be['doc_manager'] ? '  ·  담당 ' . $be['doc_manager'] : ''), 'cor');
-    $merges[] = 'H' . ($r + 1) . ':J' . ($r + 1);
+    $merges[] = 'H' . ($r + 1) . ':K' . ($r + 1);
     $put($line);
 
     $put($blank());
@@ -120,7 +153,7 @@ if (query('xlsx') === '1') {
     $line[8] = $cell((string)$inv['representative'], 'box');
     $heights[$r] = 22;
     $merges[] = 'B' . ($r + 1) . ':E' . ($r + 1);
-    $merges[] = 'I' . ($r + 1) . ':J' . ($r + 1);
+    $merges[] = 'I' . ($r + 1) . ':K' . ($r + 1);
     $put($line);
 
     $line = $blank();
@@ -130,15 +163,15 @@ if (query('xlsx') === '1') {
     $line[8] = $cell((string)($inv['payment_terms'] ?: '-'), 'box');
     $heights[$r] = 22;
     $merges[] = 'B' . ($r + 1) . ':G' . ($r + 1);
-    $merges[] = 'I' . ($r + 1) . ':J' . ($r + 1);
+    $merges[] = 'I' . ($r + 1) . ':K' . ($r + 1);
     $put($line);
 
     $put($blank());
 
     // ── 명세 표
-    $head = ['NO', 'DATE', 'AWB NO', '구분', 'DESTINATION', 'WEIGHT', '영세율', '과세', 'VAT', 'AMOUNT'];
+    $head = ['NO', 'DATE', 'AWB NO', '구분', 'DESTINATION', 'WEIGHT', '영세율', '과세', 'VAT', 'AMOUNT', '비고'];
     $line = [];
-    foreach ($head as $i => $t) { $line[] = $cell($t, $i >= 5 ? 'thr' : 'th'); }
+    foreach ($head as $i => $t) { $line[] = $cell($t, $i >= 5 && $i <= 9 ? 'thr' : 'th'); }
     $heights[$r] = 20;
     $put($line);
 
@@ -154,6 +187,7 @@ if (query('xlsx') === '1') {
             $cell($num($sh['taxable_supply']), 'tdn'),
             $cell($num($sh['tax_total']), 'tdn'),
             $cell($num($sh['grand_total']), 'tdn'),
+            $cell(trim((string)($sh['ship_remark'] ?? '')), 'td'),
         ]);
     }
     foreach ($items as $it) {
@@ -165,6 +199,7 @@ if (query('xlsx') === '1') {
             $cell($it['tax_type'] === 'TAXABLE' ? $num($it['supply_amount']) : '', 'tdn'),
             $cell($num($it['tax_amount']), 'tdn'),
             $cell($num($it['total_amount']), 'tdn'),
+            $cell('', 'td'),
         ]);
     }
 
@@ -198,7 +233,7 @@ if (query('xlsx') === '1') {
             $isTotal = $sums[$i][0] === '합계 금액';
             $line[7] = $cell($sums[$i][0], $isTotal ? 'totlbl' : 'sumlbl');
             $line[8] = $cell($sums[$i][1], $isTotal ? 'totn' : 'sumn');
-            $merges[] = 'I' . ($r + 1) . ':J' . ($r + 1);
+            $merges[] = 'I' . ($r + 1) . ':K' . ($r + 1);
             if ($isTotal) { $heights[$r] = 24; }
         }
         $heights[$r] = $heights[$r] ?? 20;
@@ -208,18 +243,18 @@ if (query('xlsx') === '1') {
     $put($blank());
     $line = $blank();
     $line[0] = $cell('위와 같이 청구합니다.  ·  ' . $be['name_ko'] . '  ·  ' . $inv['invoice_date'], 'foot');
-    $merges[] = 'A' . ($r + 1) . ':J' . ($r + 1);
+    $merges[] = 'A' . ($r + 1) . ':K' . ($r + 1);
     $put($line);
 
     $bin = xlsx_rich([
         'sheet'   => 'INVOICE',
-        'widths'  => [6, 13, 20, 8, 20, 10, 13, 13, 13, 14],
+        'widths'  => [6, 13, 20, 8, 18, 9, 13, 13, 12, 14, 26],
         'heights' => $heights,
         'merges'  => $merges,
         'rows'    => $rows,
         // 직인 — 인쇄물과 같은 자리(오른쪽 위)에 넣습니다
         'image'   => ($png = xlsx_png_from_data_uri(entity_stamp_data_uri($be ?: null)))
-            ? ['bin' => $png, 'col' => 9, 'row' => 0, 'dx' => 6, 'dy' => 2, 'w' => 76, 'h' => 76] : null,
+            ? ['bin' => $png, 'col' => 10, 'row' => 0, 'dx' => 6, 'dy' => 2, 'w' => 76, 'h' => 76] : null,
     ]);
     log_action('청구', 'EXPORT', 'invoices', $id, (string)$inv['invoice_no'], null, '엑셀 저장');
     $fn = 'INVOICE_' . $inv['invoice_no'] . '_' . $inv['name_ko'] . '.xlsx';
@@ -227,13 +262,14 @@ if (query('xlsx') === '1') {
     header('Content-Disposition: attachment; filename="invoice.xlsx"; filename*=UTF-8\'\'' . rawurlencode($fn));
     header('Content-Length: ' . strlen($bin));
     header('Cache-Control: no-store');
+    $printTake();
+    log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no'], null, '엑셀 (' . ($printUsed + 1) . '번째)');
     echo $bin;
     exit;
 }
 
 $stampUri = entity_stamp_data_uri($be ?: null);
 
-log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
 ?><!doctype html>
 <html lang="ko">
 <head>
@@ -246,7 +282,9 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
   body { margin: 0; background: #F1F5F8; color: #0C1A26;
          font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
   .sheet { width: 1123px; min-height: 794px; margin: 18px auto; background: #fff;
-           padding: 34px 38px; }
+           padding: 34px 38px; display: flex; flex-direction: column; }
+  /* 입금계좌 · 합계 금액 · 서명줄 — 내역이 짧아도 항상 종이 맨 아래 */
+  .bottom { margin-top: auto; padding-top: 16px; }
   .tnum { font-variant-numeric: tabular-nums; }
   .bar { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
   .bar .btn { height: 32px; padding: 0 14px; border: 1px solid #D3DEE6; background: #fff;
@@ -265,7 +303,7 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
   .sum .lab { color: #4E6273; }
   .sum .big { font-size: 17px; font-weight: 700; }
   .box { border: 1px solid #C9D6DF; }
-  .foot { margin-top: 16px; display: flex; gap: 22px; align-items: flex-start; }
+  .foot { display: flex; gap: 22px; align-items: flex-start; }
   .who { position: relative; display: inline-block; padding-right: 64px; }
   .stamp { position: absolute; right: -6px; top: 50%; transform: translateY(-50%);
            width: 66px; height: 66px; object-fit: contain; mix-blend-mode: multiply; opacity: .92; }
@@ -274,8 +312,11 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
   tr { page-break-inside: avoid; break-inside: avoid; }
   @media print {
     html, body { background: #fff; width: 100%; }
-    .sheet { margin: 0; width: 100%; min-height: 0; padding: 11mm 12mm; }
+    .sheet { margin: 0; width: 100%; min-height: 209mm; padding: 11mm 12mm; }
     .bar { display: none; }
+    /* [인쇄 / PDF 저장] 버튼으로 횟수를 쓴 경우에만 내용이 인쇄됩니다 (Ctrl+P 로 바로 인쇄하면 안내만) */
+    body:not(.allow-print) .sheet > *:not(.bar) { display: none !important; }
+    body:not(.allow-print) .sheet::after { content: '<?= $printOk ? "화면 위 [인쇄 / PDF 저장] 버튼으로 인쇄해 주세요" : "출력 횟수를 모두 써서 인쇄할 수 없습니다 (재발행 필요)" ?>'; display: block; padding: 40px; font-size: 16px; }
   }
 </style>
 </head>
@@ -283,8 +324,13 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
 <div class="sheet">
 
   <div class="bar">
-    <button class="btn" onclick="window.print()">인쇄 / PDF 저장</button>
-    <a class="btn" href="?p=invoice_print&amp;id=<?= $id ?>&amp;xlsx=1">엑셀로 저장</a>
+    <?php if ($printOk): ?>
+      <button class="btn" type="button" id="btn-print">인쇄 / PDF 저장</button>
+      <a class="btn" id="btn-xlsx" href="?p=invoice_print&amp;id=<?= $id ?>&amp;xlsx=1">엑셀로 저장</a>
+      <span id="print-left" style="font-size:12px;color:#4E6273">출력 · 변환 남은 횟수 <b><?= $printLeft ?></b> / <?= INVOICE_PRINT_LIMIT ?><?= is_super() && $printLeft === 0 ? ' (최고관리자 — 제한 없음)' : '' ?></span>
+    <?php else: ?>
+      <span style="font-size:12px;color:#A32020;font-weight:600">출력 · 변환 <?= INVOICE_PRINT_LIMIT ?>번을 모두 썼습니다 — 청구서 화면에서 [재발행] 하면 다시 <?= INVOICE_PRINT_LIMIT ?>번</span>
+    <?php endif; ?>
     <?php if (!$stampUri): // 화면에만 보이는 안내 (인쇄 · PDF 에는 안 나옴) ?>
       <a class="btn" style="border-color:#E4B9B9;color:#A32020" href="?p=business_entity&amp;id=<?= (int)$eid ?>#stamp">
         <?= trim((string)($be['stamp_path'] ?? '')) === '' ? '직인 미등록 — 사업자 관리에서 올리기' : '직인 파일을 찾지 못함 — 다시 올리기' ?></a>
@@ -354,14 +400,15 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
     <thead><tr>
       <th class="c" style="width:32px">NO</th>
       <th style="width:88px">DATE</th>
-      <th style="width:150px">AWB NO</th>
-      <th class="c" style="width:48px">구분</th>
-      <th style="width:120px">DESTINATION</th>
-      <th class="r" style="width:62px">WEIGHT</th>
-      <th class="r" style="width:105px">영세율</th>
-      <th class="r" style="width:105px">과세</th>
-      <th class="r" style="width:90px">VAT</th>
-      <th class="r" style="width:115px">AMOUNT</th>
+      <th style="width:135px">AWB NO</th>
+      <th class="c" style="width:44px">구분</th>
+      <th style="width:105px">DESTINATION</th>
+      <th class="r" style="width:58px">WEIGHT</th>
+      <th class="r" style="width:92px">영세율</th>
+      <th class="r" style="width:92px">과세</th>
+      <th class="r" style="width:80px">VAT</th>
+      <th class="r" style="width:100px">AMOUNT</th>
+      <th>비고</th>
     </tr></thead>
     <tbody>
     <?php foreach ($ships as $s): ?>
@@ -377,6 +424,7 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
         <td class="r tnum"><?= money($s['taxable_supply']) ?></td>
         <td class="r tnum"><?= money($s['tax_total']) ?></td>
         <td class="r tnum" style="font-weight:700"><?= money($s['grand_total']) ?></td>
+        <td style="font-size:10.5px;color:#33485A;line-height:1.45"><?= nl2br(h(trim((string)($s['ship_remark'] ?? '')))) ?></td>
       </tr>
     <?php endforeach; ?>
     <?php foreach ($items as $it): ?>
@@ -388,14 +436,24 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
         <td class="r tnum"><?= $it['tax_type']==='TAXABLE'? money($it['supply_amount']) : '' ?></td>
         <td class="r tnum"><?= money($it['tax_amount']) ?></td>
         <td class="r tnum" style="font-weight:700"><?= money($it['total_amount']) ?></td>
+        <td></td>
       </tr>
     <?php endforeach; ?>
     <?php if (!$ships && !$items): ?>
-      <tr><td colspan="10" class="c" style="padding:30px;color:#4E6273">수록된 내역이 없습니다.</td></tr>
+      <tr><td colspan="11" class="c" style="padding:30px;color:#4E6273">수록된 내역이 없습니다.</td></tr>
     <?php endif; ?>
     </tbody>
   </table>
 
+  <?php if ($notes): ?>
+  <!-- 비고 — 청구서 화면의 '비고' 칸 (매출전표 비고는 표의 각 줄에) -->
+  <div class="box" style="margin-top:14px;padding:11px 13px">
+    <div style="font-size:11px;font-weight:700;color:#33485A;margin-bottom:6px">비고 · REMARKS</div>
+    <div style="font-size:12.5px;line-height:1.7;color:#0E2235"><?= implode('<br>', array_map(fn($x) => nl2br(h($x)), $notes)) ?></div>
+  </div>
+  <?php endif; ?>
+
+  <div class="bottom">
   <div class="foot">
     <div class="box" style="flex:1;padding:11px 13px">
       <div style="font-size:11px;font-weight:700;color:#33485A;margin-bottom:7px">입금계좌</div>
@@ -433,19 +491,45 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
     </table>
   </div>
 
-  <?php if ($notes): ?>
-  <!-- 비고 — 청구서 화면의 '비고' 칸 + 매출전표 비고 -->
-  <div class="box" style="margin-top:12px;padding:11px 13px">
-    <div style="font-size:11px;font-weight:700;color:#33485A;margin-bottom:6px">비고 · REMARKS</div>
-    <div style="font-size:12.5px;line-height:1.7;color:#0E2235"><?= implode('<br>', array_map(fn($x) => nl2br(h($x)), $notes)) ?></div>
-  </div>
-  <?php endif; ?>
 
   <div style="margin-top:14px;font-size:11px;color:#4E6273;text-align:center">
     위와 같이 청구합니다. &nbsp;·&nbsp;
     <?= h($be['name_ko']) ?> &nbsp;·&nbsp; <?= h($inv['invoice_date']) ?>
   </div>
+  </div>
 
 </div>
+<?php if ($printOk): ?>
+<script>
+(function () {
+  var btn = document.getElementById('btn-print'), xl = document.getElementById('btn-xlsx');
+  var left = <?= is_super() ? 999 : $printLeft ?>;
+  function after(n) {
+    left = n;
+    var el = document.getElementById('print-left');
+    if (el) { el.innerHTML = '출력 · 변환 남은 횟수 <b>' + Math.max(0, n) + '</b> / <?= INVOICE_PRINT_LIMIT ?>'; }
+  }
+  if (btn) btn.addEventListener('click', function () {
+    if (!confirm('출력 · 변환은 회차마다 <?= INVOICE_PRINT_LIMIT ?>번까지입니다. 1번을 쓰고 인쇄 / PDF 저장할까요?')) return;
+    btn.disabled = true;
+    fetch('?p=invoice_print&id=<?= $id ?>&count=1&t=<?= h(csrf_token()) ?>', {credentials: 'same-origin', cache: 'no-store'})
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        btn.disabled = false;
+        if (!j.ok) { alert(j.msg); location.reload(); return; }
+        after(j.left);
+        document.body.classList.add('allow-print');
+        window.print();
+        setTimeout(function () { document.body.classList.remove('allow-print'); }, 1000);
+      })
+      .catch(function () { btn.disabled = false; alert('서버에 연결하지 못했습니다. 다시 눌러 주세요.'); });
+  });
+  if (xl) xl.addEventListener('click', function (e) {
+    if (!confirm('출력 · 변환은 회차마다 <?= INVOICE_PRINT_LIMIT ?>번까지입니다. 1번을 쓰고 엑셀로 저장할까요?')) { e.preventDefault(); return; }
+    setTimeout(function () { after(left - 1); }, 300);
+  });
+})();
+</script>
+<?php endif; ?>
 </body>
 </html>

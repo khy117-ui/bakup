@@ -5,6 +5,7 @@ $eid = entity_id();
 $id  = (int)query('id', '0');
 $err = '';
 schema_upgrade_invoices();   // 재발행 컬럼(issued_at · issue_count · reissue_reason · changed_at) 보강
+schema_upgrade_invoice_prints();   // 출력 횟수 (회차마다 3번)
 
 $st = db()->prepare(
     'SELECT i.*, c.name_ko, c.company_code, c.business_number, c.representative,
@@ -50,7 +51,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 invoice_recalc($id);   // 전표 · 조정항목의 현재 금액으로 합계를 다시 계산
                 $pdo->prepare('UPDATE invoices
                                   SET issued_at = NOW(), issue_count = issue_count + 1,
-                                      reissue_reason = ?, changed_at = NULL
+                                      reissue_reason = ?, changed_at = NULL, print_count = 0
                                 WHERE id = ?')->execute([$first ? null : $why, $id]);
                 $after = invoice_snapshot($id);
                 log_action('청구', 'ISSUE', 'invoices', $id, $inv['invoice_no'],
@@ -283,7 +284,10 @@ layout_head('청구서 ' . $inv['invoice_no'], 'billing');
   <div class="crumb">회계관리 &gt; 청구관리 &gt; 청구서</div>
   <div class="right">
     <a class="btn" href="?p=billing">목록</a>
-    <a class="btn" href="?p=invoice_print&amp;id=<?= $id ?>" target="_blank">인보이스 출력</a>
+    <?php $prLeft = max(0, INVOICE_PRINT_LIMIT - (int)($inv['print_count'] ?? 0)); ?>
+    <a class="btn" href="?p=invoice_print&amp;id=<?= $id ?>" target="_blank"
+       title="인쇄 · PDF · 엑셀을 합쳐 회차마다 <?= INVOICE_PRINT_LIMIT ?>번까지">인보이스 출력
+      <span style="font-weight:400;color:<?= $prLeft > 0 ? 'var(--ink3)' : 'var(--err-fg)' ?>">(<?= $prLeft > 0 ? '남은 ' . $prLeft . '번' : '횟수 다 씀 — 재발행 필요' ?>)</span></a>
     <?php if ($inv['status'] === 'DRAFT'): ?>
       <form method="post" style="display:inline">
         <?= csrf_field() ?><input type="hidden" name="act" value="issue">
