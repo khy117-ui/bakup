@@ -84,9 +84,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 $pdo->beginTransaction();
                 $before = invoice_snapshot($id);
-                $pdo->prepare('UPDATE invoices SET invoice_date = ?, due_date = ?, period_from = ?, period_to = ?, remark = ?
+                // 비고는 아래 '비고' 칸에서만 고칩니다 (두 곳에서 고치면 서로 덮어써서 비고가 사라졌습니다)
+                $pdo->prepare('UPDATE invoices SET invoice_date = ?, due_date = ?, period_from = ?, period_to = ?
                                 WHERE id = ?')
-                    ->execute([$idate, $due !== '' ? $due : null, $pf, $pt, post('remark') !== '' ? post('remark') : null, $id]);
+                    ->execute([$idate, $due !== '' ? $due : null, $pf, $pt, $id]);
                 $touch();
                 $after = invoice_snapshot($id);
                 log_action('청구', 'UPDATE', 'invoices', $id, $inv['invoice_no'], $before, $after, $why !== '' ? $why : null);
@@ -338,7 +339,7 @@ layout_head('청구서 ' . $inv['invoice_no'], 'billing');
 <?php if ($canHead): ?>
 <div class="card">
   <div class="ch">청구서 내용 수정
-    <span style="font-weight:400;color:var(--ink3)">청구일 · 지급기한 · 대상기간 · 비고<?= $issued ? ' — 발행된 청구서는 수정 사유가 남고 [재발행] 이 필요합니다' : '' ?></span>
+    <span style="font-weight:400;color:var(--ink3)">청구일 · 지급기한 · 대상기간 (비고는 아래 '비고' 칸에서)<?= $issued ? ' — 발행된 청구서는 수정 사유가 남고 [재발행] 이 필요합니다' : '' ?></span>
   </div>
   <div class="cb">
     <form method="post" class="f" style="align-items:flex-end">
@@ -348,7 +349,6 @@ layout_head('청구서 ' . $inv['invoice_no'], 'billing');
       <div class="fw w1"><label>지급기한</label><input type="date" name="due_date" value="<?= h((string)$inv['due_date']) ?>"></div>
       <div class="fw w1"><label>대상기간 시작</label><input type="date" name="period_from" value="<?= h($inv['period_from']) ?>" required></div>
       <div class="fw w1"><label>대상기간 종료</label><input type="date" name="period_to" value="<?= h($inv['period_to']) ?>" required></div>
-      <div class="fw gr" style="min-width:200px"><label>비고 (인보이스 하단)</label><input type="text" name="remark" value="<?= h((string)$inv['remark']) ?>"></div>
       <div class="fw gr" style="min-width:200px"><label>수정 사유<?= $issued ? ' *' : '' ?></label>
         <input type="text" name="reason" <?= $issued ? 'required' : '' ?> placeholder="예) 지급기한 연장 요청"></div>
       <button class="btn">저장</button>

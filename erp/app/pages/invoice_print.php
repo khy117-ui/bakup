@@ -400,10 +400,6 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
       <?php if (!$banks): ?>
         <div style="font-size:12px;color:#A32020">등록된 입금계좌가 없습니다.</div>
       <?php endif; ?>
-      <?php if ($inv['remark']): ?>
-        <div style="margin-top:9px;font-size:11.5px;color:#4E6273">
-          <?= nl2br(h($inv['remark'])) ?></div>
-      <?php endif; ?>
     </div>
 
     <table class="sum box" style="width:340px;padding:8px 10px">
@@ -428,6 +424,14 @@ log_action('청구', 'PRINT', 'invoices', $id, (string)$inv['invoice_no']);
       <?php endif; ?>
     </table>
   </div>
+
+  <?php if (trim((string)$inv['remark']) !== ''): ?>
+  <!-- 비고 — 청구서 화면의 '비고' 칸에 적은 내용 -->
+  <div class="box" style="margin-top:12px;padding:11px 13px">
+    <div style="font-size:11px;font-weight:700;color:#33485A;margin-bottom:6px">비고 · REMARKS</div>
+    <div style="font-size:12.5px;line-height:1.7;color:#0E2235"><?= nl2br(h((string)$inv['remark'])) ?></div>
+  </div>
+  <?php endif; ?>
 
   <div style="margin-top:14px;font-size:11px;color:#4E6273;text-align:center">
     위와 같이 청구합니다. &nbsp;·&nbsp;
